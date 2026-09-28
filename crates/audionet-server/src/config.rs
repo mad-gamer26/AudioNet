@@ -192,12 +192,15 @@ impl Config {
     }
 
     /// Like [`load`](Self::load) but only checks what administrative
-    /// commands (user management) need: the TURN secret may be absent.
+    /// commands (user management) need: secrets that only the running
+    /// service has (the TURN secret, the mail password) may be absent.
     pub fn load_for_admin(path: &Path) -> Result<Self, String> {
         let mut config = Self::load_unchecked(path)?;
         let turn = std::mem::take(&mut config.ice.turn_urls);
+        let email = std::mem::take(&mut config.email);
         config.validate()?;
         config.ice.turn_urls = turn;
+        config.email = email;
         Ok(config)
     }
 
@@ -361,6 +364,34 @@ mod tests {
             !format!("{c:?}").contains("pw\""),
             "the password is not printed"
         );
+    }
+
+    #[test]
+    fn admin_commands_need_no_service_secrets() {
+        let dir = std::env::temp_dir().join(format!("audionet-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "public_url = \"https://a.example.com\"
+[ice]
+turn_urls = [\"turn:a.example.com:3478\"]
+[email]
+from = \"x@example.com\"
+smtp_host = \"smtp.example.com\"
+smtp_username = \"u\"
+",
+        )
+        .unwrap();
+        // Unless the test environment happens to set them.
+        if std::env::var_os("AUDIONET_TURN_SECRET").is_none()
+            && std::env::var_os("AUDIONET_SMTP_PASSWORD").is_none()
+        {
+            assert!(Config::load(&path).is_err(), "serving needs the secrets");
+            let c = Config::load_for_admin(&path).unwrap();
+            assert_eq!(c.email.smtp_username.as_deref(), Some("u"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
