@@ -10,6 +10,7 @@ use audionet_protocol::signal::{
 use audionet_protocol::{NodeId, PROTOCOL_VERSION, Platform, SessionId};
 use audionet_server::api::{AppState, router};
 use audionet_server::config::Config;
+use audionet_server::mail::Mailer;
 use audionet_server::{auth, db};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
@@ -31,13 +32,7 @@ async fn start_server() -> (String, Arc<AppState>) {
     let hash = auth::hash_password("correct horse battery").unwrap();
     db.with(|c| db::create_user(c, "alice", &hash)).unwrap();
     db.with(|c| db::create_user(c, "mallory", &hash)).unwrap();
-    let state = Arc::new(AppState {
-        config,
-        db,
-        hub: Default::default(),
-        login_throttle: Default::default(),
-        sign_up_limit: Default::default(),
-    });
+    let state = Arc::new(AppState::new(config, db, Mailer::Disabled));
     let app = router(Arc::clone(&state));
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     (format!("{addr}"), state)

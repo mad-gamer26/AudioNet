@@ -65,7 +65,17 @@ pub fn sign_in(
     if password.is_empty() {
         return Err("no password was entered".into());
     }
-    let node = audionet_node::account::sign_in(server, user, &password, &name, this_platform())?;
+    let node = audionet_node::account::sign_in(server, user, &password, &name, this_platform())
+        .map_err(|e| {
+            if e.contains("password is incorrect") {
+                format!(
+                    "{e}\nForgot your password? Reset it in the web client: {}/?forgot",
+                    server.trim().trim_end_matches('/')
+                )
+            } else {
+                e
+            }
+        })?;
     node.save(&path)?;
     println!(
         "Signed in \"{}\" to account {} on {}. Settings saved to {}.\nStart it with: audionet node run",

@@ -86,6 +86,12 @@ curl http://127.0.0.1:8740/api/v1/info
 | `sign_ups_per_hour` | `30` | With open sign-up: new accounts the whole server accepts per hour. |
 | `client_address_header` | none | Header the reverse proxy sets to the client's address (nginx: `X-Real-IP` from `$remote_addr`, as in the example site). Without it, every request seems to come from the proxy, so the per-address limit acts server-wide. Only name a header the proxy always overwrites. |
 | `session_days` | `30` | Browser sign-in lifetime. |
+| `[email] from` | none | Sender of AudioNet's emails, e.g. `AudioNet <no-reply@audionet.example.com>`. With `smtp_host`, turns on email: confirming addresses and "Forgot your password?". Without it, accounts still keep their addresses, but nothing is sent and password reset is off. |
+| `[email] smtp_host` | none | Mail server to send through, e.g. `smtp.example.com`. |
+| `[email] smtp_security` | `starttls` | `starttls` (port 587, STARTTLS required), `tls` (port 465) or `none` (only for a mail server on this machine, `localhost`). |
+| `[email] smtp_port` | by security | 587, 465 or 25. |
+| `[email] smtp_username` | none | Account on the mail server. |
+| `[email] smtp_password` | none | Its password. Prefer `AUDIONET_SMTP_PASSWORD` in the environment file. |
 | `[ice] stun_urls` | `[]` | STUN servers given to clients. |
 | `[ice] turn_urls` | `[]` | TURN servers given to clients (require a secret). |
 | `[ice] turn_secret` | none | Shared secret with coturn. Prefer the environment variable. |
@@ -94,7 +100,8 @@ curl http://127.0.0.1:8740/api/v1/info
 Environment variables (override the file; put secrets here):
 `AUDIONET_CONFIG` (config path), `AUDIONET_PUBLIC_URL`, `AUDIONET_BIND`,
 `AUDIONET_DATABASE`, `AUDIONET_WEB_ROOT`, `AUDIONET_ALLOWED_ORIGINS`
-(comma-separated), `AUDIONET_TURN_SECRET`, `RUST_LOG` (log filter, e.g.
+(comma-separated), `AUDIONET_TURN_SECRET`, `AUDIONET_SMTP_PASSWORD`,
+`RUST_LOG` (log filter, e.g.
 `audionet_server=debug`).
 
 Check a configuration without starting: `audionet-server --config
@@ -113,6 +120,24 @@ sudo -u audionet /opt/audionet/bin/audionet-server --config /etc/audionet/config
 
 Passwords must be at least 10 characters. Changing a password signs the
 user out of all browsers.
+
+Email addresses are used only to reset forgotten passwords. Accounts
+created in the web client must give one (AudioNet emails a link to confirm
+it); accounts made before email addresses existed can add one in the web
+client, which recommends it with a notice until they do. An administrator
+can set an address, recorded as confirmed:
+
+```sh
+sudo -u audionet sh -c 'echo "a long password here" | /opt/audionet/bin/audionet-server --config /etc/audionet/config.toml user add alice --email alice@example.com'
+sudo -u audionet /opt/audionet/bin/audionet-server --config /etc/audionet/config.toml user email alice alice@example.com
+sudo -u audionet /opt/audionet/bin/audionet-server --config /etc/audionet/config.toml user email alice --remove
+```
+
+"Forgot your password?" (in the web client, and in the apps, which open
+it) emails a link to choose a new password, valid for an hour, to the
+account's confirmed address. It answers the same whether or not the
+account exists. Setting the new password signs out every browser; devices
+stay signed in. It needs the `[email]` settings.
 
 ## 5. Reverse proxy (nginx)
 

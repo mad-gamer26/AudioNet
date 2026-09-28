@@ -55,6 +55,7 @@ const ID_SETTINGS: i32 = 140;
 const ID_USER: i32 = 141;
 const ID_PASSWORD: i32 = 143;
 const ID_SIGN_IN: i32 = 144;
+const ID_FORGOT: i32 = 145;
 
 /// Update timer: runs the schedule below.
 const TIMER_UPDATE: usize = 1;
@@ -279,6 +280,8 @@ fn refresh(hwnd: HWND) {
         enable(hwnd, ID_ACCOUNTS, signed_in);
         enable(hwnd, ID_SIGN_OUT, signed_in);
         enable(hwnd, ID_START, signed_in);
+        // "Forgot password" stays enabled (so it can be found with Tab) and
+        // explains when the server address is missing.
         enable(
             hwnd,
             ID_OPEN_WEB,
@@ -647,18 +650,26 @@ fn on_command(hwnd: HWND, id: i32) {
             let url = with_state(|s| s.configs.first().map(|c| c.server_url.clone()))
                 .flatten()
                 .unwrap_or_else(|| get_text(hwnd, ID_SERVER).trim().to_owned());
-            if url.starts_with("https://") || url.starts_with("http://") {
-                // SAFETY: opening a URL with the user's default browser.
-                unsafe {
-                    ShellExecuteW(
-                        Some(hwnd),
-                        w!("open"),
-                        &wide(&url),
-                        PCWSTR::null(),
-                        PCWSTR::null(),
-                        SW_SHOWNORMAL,
-                    );
-                }
+            open_in_browser(hwnd, &url);
+        }
+        ID_FORGOT => {
+            // Passwords are reset in the web client of the server typed
+            // above, which emails a link to the account's address.
+            let server = get_text(hwnd, ID_SERVER)
+                .trim()
+                .trim_end_matches('/')
+                .to_owned();
+            if open_in_browser(hwnd, &format!("{server}/?forgot")) {
+                log(
+                    hwnd,
+                    "Opened password reset in the web browser: enter your account name or email address there.",
+                );
+            } else {
+                message(
+                    hwnd,
+                    "Enter the server address first, starting with https://.",
+                    true,
+                );
             }
         }
         ID_LOG => crate::logwin::open(hwnd),
@@ -666,6 +677,25 @@ fn on_command(hwnd: HWND, id: i32) {
         ID_EXIT => exit_app(hwnd),
         _ => {}
     }
+}
+
+/// Opens an http(s) URL in the default browser; false for anything else.
+fn open_in_browser(hwnd: HWND, url: &str) -> bool {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return false;
+    }
+    // SAFETY: opening a URL with the user's default browser.
+    unsafe {
+        ShellExecuteW(
+            Some(hwnd),
+            w!("open"),
+            &wide(url),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+    true
 }
 
 pub(crate) fn is_checked(hwnd: HWND, id: i32) -> bool {
@@ -1249,6 +1279,17 @@ fn build(hwnd: HWND) {
     );
     control(
         hwnd,
+        w!("BUTTON"),
+        "&Forgot password…",
+        button,
+        WINDOW_EX_STYLE(0),
+        ID_FORGOT,
+        (x + 130, 184, 170, 30),
+        scale,
+        font,
+    );
+    control(
+        hwnd,
         w!("STATIC"),
         "&Accounts:",
         st,
@@ -1475,8 +1516,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 }
                 Err(e) => {
                     refresh(hwnd);
-                    log(hwnd, &format!("Signing in failed: {e}"));
-                    message(hwnd, &format!("Signing in failed: {e}"), true);
+                    let hint = if e.contains("password is incorrect") {
+                        " If you forgot the password, press Forgot password."
+                    } else {
+                        ""
+                    };
+                    log(hwnd, &format!("Signing in failed: {e}{hint}"));
+                    message(hwnd, &format!("Signing in failed: {e}{hint}"), true);
                 }
             }
             LRESULT(0)

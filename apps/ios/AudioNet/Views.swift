@@ -43,6 +43,7 @@ func heading(_ text: String) -> some View {
 struct SignInView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     var adding = false
     @State private var server = ""
     @State private var username = ""
@@ -81,6 +82,10 @@ struct SignInView: View {
                 Button(model.signingIn ? "Signing In…" : "Sign In", action: submit)
                     .disabled(model.signingIn)
                     .accessibilityIdentifier("signIn")
+                // Passwords are reset in the server's web client, which
+                // emails a link to the account's address.
+                Button("Forgot Password?", action: forgotPassword)
+                    .accessibilityIdentifier("forgotPassword")
                 if let problem = model.signInProblem {
                     Text(problem)
                         .accessibilityIdentifier("signInProblem")
@@ -103,6 +108,18 @@ struct SignInView: View {
         .onAppear {
             if server.isEmpty { server = model.defaultServer }
         }
+    }
+
+    private func forgotPassword() {
+        var base = server.trimmingCharacters(in: .whitespaces)
+        while base.hasSuffix("/") { base.removeLast() }
+        guard base.hasPrefix("https://") || base.hasPrefix("http://"),
+              let url = URL(string: base + "/?forgot") else {
+            model.reportSignInProblem("Enter the server address first, starting with https://.")
+            focus = .server
+            return
+        }
+        openURL(url)
     }
 
     private func submit() {

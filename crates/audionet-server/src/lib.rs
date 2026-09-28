@@ -8,6 +8,7 @@ pub mod auth;
 pub mod config;
 pub mod db;
 pub mod hub;
+pub mod mail;
 
 use axum::extract::Request;
 use axum::http::HeaderValue;

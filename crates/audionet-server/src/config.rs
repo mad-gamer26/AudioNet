@@ -54,6 +54,95 @@ pub struct Config {
     pub session_days: u32,
     #[serde(default)]
     pub ice: IceConfig,
+    /// Outgoing email for confirming addresses and resetting passwords.
+    #[serde(default)]
+    pub email: EmailConfig,
+}
+
+/// How the connection to the mail server is protected.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpSecurity {
+    /// Plain connection upgraded with STARTTLS, which is required (port 587).
+    #[default]
+    Starttls,
+    /// TLS from the start (port 465).
+    Tls,
+    /// No encryption: only for a mail server on this machine.
+    None,
+}
+
+#[derive(Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmailConfig {
+    /// Sender, e.g. `AudioNet <no-reply@audionet.example.com>`. Without it
+    /// (and `smtp_host`) the server sends no email and offers no password
+    /// reset; accounts still keep their addresses.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Mail server to send through, e.g. `smtp.example.com`.
+    #[serde(default)]
+    pub smtp_host: Option<String>,
+    /// Defaults to 587 for STARTTLS, 465 for TLS and 25 for none.
+    #[serde(default)]
+    pub smtp_port: Option<u16>,
+    #[serde(default)]
+    pub smtp_security: SmtpSecurity,
+    #[serde(default)]
+    pub smtp_username: Option<String>,
+    /// Prefer the `AUDIONET_SMTP_PASSWORD` environment variable.
+    #[serde(default)]
+    pub smtp_password: Option<String>,
+}
+
+impl std::fmt::Debug for EmailConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailConfig")
+            .field("from", &self.from)
+            .field("smtp_host", &self.smtp_host)
+            .field("smtp_port", &self.smtp_port)
+            .field("smtp_security", &self.smtp_security)
+            .field("smtp_username", &self.smtp_username)
+            .field(
+                "smtp_password",
+                &self.smtp_password.as_ref().map(|_| "(set)"),
+            )
+            .finish()
+    }
+}
+
+impl EmailConfig {
+    pub fn port(&self) -> u16 {
+        self.smtp_port.unwrap_or(match self.smtp_security {
+            SmtpSecurity::Starttls => 587,
+            SmtpSecurity::Tls => 465,
+            SmtpSecurity::None => 25,
+        })
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        match (&self.from, &self.smtp_host) {
+            (None, None) => return Ok(()),
+            (Some(_), None) => return Err("email.from is set but email.smtp_host is not".into()),
+            (None, Some(_)) => return Err("email.smtp_host is set but email.from is not".into()),
+            (Some(_), Some(_)) => {}
+        }
+        let host = self.smtp_host.as_deref().unwrap_or_default();
+        if self.smtp_security == SmtpSecurity::None
+            && !matches!(host, "localhost" | "127.0.0.1" | "::1")
+        {
+            return Err(
+                "email.smtp_security = \"none\" is only allowed for a mail server on this machine (localhost)"
+                    .into(),
+            );
+        }
+        if self.smtp_username.is_some() && self.smtp_password.as_deref().is_none_or(str::is_empty) {
+            return Err(
+                "email.smtp_username is set but no password is (set AUDIONET_SMTP_PASSWORD)".into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -152,6 +241,9 @@ impl Config {
         if let Some(v) = get("AUDIONET_TURN_SECRET") {
             self.ice.turn_secret = Some(v);
         }
+        if let Some(v) = get("AUDIONET_SMTP_PASSWORD") {
+            self.email.smtp_password = Some(v);
+        }
         Ok(())
     }
 
@@ -173,6 +265,7 @@ impl Config {
                     .into(),
             );
         }
+        self.email.validate()?;
         Ok(())
     }
 
@@ -230,6 +323,44 @@ mod tests {
             .unwrap();
         c.validate().unwrap();
         assert_eq!(c.ice.turn_secret.as_deref(), Some("s3cret"));
+    }
+
+    #[test]
+    fn email_settings() {
+        let parse = |extra: &str| {
+            let mut c =
+                Config::parse(&format!("public_url = \"https://a.example.com\"\n{extra}")).unwrap();
+            c.validate().map(|()| c)
+        };
+        let c = parse("").unwrap();
+        assert!(c.email.from.is_none());
+        let c = parse(
+            "[email]\nfrom = \"AudioNet <no-reply@example.com>\"\nsmtp_host = \"smtp.example.com\"",
+        )
+        .unwrap();
+        assert_eq!(c.email.port(), 587);
+        assert!(
+            parse("[email]\nfrom = \"x@example.com\"").is_err(),
+            "no host"
+        );
+        assert!(
+            parse("[email]\nfrom = \"x@example.com\"\nsmtp_host = \"smtp.example.com\"\nsmtp_security = \"none\"").is_err(),
+            "unencrypted only to this machine"
+        );
+        assert!(parse("[email]\nfrom = \"x@example.com\"\nsmtp_host = \"localhost\"\nsmtp_security = \"none\"").is_ok());
+        let mut c = Config::parse(
+            "public_url = \"https://a.example.com\"\n[email]\nfrom = \"x@example.com\"\nsmtp_host = \"smtp.example.com\"\nsmtp_security = \"tls\"\nsmtp_username = \"u\"",
+        )
+        .unwrap();
+        assert!(c.clone().validate().is_err(), "username without a password");
+        c.apply_env(|k| (k == "AUDIONET_SMTP_PASSWORD").then(|| "pw".into()))
+            .unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.email.port(), 465);
+        assert!(
+            !format!("{c:?}").contains("pw\""),
+            "the password is not printed"
+        );
     }
 
     #[test]

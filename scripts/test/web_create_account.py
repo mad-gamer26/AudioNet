@@ -6,8 +6,8 @@ account is created on a real server:
 1. The sign-in page offers "Create an account" (a button) only when the
    server allows it; pressing it moves focus to the "Create an account"
    heading, and the name typed on the sign-in form is carried over.
-2. The fields are named, and the username and password fields carry their
-   rules as descriptions.
+2. The fields are named, and the username, email and password fields carry
+   their rules as descriptions.
 3. Different passwords are caught before sending: an alert says so, focus
    moves to the second field and it is marked invalid.
 4. Creating the account signs in and announces it; focus moves to the
@@ -102,11 +102,14 @@ try:
 
     role, name, desc, _ = ax(drv, "#new-username")
     check("username field named, with its rules", role == "textbox" and name == "Username" and "Letters, digits" in desc, f"{role} {name!r} {desc!r}")
+    role, name, desc, _ = ax(drv, "#new-email")
+    check("email field named, with its purpose", name == "Email address" and "only to reset your password" in desc, f"{role} {name!r} {desc!r}")
     role, name, desc, _ = ax(drv, "#new-password")
     check("password field named, with its rules", name == "Password" and "At least 10 characters" in desc, f"{role} {name!r} {desc!r}")
     role, name, _, _ = ax(drv, "#new-password-again")
     check("second password field named", name == "Password again", f"{role} {name!r}")
 
+    drv.find_element(By.ID, "new-email").send_keys("listener@example.com")
     drv.find_element(By.ID, "new-password").send_keys("correct horse battery")
     drv.find_element(By.ID, "new-password-again").send_keys("correct horse batteyr")
     drv.find_element(By.CSS_SELECTOR, "#create-account-form button[type=submit]").click()

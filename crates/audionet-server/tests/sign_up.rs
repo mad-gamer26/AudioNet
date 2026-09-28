@@ -7,6 +7,7 @@ use std::sync::Arc;
 use audionet_server::api::{AppState, router};
 use audionet_server::config::Config;
 use audionet_server::db;
+use audionet_server::mail::Mailer;
 use tokio::net::TcpStream;
 
 async fn start_server(extra_config: &str) -> String {
@@ -15,13 +16,11 @@ async fn start_server(extra_config: &str) -> String {
     let mut config =
         Config::parse(&format!("public_url = \"http://{addr}\"\n{extra_config}")).unwrap();
     config.validate().unwrap();
-    let state = Arc::new(AppState {
+    let state = Arc::new(AppState::new(
         config,
-        db: db::Db::open_in_memory().unwrap(),
-        hub: Default::default(),
-        login_throttle: Default::default(),
-        sign_up_limit: Default::default(),
-    });
+        db::Db::open_in_memory().unwrap(),
+        Mailer::Disabled,
+    ));
     let app = router(state);
     tokio::spawn(async move {
         axum::serve(
@@ -56,7 +55,9 @@ async fn post(addr: &str, path: &str, body: &str, headers: &[(&str, &str)]) -> (
 }
 
 fn account(name: &str) -> String {
-    format!(r#"{{"username":"{name}","password":"correct horse battery"}}"#)
+    format!(
+        r#"{{"username":"{name}","password":"correct horse battery","email":"{name}@example.com"}}"#
+    )
 }
 
 #[tokio::test]
@@ -99,7 +100,7 @@ async fn rules_for_new_accounts() {
     let (status, body) = post(
         &addr,
         "/api/v1/register",
-        r#"{"username":"bob","password":"bob-is-great-2026"}"#,
+        r#"{"username":"bob","password":"bob-is-great-2026","email":"bob@example.com"}"#,
         &[],
     )
     .await;
@@ -108,11 +109,42 @@ async fn rules_for_new_accounts() {
     let (status, _) = post(
         &addr,
         "/api/v1/register",
-        r#"{"username":"bob","password":"short"}"#,
+        r#"{"username":"bob","password":"short","email":"bob@example.com"}"#,
         &[],
     )
     .await;
     assert_eq!(status, 400);
+    // An email address is required, valid, and one per account.
+    let (status, body) = post(
+        &addr,
+        "/api/v1/register",
+        r#"{"username":"carol","password":"correct horse battery"}"#,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert!(
+        body.contains("bad_email") && body.contains("reset"),
+        "{body}"
+    );
+    let (status, body) = post(
+        &addr,
+        "/api/v1/register",
+        r#"{"username":"carol","password":"correct horse battery","email":"carol"}"#,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert!(body.contains("bad_email"), "{body}");
+    let (status, body) = post(
+        &addr,
+        "/api/v1/register",
+        r#"{"username":"carol","password":"correct horse battery","email":"ALICE@example.com"}"#,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 409, "{body}");
+    assert!(body.contains("email_taken"), "{body}");
     // The new account signs in normally.
     let (status, body) = post(&addr, "/api/v1/login", &account("alice"), &[]).await;
     assert_eq!(status, 200, "{body}");

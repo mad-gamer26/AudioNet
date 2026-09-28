@@ -228,6 +228,21 @@ Automated accessibility checks:
   accounts). `scripts/test/web_create_account.py` checks the web form in headless Chrome against a local server started
   for the test (temporary database, so nothing is created on a real
   server): names, descriptions, focus, alerts and invalid marking.
+* Email addresses and password reset: `cargo test -p audionet-server --test
+  email` (over real HTTP with an in-memory mailer: confirming an address,
+  single-use and newest-only links, changing the address with the
+  password, the neutral "forgot" answer, no reset link to an unconfirmed
+  address, reset signing out other browsers, the per-account and
+  per-address limits, the server without email settings, and the real
+  SMTP code path against a local SMTP responder).
+  `scripts/test/web_email.py` checks the web client in headless Chrome
+  against a local server whose email goes to an SMTP sink in the script:
+  the email field, the "Confirm your email address" and "Add an email
+  address" banners (named regions), following the emailed links, "Forgot
+  your password?", choosing a new password, and adding an address, with
+  announcements, focus and invalid marking. The Mac and iPhone UI tests
+  (`testForgotPasswordNeedsTheServerAddress`) and `desktop_uia.py` check
+  the apps' "Forgot password" control.
 * Web status log: `scripts/test/web_status_log.py` (the Status log dialog
   in Chrome's accessibility tree: named modal dialog, focus in and back,
   Escape and Close). The Windows tests read the desktop app's status log

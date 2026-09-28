@@ -111,8 +111,34 @@ Where the server allows it:
   focus moves to the field to fix, marked invalid. Creating the account
   signs in and announces "Account NAME created. You are signed in."; "Back
   to sign in" returns to the sign-in form.
+  The "Email address" field is required, and its description says what
+  it is for ("Used only to reset your password if you forget it").
 * The apps and the command line only sign in: people create their account
   in the web client before installing AudioNet.
+
+## Email address and forgotten passwords
+
+* Web, signed in without an email address: a region above the devices,
+  headed "Add an email address", says "An email address is highly
+  recommended. It is used only to reset your password if you forget it.",
+  with an "Add an email address" button; signing in also announces that
+  the account has no address. With an unconfirmed address the region is
+  headed "Confirm your email address" and has "Send the link again".
+* The "Email address" part (a heading, after "Add a device") states the
+  address in words ("Email address: NAME, confirmed."). Its button is a
+  disclosure (`aria-expanded`) for a form with the address and the
+  account password; focus goes to the address field, errors are alerts
+  with focus on the field to fix, and saving announces the emailed link.
+* Opening an emailed link announces the result ("Email address ...
+  confirmed"); the link's token is removed from the address bar.
+* "Forgot your password?" (a button on the sign-in page) opens "Reset your
+  password" with focus on its heading; the answer is shown and announced.
+  The reset link opens "Choose a new password" with focus on its heading;
+  setting it signs in and announces it, with focus on "Your devices".
+* Windows: a "Forgot password…" button (Alt+F) after "Sign in"; Mac and
+  iPhone: a "Forgot Password?" button after "Sign In". Each opens the
+  server's reset page in the browser, or, without a server address, says
+  so and (Mac) moves focus to that field.
 
 ## Web client specifics
 

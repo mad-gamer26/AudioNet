@@ -147,74 +147,68 @@ impl Throttle {
     }
 }
 
-/// Limits how many accounts are created: per client address and for the
-/// whole server, each over the last hour. Only accounts actually created
-/// count (a taken name or a bad password does not).
+/// Limits how often something happens per key and for the whole server,
+/// each over the last hour: accounts created per client address, emails
+/// sent per account, password-reset requests per client address. Only what
+/// actually happened counts (a taken name or a bad password does not).
 #[derive(Debug, Default)]
-pub struct SignUpLimit {
-    state: Mutex<SignUps>,
+pub struct HourlyLimit {
+    state: Mutex<Events>,
 }
 
 #[derive(Debug, Default)]
-struct SignUps {
-    by_address: HashMap<String, Vec<Instant>>,
+struct Events {
+    by_key: HashMap<String, Vec<Instant>>,
     all: Vec<Instant>,
 }
 
-/// Why a new account must wait, and for how long.
+/// Why something must wait, and for how long.
 #[derive(Debug, PartialEq, Eq)]
-pub enum SignUpWait {
-    /// This client address created its share recently.
-    Address(Duration),
+pub enum HourlyWait {
+    /// This key (client address, account) used its share recently.
+    Key(Duration),
     /// The server as a whole did.
-    Server(Duration),
+    Total(Duration),
 }
 
-const SIGN_UP_WINDOW: Duration = Duration::from_secs(3600);
+const LIMIT_WINDOW: Duration = Duration::from_secs(3600);
 
-impl SignUpLimit {
-    /// Whether `address` may create an account now.
+impl HourlyLimit {
+    /// Whether `key` may do it again now.
     pub fn check(
         &self,
-        address: &str,
-        per_address: u32,
+        key: &str,
+        per_key: u32,
         total: u32,
         now: Instant,
-    ) -> Result<(), SignUpWait> {
+    ) -> Result<(), HourlyWait> {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let fresh = |t: &Instant| now.saturating_duration_since(*t) < SIGN_UP_WINDOW;
+        let fresh = |t: &Instant| now.saturating_duration_since(*t) < LIMIT_WINDOW;
         s.all.retain(fresh);
-        s.by_address.retain(|_, times| {
+        s.by_key.retain(|_, times| {
             times.retain(fresh);
             !times.is_empty()
         });
         let wait = |times: &[Instant], limit: u32| {
             (times.len() >= limit as usize).then(|| {
                 let oldest = times.iter().min().copied().unwrap_or(now);
-                SIGN_UP_WINDOW.saturating_sub(now.saturating_duration_since(oldest))
+                LIMIT_WINDOW.saturating_sub(now.saturating_duration_since(oldest))
             })
         };
         if let Some(d) = wait(&s.all, total) {
-            return Err(SignUpWait::Server(d));
+            return Err(HourlyWait::Total(d));
         }
-        if let Some(d) = s
-            .by_address
-            .get(address)
-            .and_then(|times| wait(times, per_address))
-        {
-            return Err(SignUpWait::Address(d));
+        if let Some(d) = s.by_key.get(key).and_then(|times| wait(times, per_key)) {
+            return Err(HourlyWait::Key(d));
         }
         Ok(())
     }
 
-    /// Records an account created from `address`.
-    pub fn record(&self, address: &str, now: Instant) {
+    /// Records that `key` did it.
+    pub fn record(&self, key: &str, now: Instant) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.all.push(now);
-        s.by_address
-            .entry(address.to_owned())
-            .or_default()
-            .push(now);
+        s.by_key.entry(key.to_owned()).or_default().push(now);
     }
 }
 
@@ -235,7 +229,7 @@ mod tests {
 
     #[test]
     fn sign_up_limit_per_address_and_server() {
-        let limit = SignUpLimit::default();
+        let limit = HourlyLimit::default();
         let t0 = Instant::now();
         for _ in 0..3 {
             assert_eq!(limit.check("a", 3, 5, t0), Ok(()));
@@ -244,7 +238,7 @@ mod tests {
         // The address has used its 3; another address has not.
         assert!(matches!(
             limit.check("a", 3, 5, t0),
-            Err(SignUpWait::Address(d)) if d == SIGN_UP_WINDOW
+            Err(HourlyWait::Key(d)) if d == LIMIT_WINDOW
         ));
         assert_eq!(limit.check("b", 3, 5, t0), Ok(()));
         limit.record("b", t0);
@@ -252,10 +246,10 @@ mod tests {
         // Five in the hour: the server is full for everyone.
         assert!(matches!(
             limit.check("d", 3, 5, t0 + Duration::from_secs(600)),
-            Err(SignUpWait::Server(_))
+            Err(HourlyWait::Total(_))
         ));
         // An hour after the first ones, room again.
-        let later = t0 + SIGN_UP_WINDOW + Duration::from_secs(1);
+        let later = t0 + LIMIT_WINDOW + Duration::from_secs(1);
         assert_eq!(limit.check("a", 3, 5, later), Ok(()));
     }
 

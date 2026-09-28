@@ -18,6 +18,11 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   username: null,
+  // The account's email address and whether it is confirmed.
+  email: null,
+  emailVerified: false,
+  // Whether this server can send email (confirmation and password reset).
+  passwordReset: false,
   ws: null,
   wsBackoff: 1000,
   iceServers: [],
@@ -82,37 +87,279 @@ async function api(method, path, body) {
 
 // ─── sign-in ────────────────────────────────────────────────────────────────
 
-function showSignIn() {
+// The signed-out screens; exactly one is shown at a time.
+const SIGNED_OUT_SECTIONS = ["sign-in-section", "create-account-section", "forgot-section", "reset-section"];
+
+function showOnly(id) {
   $("app-section").hidden = true;
+  $("email-banner").hidden = true;
   $("account").hidden = true;
-  $("create-account-section").hidden = true;
-  $("sign-in-section").hidden = false;
+  for (const s of SIGNED_OUT_SECTIONS) $(s).hidden = s !== id;
+}
+
+function showSignIn() {
+  showOnly("sign-in-section");
+}
+
+// Links in emails and from the apps open this page with one of these; the
+// link's token leaves the address bar (and the history) at once.
+function takeLinkFromAddress() {
+  const params = new URLSearchParams(location.search);
+  const link = { verify: params.get("verify"), reset: params.get("reset"), forgot: params.has("forgot") };
+  if (link.verify || link.reset || link.forgot) history.replaceState(null, "", location.pathname);
+  return link;
 }
 
 async function start() {
+  const link = takeLinkFromAddress();
   try {
     const info = await api("GET", "/api/v1/info");
     $("create-account-offer").hidden = !info.allow_registration;
+    state.passwordReset = !!info.password_reset;
+    $("forgot-offer").hidden = !state.passwordReset;
   } catch (_) { /* optional */ }
+  if (link.reset) {
+    showReset(link.reset);
+    return;
+  }
+  if (link.verify) await verifyEmail(link.verify);
   try {
     const me = await api("GET", "/api/v1/me");
-    signedIn(me.username, false);
+    signedIn(me, false);
   } catch (_) {
-    showSignIn();
+    if (link.forgot && state.passwordReset) showForgot();
+    else {
+      showSignIn();
+      if (link.forgot) showError("This server cannot reset passwords by email. Ask its administrator to set a new password.");
+    }
   }
 }
 
-function signedIn(username, moveFocus) {
-  state.username = username;
-  $("account-name").textContent = username;
-  showSignInHelp(username);
+// `me` is the account as /api/v1/me or a sign-in answers it.
+function signedIn(me, moveFocus) {
+  state.username = me.username;
+  $("account-name").textContent = me.username;
+  showSignInHelp(me.username);
+  showOnly(null);
   $("account").hidden = false;
-  $("sign-in-section").hidden = true;
-  $("create-account-section").hidden = true;
   $("app-section").hidden = false;
+  if ("email" in me) setEmailState(me.email, me.email_verified);
+  else loadEmailState();
   if (moveFocus) $("devices-heading").focus();
   connect();
 }
+
+// ─── email address ──────────────────────────────────────────────────────────
+
+async function loadEmailState() {
+  try {
+    const me = await api("GET", "/api/v1/me");
+    setEmailState(me.email, me.email_verified);
+  } catch (_) { /* shown on the next sign-in */ }
+}
+
+// Shows the address in the Email address part and, when there is none or
+// it is unconfirmed, the banner above the devices.
+function setEmailState(email, verified) {
+  state.email = email || null;
+  state.emailVerified = !!verified;
+  const banner = $("email-banner");
+  if (!state.email) {
+    $("email-state").textContent = "Email address: none. Adding one is highly recommended: it is used only to reset your password if you forget it.";
+    $("change-email").textContent = "Add an email address";
+    $("email-banner-heading").textContent = "Add an email address";
+    $("email-banner-text").textContent = "An email address is highly recommended. It is used only to reset your password if you forget it.";
+    $("banner-add-email").hidden = false;
+    $("banner-send-link").hidden = true;
+    banner.hidden = false;
+  } else if (!state.emailVerified) {
+    $("email-state").textContent = state.passwordReset
+      ? `Email address: ${state.email}, not confirmed yet. Open the link AudioNet emailed to it; until then it cannot be used to reset your password.`
+      : `Email address: ${state.email}.`;
+    $("change-email").textContent = "Change the email address";
+    $("email-banner-heading").textContent = "Confirm your email address";
+    $("email-banner-text").textContent = `AudioNet emailed a link to ${state.email}. Open it to confirm the address, so it can be used to reset your password if you forget it. Check the spam folder if it did not arrive.`;
+    $("banner-add-email").hidden = true;
+    $("banner-send-link").hidden = false;
+    // Without email on the server there is nothing to confirm.
+    banner.hidden = !state.passwordReset;
+  } else {
+    $("email-state").textContent = `Email address: ${state.email}, confirmed. It is used only to reset your password if you forget it.`;
+    $("change-email").textContent = "Change the email address";
+    banner.hidden = true;
+  }
+}
+
+function openEmailForm() {
+  clearError();
+  $("email-form").hidden = false;
+  $("change-email").setAttribute("aria-expanded", "true");
+  $("email-address").value = state.email || "";
+  $("email-address").focus();
+}
+
+function closeEmailForm(focusButton) {
+  $("email-form").hidden = true;
+  $("change-email").setAttribute("aria-expanded", "false");
+  $("email-password").value = "";
+  for (const id of ["email-address", "email-password"]) markInvalid(id, false);
+  if (focusButton) $("change-email").focus();
+}
+
+$("change-email").addEventListener("click", () => {
+  if ($("email-form").hidden) openEmailForm();
+  else closeEmailForm(true);
+});
+$("banner-add-email").addEventListener("click", openEmailForm);
+$("email-cancel").addEventListener("click", () => closeEmailForm(true));
+
+$("email-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  clearError();
+  const email = $("email-address").value.trim();
+  const password = $("email-password").value;
+  for (const id of ["email-address", "email-password"]) markInvalid(id, false);
+  let problem = null;
+  if (!looksLikeEmail(email)) problem = ["email-address", "Enter an email address like name@example.com."];
+  else if (!password) problem = ["email-password", "Enter your password."];
+  if (problem) {
+    markInvalid(problem[0], true);
+    showError(problem[1]);
+    $(problem[0]).focus();
+    return;
+  }
+  try {
+    const r = await api("POST", "/api/v1/account/email", { email, password });
+    closeEmailForm(false);
+    setEmailState(r.email, r.email_verified);
+    announce(r.link_sent
+      ? `Email address saved. AudioNet emailed a link to ${r.email}; open it to confirm the address.`
+      : `Email address saved: ${r.email}.`);
+    $("email-heading").focus();
+  } catch (err) {
+    showError(err.message);
+    const field = /password/i.test(err.message) ? "email-password" : "email-address";
+    markInvalid(field, true);
+    $(field).focus();
+  }
+});
+
+$("banner-send-link").addEventListener("click", async () => {
+  clearError();
+  try {
+    const r = await api("POST", "/api/v1/account/email/send-link");
+    if (r.email_verified) {
+      setEmailState(state.email, true);
+      announce("The email address is already confirmed.");
+      $("email-heading").focus();
+    } else {
+      announce(`AudioNet emailed a new link to ${state.email}. Earlier links no longer work.`);
+    }
+  } catch (err) {
+    showError(err.message);
+  }
+});
+
+// The same rule as the server's, to catch slips without a round trip.
+function looksLikeEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && !/\.$/.test(email) && email.length <= 254;
+}
+
+async function verifyEmail(token) {
+  try {
+    const r = await api("POST", "/api/v1/email/verify", { token });
+    announce(`Email address ${r.email} confirmed for ${r.username}. It can now be used to reset the password.`);
+  } catch (err) {
+    showError(`The email address was not confirmed. ${err.message} Signed in, choose Send the link again.`);
+  }
+}
+
+// ─── forgotten password ─────────────────────────────────────────────────────
+
+function showForgot() {
+  clearError();
+  showOnly("forgot-section");
+  $("forgot-form").hidden = false;
+  $("forgot-sent").hidden = true;
+  if (!$("forgot-account").value) $("forgot-account").value = $("username").value.trim();
+  $("forgot-heading").focus();
+}
+
+$("show-forgot").addEventListener("click", showForgot);
+
+for (const id of ["forgot-back", "reset-back"]) {
+  $(id).addEventListener("click", () => {
+    clearError();
+    showSignIn();
+    $("sign-in-heading").focus();
+  });
+}
+
+$("forgot-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  clearError();
+  const account = $("forgot-account").value.trim();
+  markInvalid("forgot-account", false);
+  if (!account) {
+    markInvalid("forgot-account", true);
+    showError("Enter your username or email address.");
+    $("forgot-account").focus();
+    return;
+  }
+  try {
+    await api("POST", "/api/v1/password/forgot", { account });
+    const text = "If that account has a confirmed email address, AudioNet has emailed it a link to choose a new password. The link works for 1 hour. Check the spam folder if it does not arrive.";
+    $("forgot-sent").textContent = text;
+    $("forgot-sent").hidden = false;
+    announce(text);
+  } catch (err) {
+    showError(err.message);
+    $("forgot-account").focus();
+  }
+});
+
+let resetToken = null;
+
+function showReset(token) {
+  resetToken = token;
+  clearError();
+  showOnly("reset-section");
+  $("reset-heading").focus();
+}
+
+$("reset-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  clearError();
+  const password = $("reset-password").value;
+  const again = $("reset-password-again").value;
+  for (const id of ["reset-password", "reset-password-again"]) markInvalid(id, false);
+  let problem = null;
+  if ([...password].length < 10) problem = ["reset-password", "The password must be at least 10 characters long."];
+  else if (password !== again) problem = ["reset-password-again", "The two passwords are different. Type the same password in both fields."];
+  if (problem) {
+    markInvalid(problem[0], true);
+    showError(problem[1]);
+    $(problem[0]).focus();
+    return;
+  }
+  try {
+    const r = await api("POST", "/api/v1/password/reset", { token: resetToken, password });
+    resetToken = null;
+    $("reset-password").value = "";
+    $("reset-password-again").value = "";
+    announce(`Password changed. You are signed in as ${r.username}; other browsers were signed out.`);
+    signedIn(r, true);
+  } catch (err) {
+    showError(err.message);
+    if (/link/i.test(err.message)) {
+      // The link is used up or expired: offer a new one.
+      showForgot();
+    } else {
+      markInvalid("reset-password", true);
+      $("reset-password").focus();
+    }
+  }
+});
 
 async function submitCredentials(path) {
   clearError();
@@ -125,8 +372,12 @@ async function submitCredentials(path) {
   try {
     const r = await api("POST", path, { username, password });
     $("password").value = "";
-    announce(`Signed in as ${r.username}.`);
-    signedIn(r.username, true);
+    let me = { username: r.username };
+    try { me = await api("GET", "/api/v1/me"); } catch (_) { /* loaded again below */ }
+    announce(me.email === null
+      ? `Signed in as ${r.username}. This account has no email address; adding one is highly recommended.`
+      : `Signed in as ${r.username}.`);
+    signedIn(me, true);
   } catch (e) {
     showError(e.message);
     $("password").focus();
@@ -147,8 +398,7 @@ function markInvalid(id, invalid) {
 
 function showCreateAccount() {
   clearError();
-  $("sign-in-section").hidden = true;
-  $("create-account-section").hidden = false;
+  showOnly("create-account-section");
   // Carry over a name already typed on the sign-in form.
   if (!$("new-username").value) $("new-username").value = $("username").value.trim();
   $("create-account-heading").focus();
@@ -158,8 +408,7 @@ $("show-create-account").addEventListener("click", showCreateAccount);
 
 $("back-to-sign-in").addEventListener("click", () => {
   clearError();
-  $("create-account-section").hidden = true;
-  $("sign-in-section").hidden = false;
+  showSignIn();
   $("sign-in-heading").focus();
 });
 
@@ -167,16 +416,19 @@ $("create-account-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   clearError();
   const username = $("new-username").value.trim();
+  const email = $("new-email").value.trim();
   const password = $("new-password").value;
   const again = $("new-password-again").value;
-  for (const id of ["new-username", "new-password", "new-password-again"]) markInvalid(id, false);
+  for (const id of ["new-username", "new-email", "new-password", "new-password-again"]) markInvalid(id, false);
   // The server checks everything again; these catch the common slips
   // without a round trip.
   let problem = null;
   if (!username) problem = ["new-username", "Enter a username."];
   else if (!/^[A-Za-z0-9._-]{1,64}$/.test(username)) {
     problem = ["new-username", "A username may contain only letters, digits, dots, dashes and underscores, up to 64 characters."];
-  } else if ([...password].length < 10) problem = ["new-password", "The password must be at least 10 characters long."];
+  } else if (!email) problem = ["new-email", "Enter an email address. It is used only to reset your password if you forget it."];
+  else if (!looksLikeEmail(email)) problem = ["new-email", "Enter an email address like name@example.com."];
+  else if ([...password].length < 10) problem = ["new-password", "The password must be at least 10 characters long."];
   else if (password !== again) problem = ["new-password-again", "The two passwords are different. Type the same password in both fields."];
   if (problem) {
     markInvalid(problem[0], true);
@@ -185,17 +437,20 @@ $("create-account-form").addEventListener("submit", async (e) => {
     return;
   }
   try {
-    const r = await api("POST", "/api/v1/register", { username, password });
+    const r = await api("POST", "/api/v1/register", { username, password, email });
     $("new-password").value = "";
     $("new-password-again").value = "";
-    announce(`Account ${r.username} created. You are signed in.`);
-    signedIn(r.username, true);
+    announce(state.passwordReset
+      ? `Account ${r.username} created. You are signed in. AudioNet emailed a link to ${email}; open it to confirm the address.`
+      : `Account ${r.username} created. You are signed in.`);
+    signedIn({ username: r.username, email, email_verified: false }, true);
   } catch (err) {
     showError(err.message);
-    // Send focus where the fix is: the name when it is taken or not
-    // allowed, else the password.
-    const field = /username|reserved/i.test(err.message) && !/password/i.test(err.message)
-      ? "new-username" : "new-password";
+    // Send focus where the fix is: the email address, the name when it is
+    // taken or not allowed, else the password.
+    const field = /email/i.test(err.message) ? "new-email"
+      : /username|reserved/i.test(err.message) && !/password/i.test(err.message)
+        ? "new-username" : "new-password";
     markInvalid(field, true);
     $(field).focus();
   }
@@ -206,6 +461,8 @@ $("sign-out").addEventListener("click", async () => {
   if (state.ws) { state.ws.onclose = null; state.ws.close(); state.ws = null; }
   try { await api("POST", "/api/v1/logout"); } catch (_) { /* already signed out */ }
   state.nodes.clear();
+  state.email = null;
+  closeEmailForm(false);
   $("devices").textContent = "";
   showSignIn();
   announce("Signed out.");

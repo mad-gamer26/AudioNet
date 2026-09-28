@@ -267,6 +267,22 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertTrue(waitUntil(5) { !app.textViews["statusLog"].exists }, "the status log dialog did not close")
     }
 
+    /// "Forgot Password?" opens the server's web client for a reset link;
+    /// without a server address it says so and focuses that field (so no
+    /// browser opens during the test).
+    func testForgotPasswordNeedsTheServerAddress() throws {
+        let app = launch()
+        let forgot = app.buttons["forgotPassword"]
+        XCTAssertTrue(forgot.waitForExistence(timeout: 10))
+        XCTAssertEqual(forgot.title.isEmpty ? forgot.label : forgot.title, "Forgot Password?")
+        app.textFields["username"].click()
+        forgot.click()
+        XCTAssertTrue((app.textFields["server"].value(forKey: "hasKeyboardFocus") as? Bool) == true, "focus did not move to the server address")
+        openLog(app)
+        XCTAssertTrue(waitForLog(app, "Enter the server address first"), "status log: \(logText(app))")
+        closeLog(app)
+    }
+
     /// Signed in to two accounts: online at once, not sharing (a switch per
     /// account); choose a device, listen (to a silent source, on a silent
     /// output when there is one; receiving needs no sharing), sending

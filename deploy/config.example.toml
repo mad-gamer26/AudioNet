@@ -39,6 +39,16 @@ session_days = 30
 # Extra origins allowed to use browser sessions (defaults to public_url's origin).
 # allowed_origins = ["https://audionet.example.com"]
 
+# Email, used only to confirm addresses and send password-reset links.
+# Without it, accounts still keep their addresses, but "Forgot your
+# password?" is off. The password comes from AUDIONET_SMTP_PASSWORD.
+# [email]
+# from = "AudioNet <no-reply@audionet.example.com>"
+# smtp_host = "smtp.example.com"
+# smtp_security = "starttls"   # or "tls" (port 465); "none" only for localhost
+# smtp_port = 587
+# smtp_username = "no-reply@audionet.example.com"
+
 [ice]
 # STUN lets devices discover their public address; TURN relays audio when a
 # direct connection is impossible. coturn provides both (see deploy/coturn/).

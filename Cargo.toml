@@ -76,6 +76,9 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2
 uniffi = "0.32"
 # Hidden password prompt for `audionet node sign-in`.
 rpassword = "7.5"
+# Server email (address confirmation and password reset): SMTP with
+# STARTTLS or TLS and authentication, rustls and the system's certificates.
+lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "pool", "hostname", "builder", "tokio1", "tokio1-rustls", "ring", "rustls-platform-verifier"] }
 # TURN relay client for native sessions (sans-I/O, RFC 8656).
 turn-client-proto = "0.7.2"
 

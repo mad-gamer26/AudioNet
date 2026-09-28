@@ -37,10 +37,56 @@
           <button type="submit">Sign in</button>
         </p>
       </form>
+      <p id="forgot-offer" hidden>
+        <button type="button" id="show-forgot">Forgot your password?</button>
+      </p>
       <p id="create-account-offer" hidden>
         New to AudioNet?
         <button type="button" id="show-create-account">Create an account</button>
       </p>
+    </section>
+
+    <section id="forgot-section" aria-labelledby="forgot-heading" hidden>
+      <h2 id="forgot-heading" tabindex="-1">Reset your password</h2>
+      <p>
+        Enter your username or email address. If the account has a confirmed
+        email address, AudioNet emails it a link to choose a new password.
+      </p>
+      <form id="forgot-form" novalidate>
+        <p>
+          <label for="forgot-account">Username or email address</label>
+          <input id="forgot-account" name="account" autocomplete="username" required maxlength="254">
+        </p>
+        <p>
+          <button type="submit">Email me a link</button>
+          <button type="button" id="forgot-back">Back to sign in</button>
+        </p>
+      </form>
+      <p id="forgot-sent" hidden></p>
+    </section>
+
+    <section id="reset-section" aria-labelledby="reset-heading" hidden>
+      <h2 id="reset-heading" tabindex="-1">Choose a new password</h2>
+      <p>
+        Setting a new password signs out every browser signed in to your
+        account. Your devices stay signed in.
+      </p>
+      <form id="reset-form" novalidate>
+        <p>
+          <label for="reset-password">New password</label>
+          <input id="reset-password" name="password" type="password" autocomplete="new-password" required
+                 aria-describedby="reset-password-hint">
+          <span id="reset-password-hint" class="hint">At least 10 characters, and not containing your username.</span>
+        </p>
+        <p>
+          <label for="reset-password-again">New password again</label>
+          <input id="reset-password-again" name="password-again" type="password" autocomplete="new-password" required>
+        </p>
+        <p>
+          <button type="submit">Set the new password</button>
+          <button type="button" id="reset-back">Back to sign in</button>
+        </p>
+      </form>
     </section>
 
     <section id="create-account-section" aria-labelledby="create-account-heading" hidden>
@@ -57,6 +103,12 @@
           <span id="new-username-hint" class="hint">Letters, digits, dots, dashes and underscores, up to 64 characters.</span>
         </p>
         <p>
+          <label for="new-email">Email address</label>
+          <input id="new-email" name="email" type="email" autocomplete="email" required
+                 maxlength="254" aria-describedby="new-email-hint">
+          <span id="new-email-hint" class="hint">Used only to reset your password if you forget it. AudioNet emails a link to confirm it.</span>
+        </p>
+        <p>
           <label for="new-password">Password</label>
           <input id="new-password" name="password" type="password" autocomplete="new-password" required
                  aria-describedby="new-password-hint">
@@ -71,6 +123,16 @@
           <button type="button" id="back-to-sign-in">Back to sign in</button>
         </p>
       </form>
+    </section>
+
+    <!-- Shown to signed-in accounts without a confirmed email address. -->
+    <section id="email-banner" class="banner" aria-labelledby="email-banner-heading" hidden>
+      <h2 id="email-banner-heading"></h2>
+      <p id="email-banner-text"></p>
+      <p class="buttons">
+        <button type="button" id="banner-add-email">Add an email address</button>
+        <button type="button" id="banner-send-link" hidden>Send the link again</button>
+      </p>
     </section>
 
     <section id="app-section" aria-labelledby="devices-heading" hidden>
@@ -103,6 +165,28 @@
       </p>
       <pre id="sign-in-command" tabindex="0"></pre>
       <p><button type="button" id="copy-sign-in">Copy the command</button></p>
+
+      <h2 id="email-heading" tabindex="-1">Email address</h2>
+      <p id="email-state"></p>
+      <p><button type="button" id="change-email" aria-expanded="false" aria-controls="email-form">Change the email address</button></p>
+      <form id="email-form" novalidate hidden>
+        <p>
+          <label for="email-address">Email address</label>
+          <input id="email-address" name="email" type="email" autocomplete="email" required
+                 maxlength="254" aria-describedby="email-address-hint">
+          <span id="email-address-hint" class="hint">Used only to reset your password if you forget it. AudioNet emails a link to confirm it.</span>
+        </p>
+        <p>
+          <label for="email-password">Your password</label>
+          <input id="email-password" name="password" type="password" autocomplete="current-password" required
+                 aria-describedby="email-password-hint">
+          <span id="email-password-hint" class="hint">Needed to change where password-reset links go.</span>
+        </p>
+        <p>
+          <button type="submit">Save the email address</button>
+          <button type="button" id="email-cancel">Cancel</button>
+        </p>
+      </form>
 
     </section>
 

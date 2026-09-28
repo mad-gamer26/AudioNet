@@ -209,7 +209,7 @@ final class AppModel: ObservableObject {
                 self.connect(account)
                 done(true)
             case .failure(let error):
-                self.announce("Signing in failed: \(describe(error))")
+                self.announce("Signing in failed: \(describe(error))\(forgotHint(error))")
                 done(false)
             }
         }
@@ -592,6 +592,12 @@ final class AppModel: ObservableObject {
 }
 
 /// An error in words.
+/// After a wrong password, points to "Forgot Password?".
+func forgotHint(_ error: Error) -> String {
+    describe(error).contains("password is incorrect")
+        ? " If you forgot the password, choose Forgot Password?." : ""
+}
+
 func describe(_ error: Error) -> String {
     if case let AudioNetError.Failed(message) = error { return message }
     return error.localizedDescription

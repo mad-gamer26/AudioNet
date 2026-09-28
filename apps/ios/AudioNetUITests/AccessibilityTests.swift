@@ -159,6 +159,19 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertTrue(message.waitForExistence(timeout: 5), "the missing fields were not reported")
     }
 
+    /// "Forgot Password?" opens the server's web client for a reset link;
+    /// without a server address it says so (so Safari does not open during
+    /// the test).
+    func testForgotPasswordNeedsTheServerAddress() throws {
+        let app = launch()
+        let forgot = app.buttons["forgotPassword"]
+        XCTAssertTrue(forgot.waitForExistence(timeout: 15))
+        XCTAssertEqual(forgot.label, "Forgot Password?")
+        forgot.tap()
+        let message = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Enter the server address first'")).firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 5), "the missing server address was not reported")
+    }
+
     /// Signed in to two accounts (temporary test devices made by
     /// scripts/test/ios_ui_tests.py, passed as TEST_RUNNER_AUDIONET_TEST_ACCOUNT):
     /// online at once, not sharing (a switch per account); find the test

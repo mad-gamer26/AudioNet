@@ -6,6 +6,10 @@
 //!   (browsers always send it on POST, DELETE and WebSocket upgrades).
 //! * Devices: `Authorization: Bearer ann_…` device token, issued when the
 //!   device signs in with the account password.
+//!
+//! Email: new accounts give an address (older ones may add one); the server
+//! emails a link to confirm it, and password-reset links go only to
+//! confirmed addresses.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -25,15 +29,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::auth::{self, SignUpLimit, SignUpWait, Throttle, hash_token, new_token};
+use crate::auth::{self, HourlyLimit, HourlyWait, Throttle, hash_token, new_token};
 use crate::config::Config;
-use crate::db::{self, Db};
+use crate::db::{self, Db, EmailPurpose};
 use crate::hub::{Hub, NodeMeta, QUEUE_DEPTH};
+use crate::mail::{Mailer, validate_email};
 
 pub const COOKIE: &str = "audionet_session";
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const WS_PING: Duration = Duration::from_secs(20);
 const MAX_WS_MESSAGE: usize = 64 * 1024;
+/// How long a link confirming an email address works.
+const VERIFY_LINK_TTL_S: i64 = 7 * 86_400;
+/// How long a password-reset link works.
+const RESET_LINK_TTL_S: i64 = 3600;
+/// Emails one account may be sent per hour, and the whole server.
+const EMAILS_PER_ACCOUNT_PER_HOUR: u32 = 3;
+const EMAILS_PER_HOUR: u32 = 100;
+/// Password-reset requests one client address may make per hour.
+const RESET_REQUESTS_PER_ADDRESS_PER_HOUR: u32 = 10;
 
 #[derive(Debug)]
 pub struct AppState {
@@ -41,7 +55,27 @@ pub struct AppState {
     pub db: Db,
     pub hub: Hub,
     pub login_throttle: Throttle,
-    pub sign_up_limit: SignUpLimit,
+    pub sign_up_limit: HourlyLimit,
+    pub mailer: Mailer,
+    /// Emails sent per account.
+    pub email_limit: HourlyLimit,
+    /// Password-reset requests per client address.
+    pub reset_request_limit: HourlyLimit,
+}
+
+impl AppState {
+    pub fn new(config: Config, db: Db, mailer: Mailer) -> Self {
+        Self {
+            config,
+            db,
+            hub: Hub::default(),
+            login_throttle: Throttle::default(),
+            sign_up_limit: HourlyLimit::default(),
+            mailer,
+            email_limit: HourlyLimit::default(),
+            reset_request_limit: HourlyLimit::default(),
+        }
+    }
 }
 
 pub type Shared = Arc<AppState>;
@@ -284,6 +318,11 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/login", post(login))
         .route("/api/v1/logout", post(logout))
         .route("/api/v1/me", get(me))
+        .route("/api/v1/account/email", post(change_email))
+        .route("/api/v1/account/email/send-link", post(send_verify_link))
+        .route("/api/v1/email/verify", post(verify_email))
+        .route("/api/v1/password/forgot", post(forgot_password))
+        .route("/api/v1/password/reset", post(reset_password))
         .route("/api/v1/nodes/sign-in", post(sign_in_node))
         .route("/api/v1/nodes", get(list_nodes))
         .route("/api/v1/nodes/{id}", delete(remove_node).patch(rename_node))
@@ -302,6 +341,8 @@ async fn info(State(s): State<Shared>) -> Json<serde_json::Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "protocol_version": PROTOCOL_VERSION,
         "allow_registration": s.config.allow_registration,
+        "email_required": true,
+        "password_reset": s.mailer.enabled(),
         "downloads_path": downloads,
     }))
 }
@@ -310,6 +351,15 @@ async fn info(State(s): State<Shared>) -> Json<serde_json::Value> {
 struct Credentials {
     username: String,
     password: String,
+}
+
+#[derive(Deserialize)]
+struct NewAccount {
+    username: String,
+    password: String,
+    /// Required; `Option` only so a missing field gets a clear message.
+    #[serde(default)]
+    email: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -323,10 +373,22 @@ async fn register(
     State(s): State<Shared>,
     _o: BrowserOrigin,
     ClientAddress(address): ClientAddress,
-    Json(c): Json<Credentials>,
+    Json(c): Json<NewAccount>,
 ) -> ApiResult<Response> {
     let username = create_account(&s, &address, &c).await?;
     sign_in(&s, username).await
+}
+
+fn bad_email(m: &'static str) -> ApiError {
+    ApiError::new(StatusCode::BAD_REQUEST, "bad_email", m)
+}
+
+fn email_taken() -> ApiError {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "email_taken",
+        "Another account already uses that email address.",
+    )
 }
 
 /// Minutes, rounded up, for a message.
@@ -338,7 +400,7 @@ fn minutes(d: Duration) -> u64 {
 /// the apps only sign in): only when the server allows it, within the sign-up
 /// limits, and with the self-service name and password rules. Returns the
 /// username.
-async fn create_account(s: &Shared, address: &str, c: &Credentials) -> ApiResult<String> {
+async fn create_account(s: &Shared, address: &str, c: &NewAccount) -> ApiResult<String> {
     if !s.config.allow_registration {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
@@ -352,6 +414,7 @@ async fn create_account(s: &Shared, address: &str, c: &Credentials) -> ApiResult
         .map_err(|m| ApiError::new(StatusCode::BAD_REQUEST, "bad_password", m))?;
     auth::validate_new_account(&c.username, &c.password)
         .map_err(|m| ApiError::new(StatusCode::BAD_REQUEST, "bad_new_account", m))?;
+    let email = validate_email(c.email.as_deref().unwrap_or_default()).map_err(bad_email)?;
     let limits = &s.config;
     match s.sign_up_limit.check(
         address,
@@ -360,7 +423,7 @@ async fn create_account(s: &Shared, address: &str, c: &Credentials) -> ApiResult
         Instant::now(),
     ) {
         Ok(()) => {}
-        Err(SignUpWait::Address(d)) => {
+        Err(HourlyWait::Key(d)) => {
             return Err(ApiError::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 "sign_up_limit",
@@ -370,7 +433,7 @@ async fn create_account(s: &Shared, address: &str, c: &Credentials) -> ApiResult
                 ),
             ));
         }
-        Err(SignUpWait::Server(d)) => {
+        Err(HourlyWait::Total(d)) => {
             tracing::warn!("sign-up limit for the whole server reached");
             return Err(ApiError::new(
                 StatusCode::TOO_MANY_REQUESTS,
@@ -388,19 +451,113 @@ async fn create_account(s: &Shared, address: &str, c: &Credentials) -> ApiResult
         .map_err(ApiError::internal)?
         .map_err(ApiError::internal)?;
     let name = c.username.clone();
+    let address_for_db = email.clone();
     let created =
-        s.db.call(move |conn| db::create_user(conn, &name, &hash))
-            .await;
-    if created.is_err() {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "username_taken",
-            "That username is taken. Choose another.",
-        ));
-    }
+        s.db.call(move |conn| {
+            if db::user_by_name(conn, &name)?.is_some() {
+                return Ok(Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "username_taken",
+                    "That username is taken. Choose another.",
+                )));
+            }
+            if db::email_taken(conn, &address_for_db, 0)? {
+                return Ok(Err(email_taken()));
+            }
+            let id = db::create_user(conn, &name, &hash)?;
+            db::set_email(conn, id, Some(&address_for_db), false)?;
+            Ok(Ok(id))
+        })
+        .await;
+    let user_id = match created {
+        Ok(Ok(id)) => id,
+        Ok(Err(e)) => return Err(e),
+        // Lost a race with another sign-up for the same name or address.
+        Err(_) => {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "username_taken",
+                "That username or email address is taken. Choose another.",
+            ));
+        }
+    };
     s.sign_up_limit.record(address, Instant::now());
     tracing::info!(user = %c.username, "account created");
+    send_link(s, user_id, &c.username, &email, EmailPurpose::Verify).await?;
     Ok(c.username.clone())
+}
+
+/// The server's host name, as emails name it.
+fn server_host(s: &AppState) -> String {
+    crate::config::origin_of(&s.config.public_url)
+        .and_then(|o| o.split_once("://").map(|(_, h)| h.to_owned()))
+        .unwrap_or_else(|| s.config.public_url.clone())
+}
+
+/// Emails `user` a link of the given kind, if the server can send email and
+/// the account has not had too many emails this hour. Returns whether it was
+/// sent.
+async fn send_link(
+    s: &Shared,
+    user_id: i64,
+    username: &str,
+    email: &str,
+    purpose: EmailPurpose,
+) -> ApiResult<bool> {
+    if !s.mailer.enabled() {
+        return Ok(false);
+    }
+    let key = format!("user:{user_id}");
+    if s.email_limit
+        .check(
+            &key,
+            EMAILS_PER_ACCOUNT_PER_HOUR,
+            EMAILS_PER_HOUR,
+            Instant::now(),
+        )
+        .is_err()
+    {
+        tracing::warn!(user = %username, "email limit reached; not sending");
+        return Ok(false);
+    }
+    let (prefix, ttl, param) = match purpose {
+        EmailPurpose::Verify => ("anv_", VERIFY_LINK_TTL_S, "verify"),
+        EmailPurpose::Reset => ("anr_", RESET_LINK_TTL_S, "reset"),
+    };
+    let token = new_token(prefix);
+    let hash = hash_token(&token);
+    let to = email.to_owned();
+    s.db.call(move |c| db::create_email_token(c, &hash, user_id, purpose, &to, ttl))
+        .await?;
+    s.email_limit.record(&key, Instant::now());
+    let link = format!(
+        "{}/?{param}={token}",
+        s.config.public_url.trim_end_matches('/')
+    );
+    let host = server_host(s);
+    let (subject, body) = match purpose {
+        EmailPurpose::Verify => (
+            "Confirm your email address for AudioNet",
+            format!(
+                "Hello {username},\n\n\
+                 Confirm that this is the email address for your AudioNet account on {host} by opening this link:\n\n\
+                 {link}\n\n\
+                 The link works for 7 days. AudioNet uses this address only to reset your password if you forget it.\n\n\
+                 If you did not create an AudioNet account or add this address, you can ignore this email.\n"
+            ),
+        ),
+        EmailPurpose::Reset => (
+            "Reset your AudioNet password",
+            format!(
+                "Hello {username},\n\n\
+                 Someone, hopefully you, asked to reset the password for your AudioNet account on {host}. To choose a new password, open this link:\n\n\
+                 {link}\n\n\
+                 The link works for 1 hour, once. If you did not ask for this, ignore this email; your password stays the same.\n"
+            ),
+        ),
+    };
+    s.mailer.send_later(email.to_owned(), subject, body);
+    Ok(true)
 }
 
 async fn sign_in(s: &Shared, username: String) -> ApiResult<Response> {
@@ -550,8 +707,282 @@ async fn logout(State(s): State<Shared>, headers: HeaderMap, _p: Principal) -> A
     Ok(resp)
 }
 
-async fn me(p: Principal) -> Json<serde_json::Value> {
-    Json(json!({ "username": p.username, "node_id": p.node.map(|n| n.id) }))
+async fn me(State(s): State<Shared>, p: Principal) -> ApiResult<Json<serde_json::Value>> {
+    let uid = p.user_id;
+    let user =
+        s.db.call(move |c| db::user_by_id(c, uid))
+            .await?
+            .ok_or_else(|| {
+                ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "Please sign in.")
+            })?;
+    Ok(Json(json!({
+        "username": p.username,
+        "node_id": p.node.map(|n| n.id),
+        "email": user.email,
+        "email_verified": user.email_verified,
+    })))
+}
+
+#[derive(Deserialize)]
+struct ChangeEmail {
+    email: String,
+    /// The account password, so an unattended signed-in browser cannot
+    /// redirect password resets.
+    password: String,
+}
+
+/// Sets the account's email address (unconfirmed) and emails a link to
+/// confirm it.
+async fn change_email(
+    State(s): State<Shared>,
+    p: Principal,
+    Json(r): Json<ChangeEmail>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let email = validate_email(&r.email).map_err(bad_email)?;
+    check_credentials(
+        &s,
+        Credentials {
+            username: p.username.clone(),
+            password: r.password,
+        },
+    )
+    .await
+    .map_err(|e| {
+        if e.code == "bad_credentials" {
+            ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "bad_password",
+                "The password is incorrect.",
+            )
+        } else {
+            e
+        }
+    })?;
+    let uid = p.user_id;
+    let address = email.clone();
+    let taken =
+        s.db.call(move |c| {
+            if db::email_taken(c, &address, uid)? {
+                return Ok(true);
+            }
+            db::set_email(c, uid, Some(&address), false)?;
+            Ok(false)
+        })
+        .await
+        .map_err(|_| email_taken())?;
+    if taken {
+        return Err(email_taken());
+    }
+    tracing::info!(user = %p.username, "email address changed");
+    let sent = send_link(&s, uid, &p.username, &email, EmailPurpose::Verify).await?;
+    Ok(Json(json!({
+        "email": email,
+        "email_verified": false,
+        "link_sent": sent,
+    })))
+}
+
+/// Emails the account's address another confirmation link.
+async fn send_verify_link(
+    State(s): State<Shared>,
+    p: Principal,
+) -> ApiResult<Json<serde_json::Value>> {
+    let uid = p.user_id;
+    let user =
+        s.db.call(move |c| db::user_by_id(c, uid))
+            .await?
+            .ok_or_else(|| {
+                ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "Please sign in.")
+            })?;
+    let Some(email) = user.email else {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "no_email",
+            "This account has no email address. Add one first.",
+        ));
+    };
+    if user.email_verified {
+        return Ok(Json(json!({ "email_verified": true, "link_sent": false })));
+    }
+    if !s.mailer.enabled() {
+        return Err(no_email_service());
+    }
+    if !send_link(&s, uid, &p.username, &email, EmailPurpose::Verify).await? {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "email_limit",
+            "Several emails were sent to this account in the last hour. Wait an hour, then try again.",
+        ));
+    }
+    Ok(Json(json!({ "email_verified": false, "link_sent": true })))
+}
+
+fn no_email_service() -> ApiError {
+    ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "email_unavailable",
+        "This server cannot send email. Ask its administrator.",
+    )
+}
+
+fn link_invalid() -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "link_invalid",
+        "This link has expired or was already used. Ask for a new one.",
+    )
+}
+
+#[derive(Deserialize)]
+struct LinkToken {
+    token: String,
+}
+
+/// Confirms an email address from the emailed link.
+async fn verify_email(
+    State(s): State<Shared>,
+    _o: BrowserOrigin,
+    Json(r): Json<LinkToken>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let hash = hash_token(&r.token);
+    let user =
+        s.db.call(move |c| {
+            let user = db::take_email_token(c, &hash, EmailPurpose::Verify)?;
+            if let Some(u) = &user {
+                db::mark_email_verified(c, u.id)?;
+            }
+            Ok(user)
+        })
+        .await?
+        .ok_or_else(link_invalid)?;
+    tracing::info!(user = %user.username, "email address confirmed");
+    Ok(Json(json!({
+        "username": user.username,
+        "email": user.email,
+        "email_verified": true,
+    })))
+}
+
+#[derive(Deserialize)]
+struct Forgot {
+    /// Username or email address.
+    account: String,
+}
+
+/// Emails a password-reset link to the account's confirmed address. The
+/// answer is the same whether or not the account exists or has one.
+async fn forgot_password(
+    State(s): State<Shared>,
+    _o: BrowserOrigin,
+    ClientAddress(address): ClientAddress,
+    Json(r): Json<Forgot>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !s.mailer.enabled() {
+        return Err(no_email_service());
+    }
+    let account = r.account.trim().to_owned();
+    if account.is_empty() || account.len() > 254 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_account",
+            "Enter your username or email address.",
+        ));
+    }
+    if let Err(HourlyWait::Key(d) | HourlyWait::Total(d)) = s.reset_request_limit.check(
+        &address,
+        RESET_REQUESTS_PER_ADDRESS_PER_HOUR,
+        u32::MAX,
+        Instant::now(),
+    ) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "reset_limit",
+            format!(
+                "Too many password resets were requested from your network. Try again in {} minutes.",
+                minutes(d)
+            ),
+        ));
+    }
+    s.reset_request_limit.record(&address, Instant::now());
+    let user =
+        s.db.call(move |c| {
+            if account.contains('@') {
+                db::user_by_email(c, &account)
+            } else {
+                db::user_by_name(c, &account)
+            }
+        })
+        .await?;
+    match user {
+        Some(db::User {
+            id,
+            username,
+            email: Some(email),
+            email_verified: true,
+            ..
+        }) => {
+            if send_link(&s, id, &username, &email, EmailPurpose::Reset).await? {
+                tracing::info!(user = %username, "password reset link sent");
+            }
+        }
+        Some(u) => {
+            tracing::info!(user = %u.username, "password reset asked for an account without a confirmed email address")
+        }
+        None => {}
+    }
+    Ok(Json(json!({ "requested": true })))
+}
+
+#[derive(Deserialize)]
+struct ResetPassword {
+    token: String,
+    password: String,
+}
+
+/// Sets a new password from an emailed link, signs out the account's web
+/// sessions, and signs this browser in.
+async fn reset_password(
+    State(s): State<Shared>,
+    _o: BrowserOrigin,
+    Json(r): Json<ResetPassword>,
+) -> ApiResult<Response> {
+    auth::validate_password(&r.password)
+        .map_err(|m| ApiError::new(StatusCode::BAD_REQUEST, "bad_password", m))?;
+    // Check the password against the name before using up the link, so a
+    // rejected password does not cost the link.
+    let hash = hash_token(&r.token);
+    let peek = hash.clone();
+    let owner =
+        s.db.call(move |c| db::email_token_owner(c, &peek, EmailPurpose::Reset))
+            .await?
+            .ok_or_else(link_invalid)?;
+    if r.password.to_lowercase().contains(&owner.to_lowercase()) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_password",
+            "The password must not contain the username.",
+        ));
+    }
+    let password = r.password;
+    let new_hash = tokio::task::spawn_blocking(move || auth::hash_password(&password))
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(ApiError::internal)?;
+    let user =
+        s.db.call(move |c| {
+            let user = db::take_email_token(c, &hash, EmailPurpose::Reset)?;
+            if let Some(u) = &user {
+                db::set_password(c, u.id, &new_hash)?;
+                // The link reached the address, so it is confirmed.
+                db::mark_email_verified(c, u.id)?;
+            }
+            Ok(user)
+        })
+        .await?
+        .ok_or_else(link_invalid)?;
+    s.login_throttle.success(&user.username.to_lowercase());
+    tracing::info!(user = %user.username, "password reset");
+    sign_in(&s, user.username).await
 }
 
 async fn list_nodes(State(s): State<Shared>, p: Principal) -> ApiResult<Json<serde_json::Value>> {

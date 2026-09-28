@@ -1,6 +1,6 @@
 [package]
 name = "audionet-server"
-description = "AudioNet coordination server: accounts, device pairing, presence and WebRTC signaling. Self-hostable."
+description = "AudioNet coordination server: accounts, device sign-in, presence and WebRTC signaling. Self-hostable."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -30,6 +30,7 @@ serde.workspace = true
 serde_json.workspace = true
 clap = { workspace = true, features = ["env"] }
 futures-util.workspace = true
+lettre.workspace = true
 
 [dev-dependencies]
 tokio-tungstenite.workspace = true

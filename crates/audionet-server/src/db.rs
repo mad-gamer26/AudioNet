@@ -1,4 +1,5 @@
-//! SQLite storage: users, web sign-in sessions and devices (nodes).
+//! SQLite storage: users, web sign-in sessions, devices (nodes) and email
+//! links (address confirmation, password reset).
 //!
 //! Secrets are never stored directly: passwords are argon2id hashes and all
 //! tokens are stored as SHA-256 hashes.
@@ -10,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::auth::TokenHash;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Clone)]
 pub struct Db {
@@ -28,6 +29,27 @@ pub struct User {
     pub id: i64,
     pub username: String,
     pub password_hash: String,
+    /// Optional for accounts made before email addresses were required.
+    pub email: Option<String>,
+    pub email_verified: bool,
+}
+
+/// What an emailed link is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmailPurpose {
+    /// Confirms the address it was sent to.
+    Verify,
+    /// Sets a new password.
+    Reset,
+}
+
+impl EmailPurpose {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Verify => "verify",
+            Self::Reset => "reset",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +110,22 @@ impl Db {
             // codes no longer exist.
             conn.execute_batch("DROP TABLE IF EXISTS pairing_codes;")?;
         }
+        if version < 3 {
+            // Version 3: email addresses (required for new accounts, optional
+            // for older ones) and single-use emailed links, stored hashed.
+            conn.execute_batch(
+                "ALTER TABLE users ADD COLUMN email TEXT;
+                ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;
+                CREATE UNIQUE INDEX users_email ON users (email COLLATE NOCASE);
+                CREATE TABLE email_tokens (
+                    token_hash BLOB PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    purpose TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL
+                );",
+            )?;
+        }
         if version < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
@@ -130,19 +168,149 @@ pub fn create_user(c: &Connection, username: &str, password_hash: &str) -> rusql
     Ok(c.last_insert_rowid())
 }
 
+const USER_COLUMNS: &str = "id, username, password_hash, email, email_verified";
+
+fn user_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
+    Ok(User {
+        id: r.get(0)?,
+        username: r.get(1)?,
+        password_hash: r.get(2)?,
+        email: r.get(3)?,
+        email_verified: r.get(4)?,
+    })
+}
+
 pub fn user_by_name(c: &Connection, username: &str) -> rusqlite::Result<Option<User>> {
     c.query_row(
-        "SELECT id, username, password_hash FROM users WHERE username = ?1",
+        &format!("SELECT {USER_COLUMNS} FROM users WHERE username = ?1"),
         params![username],
-        |r| {
-            Ok(User {
-                id: r.get(0)?,
-                username: r.get(1)?,
-                password_hash: r.get(2)?,
-            })
-        },
+        user_row,
     )
     .optional()
+}
+
+pub fn user_by_id(c: &Connection, id: i64) -> rusqlite::Result<Option<User>> {
+    c.query_row(
+        &format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?1"),
+        params![id],
+        user_row,
+    )
+    .optional()
+}
+
+pub fn user_by_email(c: &Connection, email: &str) -> rusqlite::Result<Option<User>> {
+    c.query_row(
+        &format!("SELECT {USER_COLUMNS} FROM users WHERE email = ?1 COLLATE NOCASE"),
+        params![email],
+        user_row,
+    )
+    .optional()
+}
+
+/// Whether another account already uses `email`.
+pub fn email_taken(c: &Connection, email: &str, except_user: i64) -> rusqlite::Result<bool> {
+    c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE email = ?1 COLLATE NOCASE AND id != ?2)",
+        params![email, except_user],
+        |r| r.get(0),
+    )
+}
+
+/// Sets (or, with `None`, removes) a user's address. A new address is
+/// unconfirmed unless `verified`; outstanding links for the old one stop
+/// working.
+pub fn set_email(
+    c: &Connection,
+    user_id: i64,
+    email: Option<&str>,
+    verified: bool,
+) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE users SET email = ?1, email_verified = ?2 WHERE id = ?3",
+        params![email, verified, user_id],
+    )?;
+    c.execute(
+        "DELETE FROM email_tokens WHERE user_id = ?1",
+        params![user_id],
+    )?;
+    Ok(())
+}
+
+/// Stores a new emailed link for `user_id`, replacing any earlier link for
+/// the same purpose (only the newest one works).
+pub fn create_email_token(
+    c: &Connection,
+    hash: &TokenHash,
+    user_id: i64,
+    purpose: EmailPurpose,
+    email: &str,
+    ttl_s: i64,
+) -> rusqlite::Result<()> {
+    let now = now_s();
+    c.execute(
+        "DELETE FROM email_tokens WHERE expires_at < ?1 OR (user_id = ?2 AND purpose = ?3)",
+        params![now, user_id, purpose.as_str()],
+    )?;
+    c.execute(
+        "INSERT INTO email_tokens (token_hash, user_id, purpose, email, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![&hash.0[..], user_id, purpose.as_str(), email, now + ttl_s],
+    )?;
+    Ok(())
+}
+
+/// Uses up a link: returns its user if it exists, has not expired, is for
+/// `purpose`, and was sent to the address the account has now.
+pub fn take_email_token(
+    c: &Connection,
+    hash: &TokenHash,
+    purpose: EmailPurpose,
+) -> rusqlite::Result<Option<User>> {
+    let found: Option<(i64, String, i64)> = c
+        .query_row(
+            "SELECT user_id, email, expires_at FROM email_tokens WHERE token_hash = ?1 AND purpose = ?2",
+            params![&hash.0[..], purpose.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((user_id, email, expires_at)) = found else {
+        return Ok(None);
+    };
+    c.execute(
+        "DELETE FROM email_tokens WHERE token_hash = ?1",
+        params![&hash.0[..]],
+    )?;
+    if expires_at <= now_s() {
+        return Ok(None);
+    }
+    let user = user_by_id(c, user_id)?;
+    Ok(user.filter(|u| {
+        u.email
+            .as_deref()
+            .is_some_and(|e| e.eq_ignore_ascii_case(&email))
+    }))
+}
+
+/// The username a live link belongs to, without using it up.
+pub fn email_token_owner(
+    c: &Connection,
+    hash: &TokenHash,
+    purpose: EmailPurpose,
+) -> rusqlite::Result<Option<String>> {
+    c.query_row(
+        "SELECT u.username FROM email_tokens t JOIN users u ON u.id = t.user_id
+         WHERE t.token_hash = ?1 AND t.purpose = ?2 AND t.expires_at > ?3",
+        params![&hash.0[..], purpose.as_str(), now_s()],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+pub fn mark_email_verified(c: &Connection, user_id: i64) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE users SET email_verified = 1 WHERE id = ?1",
+        params![user_id],
+    )?;
+    Ok(())
 }
 
 pub fn set_password(c: &Connection, user_id: i64, password_hash: &str) -> rusqlite::Result<()> {
@@ -158,9 +326,11 @@ pub fn set_password(c: &Connection, user_id: i64, password_hash: &str) -> rusqli
     Ok(())
 }
 
-pub fn list_users(c: &Connection) -> rusqlite::Result<Vec<String>> {
-    let mut s = c.prepare("SELECT username FROM users ORDER BY username")?;
-    s.query_map([], |r| r.get(0))?.collect()
+pub fn list_users(c: &Connection) -> rusqlite::Result<Vec<User>> {
+    let mut s = c.prepare(&format!(
+        "SELECT {USER_COLUMNS} FROM users ORDER BY username COLLATE NOCASE"
+    ))?;
+    s.query_map([], user_row)?.collect()
 }
 
 pub fn delete_user(c: &Connection, username: &str) -> rusqlite::Result<bool> {
@@ -331,5 +501,81 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn email_addresses_and_links() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|c| {
+            let a = create_user(c, "alice", "hash")?;
+            let b = create_user(c, "bob", "hash")?;
+            assert_eq!(user_by_name(c, "alice")?.unwrap().email, None);
+            set_email(c, a, Some("Alice@Example.com"), false)?;
+            assert!(email_taken(c, "alice@example.COM", b)?);
+            assert!(!email_taken(c, "alice@example.com", a)?);
+            assert!(
+                set_email(c, b, Some("alice@example.com"), false).is_err(),
+                "one account per address"
+            );
+            assert_eq!(user_by_email(c, "ALICE@example.com")?.unwrap().id, a);
+
+            let t = hash_token("verify-link");
+            create_email_token(c, &t, a, EmailPurpose::Verify, "Alice@Example.com", 60)?;
+            assert!(
+                take_email_token(c, &t, EmailPurpose::Reset)?.is_none(),
+                "wrong purpose"
+            );
+            let u = take_email_token(c, &t, EmailPurpose::Verify)?.unwrap();
+            assert_eq!(u.id, a);
+            assert!(
+                take_email_token(c, &t, EmailPurpose::Verify)?.is_none(),
+                "single use"
+            );
+
+            // Only the newest reset link works, and changing the address
+            // cancels links sent to the old one.
+            let r1 = hash_token("reset-1");
+            let r2 = hash_token("reset-2");
+            create_email_token(c, &r1, a, EmailPurpose::Reset, "alice@example.com", 60)?;
+            create_email_token(c, &r2, a, EmailPurpose::Reset, "alice@example.com", 60)?;
+            assert!(take_email_token(c, &r1, EmailPurpose::Reset)?.is_none());
+            set_email(c, a, Some("new@example.com"), false)?;
+            assert!(take_email_token(c, &r2, EmailPurpose::Reset)?.is_none());
+
+            // Expired links do not work.
+            let old = hash_token("old");
+            create_email_token(c, &old, a, EmailPurpose::Reset, "new@example.com", -1)?;
+            assert!(take_email_token(c, &old, EmailPurpose::Reset)?.is_none());
+
+            // Several accounts may have no address.
+            set_email(c, a, None, false)?;
+            assert!(!email_taken(c, "new@example.com", b)?);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn upgrades_a_version_2_database() {
+        let dir = std::env::temp_dir().join(format!("audionet-db-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("v2.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);
+                 CREATE TABLE web_sessions (token_hash BLOB PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+                 CREATE TABLE nodes (id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, platform TEXT, token_hash BLOB NOT NULL UNIQUE, created_at INTEGER NOT NULL, last_seen INTEGER);
+                 INSERT INTO users (username, password_hash, created_at) VALUES ('old', 'h', 0);
+                 PRAGMA user_version = 2;",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let u = db.with(|c| user_by_name(c, "old")).unwrap().unwrap();
+        assert_eq!((u.email, u.email_verified), (None, false));
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
