@@ -96,7 +96,8 @@ $zip = Join-Path $OutDir "$name.zip"
 Remove-Item -Force $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path "$stage/*" -DestinationPath $zip
 $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
-"$hash  $name.zip" | Set-Content -Encoding ascii "$zip.sha256"
+# One line ending in LF, so `sha256sum -c` / `shasum -c` read it on any system.
+[System.IO.File]::WriteAllText("$zip.sha256", "$hash  $name.zip`n", [System.Text.Encoding]::ASCII)
 Write-Output "Package: $zip"
 Write-Output "SHA-256: $hash"
 if ($UpdateUrl -ne "") {
