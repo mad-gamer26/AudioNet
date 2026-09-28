@@ -65,11 +65,15 @@ python scripts/release_sign.py keygen %USERPROFILE%\.audionet-release\update-sig
    The script refuses to build if the signing key does not match the
    committed public key. It writes the zip, its `.sha256`, `latest.json`
    and `latest.json.sig` to `dist/`.
-3. Update `deploy/official/downloads/index.html` (file name and checksum).
-4. Copy the zip, `.sha256`, `latest.json`, `latest.json.sig` and
-   `index.html` to `/opt/audionet/downloads/` on the server. Publish
-   `latest.json` and its signature last, so no one is offered a package
-   that is not there yet.
+3. For automatic updates, copy the zip and its `.sha256` to
+   `/opt/audionet/downloads/` on the server, then `latest.json` and its
+   signature last, so no one is offered a package that is not there yet.
+   The apps only accept a package next to the manifest, so the update
+   files stay on the server; older zips there can be removed.
+4. For people downloading AudioNet, publish a GitHub release (tag
+   `v<version>`) with the Windows and Mac zips and their `.sha256` files
+   attached, and the install steps in its notes. The web client and the
+   server's `/downloads/` page link to the latest release.
 
 ## Self-hosters and forks
 
@@ -139,8 +143,9 @@ being moved there by the person who uses it.
      --product audionet-macos-universal --name latest-macos.json
    ```
 
-3. Update `deploy/official/downloads/index.html`. Publish the zip,
-   `.sha256` and page first, then `latest-macos.json` and its `.sig`.
+3. Publish the zip and `.sha256` on the server first, then
+   `latest-macos.json` and its `.sig`; attach the zip and `.sha256` to the
+   same GitHub release as the Windows app.
 
 ## Testing
 

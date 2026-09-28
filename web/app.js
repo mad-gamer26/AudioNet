@@ -93,10 +93,6 @@ async function start() {
   try {
     const info = await api("GET", "/api/v1/info");
     $("create-account-offer").hidden = !info.allow_registration;
-    if (info.downloads_path) {
-      $("download-link").href = info.downloads_path;
-      $("download").hidden = false;
-    }
   } catch (_) { /* optional */ }
   try {
     const me = await api("GET", "/api/v1/me");
