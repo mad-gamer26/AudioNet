@@ -589,10 +589,11 @@ async fn a_device_that_does_not_share_receives_but_does_not_send() {
     println!("the laptop (not sharing) plays the phone: {level:.1} dBFS at {hz:.0} Hz");
     assert!(
         level > -20.0 && (hz - TONE_HZ).abs() < 15.0,
-        "{level:.1} dBFS at {hz:.0} Hz (laptop: {}; phone: {}; laptop receiver: {})",
+        "{level:.1} dBFS at {hz:.0} Hz (laptop: {}; phone: {}; laptop receiver: {}; phone sender: {})",
         laptop_audio.timing(),
         phone_audio.timing(),
-        latest_diagnostics(&mut laptop_events)
+        latest_diagnostics(&mut laptop_events),
+        latest_diagnostics(&mut phone_events)
     );
 
     // ...and listens to the phone.
