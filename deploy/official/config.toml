@@ -1,0 +1,18 @@
+# /etc/audionet/config.toml on the official instance.
+public_url = "https://audionet.mad-gamer.com"
+bind = "127.0.0.1:8740"
+database = "/var/lib/audionet/audionet.db"
+web_root = "/opt/audionet/web"
+downloads_dir = "/opt/audionet/downloads"
+allow_registration = true
+# nginx's proxy-common.conf sets X-Real-IP from $remote_addr.
+client_address_header = "X-Real-IP"
+
+[ice]
+stun_urls = ["stun:audionet.mad-gamer.com:3478"]
+turn_urls = [
+  "turn:audionet.mad-gamer.com:3478?transport=udp",
+  "turn:audionet.mad-gamer.com:3478?transport=tcp",
+  "turns:audionet.mad-gamer.com:5349?transport=tcp",
+]
+turn_credential_ttl_s = 3600

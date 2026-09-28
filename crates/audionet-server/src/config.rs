@@ -1,0 +1,245 @@
+//! Server configuration: a TOML file, with environment-variable overrides
+//! for secrets and deployment-specific values.
+//!
+//! Nothing here defaults to a particular host. Every deployment sets its own
+//! `public_url`; see `deploy/config.example.toml`.
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    /// The URL users and devices use to reach this server, e.g.
+    /// `https://audionet.example.com`. Determines cookie security and the
+    /// default allowed origin.
+    pub public_url: String,
+    /// Address the HTTP server listens on (normally behind a reverse proxy).
+    #[serde(default = "default_bind")]
+    pub bind: SocketAddr,
+    /// SQLite database file.
+    #[serde(default = "default_database")]
+    pub database: PathBuf,
+    /// Directory holding the web client. Omit to serve only the API.
+    #[serde(default)]
+    pub web_root: Option<PathBuf>,
+    /// Directory of downloadable AudioNet builds, served at `/downloads/`
+    /// and linked from the web client. Omit to offer no downloads.
+    #[serde(default)]
+    pub downloads_dir: Option<PathBuf>,
+    /// Origins allowed to use cookie-authenticated requests and the
+    /// WebSocket. Defaults to the origin of `public_url`.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+    /// Whether anyone can create an account (web client, apps, CLI).
+    #[serde(default)]
+    pub allow_registration: bool,
+    /// New accounts one client address may create per hour.
+    #[serde(default = "default_sign_ups_per_address")]
+    pub sign_ups_per_address_per_hour: u32,
+    /// New accounts the whole server accepts per hour.
+    #[serde(default = "default_sign_ups_total")]
+    pub sign_ups_per_hour: u32,
+    /// Request header carrying the client's address, set by the reverse
+    /// proxy in front of this server (nginx: `X-Real-IP`, set from
+    /// `$remote_addr`). Only name a header the proxy always overwrites.
+    /// Unset: the connection's own address (behind a proxy, that is the
+    /// proxy, so the per-address sign-up limit acts server-wide).
+    #[serde(default)]
+    pub client_address_header: Option<String>,
+    /// Web sign-in lifetime.
+    #[serde(default = "default_session_days")]
+    pub session_days: u32,
+    #[serde(default)]
+    pub ice: IceConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IceConfig {
+    /// STUN servers, e.g. `stun:audionet.example.com:3478`.
+    #[serde(default)]
+    pub stun_urls: Vec<String>,
+    /// TURN servers, e.g. `turn:audionet.example.com:3478?transport=udp`.
+    #[serde(default)]
+    pub turn_urls: Vec<String>,
+    /// Shared secret with the TURN server (coturn `static-auth-secret`).
+    /// Prefer the `AUDIONET_TURN_SECRET` environment variable.
+    #[serde(default)]
+    pub turn_secret: Option<String>,
+    /// Lifetime of generated TURN credentials.
+    #[serde(default = "default_turn_ttl")]
+    pub turn_credential_ttl_s: u64,
+}
+
+fn default_bind() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 8740))
+}
+fn default_database() -> PathBuf {
+    PathBuf::from("audionet.db")
+}
+fn default_session_days() -> u32 {
+    30
+}
+fn default_sign_ups_per_address() -> u32 {
+    3
+}
+fn default_sign_ups_total() -> u32 {
+    30
+}
+fn default_turn_ttl() -> u64 {
+    3600
+}
+
+impl Config {
+    /// Reads `path`, then applies `AUDIONET_*` environment overrides, and
+    /// validates everything needed to serve.
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let mut config = Self::load_unchecked(path)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Like [`load`](Self::load) but only checks what administrative
+    /// commands (user management) need: the TURN secret may be absent.
+    pub fn load_for_admin(path: &Path) -> Result<Self, String> {
+        let mut config = Self::load_unchecked(path)?;
+        let turn = std::mem::take(&mut config.ice.turn_urls);
+        config.validate()?;
+        config.ice.turn_urls = turn;
+        Ok(config)
+    }
+
+    fn load_unchecked(path: &Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        let mut config = Self::parse(&text)?;
+        config.apply_env(|k| std::env::var(k).ok())?;
+        Ok(config)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, String> {
+        toml::from_str(text).map_err(|e| format!("invalid configuration: {e}"))
+    }
+
+    pub fn apply_env(&mut self, get: impl Fn(&str) -> Option<String>) -> Result<(), String> {
+        if let Some(v) = get("AUDIONET_PUBLIC_URL") {
+            self.public_url = v;
+        }
+        if let Some(v) = get("AUDIONET_BIND") {
+            self.bind = v
+                .parse()
+                .map_err(|_| format!("AUDIONET_BIND is not an address and port: {v}"))?;
+        }
+        if let Some(v) = get("AUDIONET_DATABASE") {
+            self.database = v.into();
+        }
+        if let Some(v) = get("AUDIONET_WEB_ROOT") {
+            self.web_root = Some(v.into());
+        }
+        if let Some(v) = get("AUDIONET_DOWNLOADS_DIR") {
+            self.downloads_dir = Some(v.into());
+        }
+        if let Some(v) = get("AUDIONET_ALLOWED_ORIGINS") {
+            self.allowed_origins = v
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        if let Some(v) = get("AUDIONET_TURN_SECRET") {
+            self.ice.turn_secret = Some(v);
+        }
+        Ok(())
+    }
+
+    pub fn validate(&mut self) -> Result<(), String> {
+        let origin = origin_of(&self.public_url).ok_or_else(|| {
+            format!(
+                "public_url must look like https://host[:port]: {}",
+                self.public_url
+            )
+        })?;
+        if self.allowed_origins.is_empty() {
+            self.allowed_origins.push(origin);
+        }
+        if !self.ice.turn_urls.is_empty()
+            && self.ice.turn_secret.as_deref().is_none_or(str::is_empty)
+        {
+            return Err(
+                "turn_urls are set but no TURN secret is configured (set AUDIONET_TURN_SECRET)"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Whether cookies must be marked `Secure`.
+    pub fn secure_cookies(&self) -> bool {
+        self.public_url.starts_with("https://")
+    }
+}
+
+/// `scheme://host[:port]` of a URL, or `None` if it is not http(s).
+pub fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    if scheme != "https" && scheme != "http" {
+        return None;
+    }
+    let host = rest.split(['/', '?', '#']).next()?;
+    if host.is_empty() || host.contains('@') {
+        return None;
+    }
+    Some(format!("{scheme}://{}", host.to_ascii_lowercase()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimal_config_and_defaults() {
+        let mut c = Config::parse(r#"public_url = "https://audionet.example.com""#).unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.bind, default_bind());
+        assert_eq!(c.allowed_origins, ["https://audionet.example.com"]);
+        assert!(c.secure_cookies());
+        assert!(!c.allow_registration);
+        assert_eq!(c.sign_ups_per_address_per_hour, 3);
+        assert_eq!(c.sign_ups_per_hour, 30);
+        assert_eq!(c.client_address_header, None);
+    }
+
+    #[test]
+    fn env_overrides_secrets() {
+        let mut c = Config::parse(
+            r#"
+            public_url = "https://audio.example.org/"
+            [ice]
+            turn_urls = ["turn:audio.example.org:3478"]
+            "#,
+        )
+        .unwrap();
+        assert!(
+            c.clone().validate().is_err(),
+            "TURN without a secret is rejected"
+        );
+        c.apply_env(|k| (k == "AUDIONET_TURN_SECRET").then(|| "s3cret".into()))
+            .unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.ice.turn_secret.as_deref(), Some("s3cret"));
+    }
+
+    #[test]
+    fn origins() {
+        assert_eq!(
+            origin_of("https://A.example.com:8443/x"),
+            Some("https://a.example.com:8443".into())
+        );
+        assert_eq!(origin_of("ftp://x"), None);
+        assert_eq!(origin_of("https://"), None);
+        assert!(Config::parse("public_url = \"x\"\nunknown = 1").is_err());
+    }
+}

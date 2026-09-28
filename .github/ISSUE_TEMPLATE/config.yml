@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem privately
+    url: https://github.com/mad-gamer26/AudioNet/security/advisories/new
+    about: Please do not report security problems in public issues.

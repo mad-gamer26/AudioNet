@@ -1,0 +1,93 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/audionet-protocol",
+    "crates/audionet-audio",
+    "crates/audionet-wasapi",
+    "crates/audionet-codec",
+    "crates/audionet-transport",
+    "crates/audionet-engine",
+    "crates/audionet-cli",
+    "crates/audionet-server",
+    "crates/audionet-node",
+    "crates/audionet-desktop",
+    "crates/audionet-ffi",
+]
+
+[workspace.package]
+version = "0.8.1"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/mad-gamer26/AudioNet"
+publish = false
+
+[workspace.dependencies]
+audionet-protocol = { path = "crates/audionet-protocol" }
+audionet-audio = { path = "crates/audionet-audio" }
+audionet-wasapi = { path = "crates/audionet-wasapi" }
+audionet-codec = { path = "crates/audionet-codec" }
+audionet-transport = { path = "crates/audionet-transport" }
+audionet-engine = { path = "crates/audionet-engine" }
+audionet-node = { path = "crates/audionet-node" }
+audionet-ffi = { path = "crates/audionet-ffi" }
+
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+windows = "0.62.2"
+rtrb = "0.4.0"
+hound = "3.5.1"
+ctrlc = "3.5.2"
+opus = "0.4.0"
+rubato = "5.0.0"
+audioadapter-buffers = "5.1"
+chacha20poly1305 = "0.11.0"
+hkdf = "0.13.0"
+sha2 = "0.11.0"
+rand = "0.10.3"
+socket2 = "0.6"
+cpal = "0.18.2"
+str0m = { version = "0.23.1", default-features = false, features = ["rust-crypto"] }
+axum = { version = "0.8.9", features = ["ws"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+tower-http = { version = "0.7", features = ["fs", "trace"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+argon2 = "0.6"
+toml = "1.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hmac = "0.13"
+sha1 = "0.11"
+base64 = "0.23"
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+ureq = { version = "3.4", default-features = false, features = ["rustls", "json", "platform-verifier"] }
+# The operating system's certificate verifier for the signaling WebSocket, as
+# ureq uses for HTTP: native-roots finds no certificates on iOS.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
+futures-util = "0.3"
+# Desktop auto-update: signature check (verify only) and zip extraction
+# with pure-Rust deflate.
+ed25519-dalek = { version = "3.0.0", default-features = false }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# Swift bindings for the native engine (macOS and iOS apps). MPL-2.0: the
+# license covers UniFFI's own files only; AudioNet stays MIT.
+uniffi = "0.32"
+# Hidden password prompt for `audionet node sign-in`.
+rpassword = "7.5"
+# TURN relay client for native sessions (sans-I/O, RFC 8656).
+turn-client-proto = "0.7.2"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+
+# Optimize dependencies (libopus, the resampler, crypto) even in debug
+# builds, so tests and simulations run at realistic speed.
+[profile.dev.package."*"]
+opt-level = 3

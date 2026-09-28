@@ -1,0 +1,25 @@
+[package]
+name = "audionet-engine"
+description = "AudioNet media engine: sender and receiver pipelines, playout, clock-drift and buffer-depth control."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+audionet-protocol.workspace = true
+audionet-audio.workspace = true
+audionet-codec.workspace = true
+audionet-transport.workspace = true
+rubato.workspace = true
+audioadapter-buffers.workspace = true
+serde.workspace = true
+rand.workspace = true
+socket2.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

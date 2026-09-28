@@ -1,0 +1,16 @@
+/target
+.claude/settings.local.json
+.claude/worktrees/
+/dist
+# iOS (the Xcode project is generated from project.yml by XcodeGen)
+mobile/ios/AudioNet.xcodeproj/
+apps/macos/AudioNet.xcodeproj/
+apps/macos/Generated/
+apps/macos/build/
+apps/ios/AudioNet.xcodeproj/
+apps/ios/Generated/
+apps/ios/AudioNet/Info.plist
+__pycache__/
+# Test settings naming your own machines (see scripts/test/testenv.py)
+scripts/test/local.env
+__pycache__/

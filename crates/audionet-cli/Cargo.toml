@@ -1,0 +1,35 @@
+[package]
+name = "audionet-cli"
+description = "The audionet command-line tool."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "audionet_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "audionet"
+path = "src/main.rs"
+
+[dependencies]
+rpassword.workspace = true
+audionet-protocol.workspace = true
+audionet-audio.workspace = true
+audionet-wasapi.workspace = true
+audionet-engine.workspace = true
+audionet-codec.workspace = true
+audionet-transport.workspace = true
+audionet-node.workspace = true
+tokio.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hound.workspace = true
+ctrlc.workspace = true
+
+[lints]
+workspace = true

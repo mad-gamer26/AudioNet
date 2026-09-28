@@ -1,0 +1,30 @@
+[package]
+name = "audionet-wasapi"
+description = "AudioNet Windows audio backend built on WASAPI and the MMDevice API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+audionet-protocol.workspace = true
+audionet-audio.workspace = true
+
+[target.'cfg(windows)'.dependencies.windows]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_Security",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+]
+
+[lints]
+workspace = true

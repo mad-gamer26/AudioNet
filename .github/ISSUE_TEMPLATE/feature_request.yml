@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest an improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you want to do
+      description: The task or situation, in your own words, rather than a particular solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How it could work
+  - type: textarea
+    id: accessibility
+    attributes:
+      label: Accessibility
+      description: How should this work with a screen reader or keyboard only? (Everything in AudioNet must.)

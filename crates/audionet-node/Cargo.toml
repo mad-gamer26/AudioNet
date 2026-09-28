@@ -1,0 +1,37 @@
+[package]
+name = "audionet-node"
+description = "AudioNet node agent: connects a device to a coordination server and streams audio over WebRTC."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+audionet-protocol.workspace = true
+audionet-audio.workspace = true
+audionet-codec.workspace = true
+audionet-engine.workspace = true
+str0m.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+ureq.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+rand.workspace = true
+socket2 = { workspace = true, features = ["all"] }
+turn-client-proto.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+audionet-wasapi.workspace = true
+
+[target.'cfg(not(windows))'.dependencies]
+cpal.workspace = true
+
+[lints]
+workspace = true

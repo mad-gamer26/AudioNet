@@ -1,0 +1,44 @@
+[package]
+name = "audionet-server"
+description = "AudioNet coordination server: accounts, device pairing, presence and WebRTC signaling. Self-hostable."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "audionet-server"
+path = "src/main.rs"
+
+[dependencies]
+audionet-protocol.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+rusqlite.workspace = true
+argon2.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+hmac.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+base64.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap = { workspace = true, features = ["env"] }
+futures-util.workspace = true
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true
+# Native device-to-device test: two real agents with simulated audio.
+audionet-node.workspace = true
+audionet-audio.workspace = true
+ureq.workspace = true
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[lints]
+workspace = true

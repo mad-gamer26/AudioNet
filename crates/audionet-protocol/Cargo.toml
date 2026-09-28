@@ -1,0 +1,17 @@
+[package]
+name = "audionet-protocol"
+description = "AudioNet shared protocol types: identifiers, nodes, endpoints, routes and stream sessions."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

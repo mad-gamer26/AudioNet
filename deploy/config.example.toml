@@ -1,0 +1,52 @@
+# AudioNet server configuration (example).
+# Copy to /etc/audionet/config.toml and replace every example value.
+# Secrets belong in the environment file (see audionet.env.example).
+
+# The URL people and devices use to reach this server.
+public_url = "https://audionet.example.com"
+
+# The server listens here; put a TLS reverse proxy (nginx) in front of it.
+bind = "127.0.0.1:8740"
+
+# SQLite database (the systemd unit's StateDirectory creates /var/lib/audionet).
+database = "/var/lib/audionet/audionet.db"
+
+# The web client (the repository's web/ directory). Omit to serve only the API.
+web_root = "/opt/audionet/web"
+
+# Optional: a directory of AudioNet builds for your users, served at
+# /downloads/ and linked from the web client. Needs an index.html.
+# downloads_dir = "/opt/audionet/downloads"
+
+# Let anyone create an account in the web client. Leave
+# false and create accounts with `audionet-server user add NAME` unless you
+# want open sign-up.
+allow_registration = false
+
+# With open sign-up: new accounts per client address, and for the whole
+# server, per hour.
+# sign_ups_per_address_per_hour = 3
+# sign_ups_per_hour = 30
+
+# The header your reverse proxy sets to the client's address, so the
+# per-address limit sees real clients (nginx: proxy_set_header X-Real-IP
+# $remote_addr). Only name a header the proxy always overwrites.
+# client_address_header = "X-Real-IP"
+
+# How long a web sign-in lasts, in days.
+session_days = 30
+
+# Extra origins allowed to use browser sessions (defaults to public_url's origin).
+# allowed_origins = ["https://audionet.example.com"]
+
+[ice]
+# STUN lets devices discover their public address; TURN relays audio when a
+# direct connection is impossible. coturn provides both (see deploy/coturn/).
+stun_urls = ["stun:audionet.example.com:3478"]
+turn_urls = [
+  "turn:audionet.example.com:3478?transport=udp",
+  "turn:audionet.example.com:3478?transport=tcp",
+  "turns:audionet.example.com:5349?transport=tcp",
+]
+# turn_secret comes from AUDIONET_TURN_SECRET in the environment file.
+turn_credential_ttl_s = 3600

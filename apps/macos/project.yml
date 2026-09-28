@@ -1,0 +1,89 @@
+# XcodeGen spec for the AudioNet macOS app. Build the engine first, then:
+#   apps/macos/build-core.sh && cd apps/macos && xcodegen generate
+#   xcodebuild -project AudioNet.xcodeproj -scheme AudioNet build
+# Official builds may set AUDIONET_DEFAULT_SERVER (pre-filled at sign-in)
+# and AUDIONET_UPDATE_URL / AUDIONET_UPDATE_PUBLIC_KEY (see package.sh);
+# nothing in the app depends on a particular server.
+name: AudioNet
+options:
+  bundleIdPrefix: org.audionet
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    AUDIONET_DEFAULT_SERVER: ""
+    # Signed automatic updates (docs/releasing.md); empty: never updates.
+    AUDIONET_UPDATE_URL: ""
+    AUDIONET_UPDATE_PUBLIC_KEY: ""
+    MARKETING_VERSION: "0.8.1"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  AudioNet:
+    type: application
+    platform: macOS
+    sources:
+      - AudioNet
+      - path: ../shared
+      - path: Generated/audionet_ffi.swift
+    info:
+      path: AudioNet/Info.plist
+      properties:
+        CFBundleDisplayName: AudioNet
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSApplicationCategoryType: public.app-category.utilities
+        NSMicrophoneUsageDescription: "AudioNet sends this Mac's microphone to your other devices when you choose to."
+        NSAudioCaptureUsageDescription: "AudioNet sends the sound this Mac plays to your other devices when you choose to."
+        AudioNetDefaultServer: "$(AUDIONET_DEFAULT_SERVER)"
+        AudioNetUpdateURL: "$(AUDIONET_UPDATE_URL)"
+        AudioNetUpdatePublicKey: "$(AUDIONET_UPDATE_PUBLIC_KEY)"
+    entitlements:
+      path: AudioNet/AudioNet.entitlements
+      properties:
+        com.apple.security.device.audio-input: true
+    settings:
+      base:
+        # Test builds add ".uitest" (scripts/test/mac_ui_tests.py), so a test
+        # copy never shares macOS permissions (microphone, system audio) with
+        # the AudioNet installed on the Mac.
+        AUDIONET_BUNDLE_SUFFIX: ""
+        PRODUCT_BUNDLE_IDENTIFIER: org.audionet.AudioNet$(AUDIONET_BUNDLE_SUFFIX)
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Generated
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/Generated
+        OTHER_LDFLAGS: -laudionet_ffi
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: YES
+        # The engine is Rust with a C interface; UniFFI's generated Swift.
+        SWIFT_STRICT_CONCURRENCY: minimal
+    dependencies:
+      - sdk: CoreAudio.framework
+      - sdk: AudioToolbox.framework
+      - sdk: AudioUnit.framework
+      - sdk: CoreFoundation.framework
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: ServiceManagement.framework
+      - sdk: AVFoundation.framework
+  AudioNetUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources: [AudioNetUITests]
+    dependencies:
+      - target: AudioNet
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.audionet.AudioNetUITests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+schemes:
+  AudioNet:
+    build:
+      targets:
+        AudioNet: all
+        AudioNetUITests: [test]
+    test:
+      targets: [AudioNetUITests]

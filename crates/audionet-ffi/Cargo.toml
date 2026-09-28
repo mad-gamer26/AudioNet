@@ -1,0 +1,30 @@
+[package]
+name = "audionet-ffi"
+description = "AudioNet's native engine for Swift (and other languages) through UniFFI: sign in, share this device, listen to and send to your other devices."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "audionet_ffi"
+# staticlib for Xcode apps; cdylib so uniffi-bindgen can read the interface.
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+audionet-node.workspace = true
+audionet-protocol.workspace = true
+tokio.workspace = true
+uniffi.workspace = true
+
+[lints]
+workspace = true

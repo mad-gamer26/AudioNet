@@ -1,0 +1,47 @@
+# systemd unit for the AudioNet coordination server.
+# Install: /etc/systemd/system/audionet.service, then
+#   systemctl daemon-reload && systemctl enable --now audionet
+[Unit]
+Description=AudioNet coordination server
+Documentation=file:///opt/audionet/docs/self-hosting.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=audionet
+Group=audionet
+Environment=AUDIONET_CONFIG=/etc/audionet/config.toml
+EnvironmentFile=-/etc/audionet/audionet.env
+ExecStart=/opt/audionet/bin/audionet-server serve
+Restart=on-failure
+RestartSec=2
+
+# State (database) lives here, owned by the service user.
+StateDirectory=audionet
+StateDirectoryMode=0700
+UMask=0077
+
+# Hardening: the server only needs to listen on TCP and write its database.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

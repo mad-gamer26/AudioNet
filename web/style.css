@@ -1,0 +1,172 @@
+/* AudioNet web client. State is always given in words; color and layout
+   are only reinforcement. Focus is always visible. */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #4a4a4a;
+  --accent: #0b57d0;
+  --border: #767676;
+  --panel: #f3f5f8;
+  --danger: #a50e0e;
+  --ok: #146c2e;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121212;
+    --fg: #f0f0f0;
+    --muted: #c4c4c4;
+    --accent: #8ab4f8;
+    --border: #9a9a9a;
+    --panel: #1e1f22;
+    --danger: #f28b82;
+    --ok: #81c995;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0 auto;
+  max-width: 60rem;
+  padding: 0 1rem 2rem;
+  background: var(--bg);
+  color: var(--fg);
+  font: 1.0625rem/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+a { color: var(--accent); }
+
+.skip-link {
+  position: absolute;
+  left: -999px;
+}
+.skip-link:focus {
+  left: 1rem;
+  top: 1rem;
+  background: var(--bg);
+  padding: 0.5rem;
+  z-index: 10;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+h1 { margin-bottom: 0.25rem; }
+h2 { margin-top: 2rem; }
+
+label { display: block; font-weight: 600; margin-bottom: 0.25rem; }
+
+/* Rules for a field, under it (read with it through aria-describedby). */
+.hint { display: block; color: var(--muted); margin-top: 0.25rem; }
+
+input[aria-invalid="true"] { border: 2px solid var(--danger); }
+
+input, select, button {
+  font: inherit;
+  color: inherit;
+  min-height: 2.75rem;
+}
+
+input, select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  max-width: 100%;
+}
+
+button {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 1rem;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.status:empty, .alert:empty { display: none; }
+.status {
+  border-left: 4px solid var(--accent);
+  background: var(--panel);
+  padding: 0.5rem 0.75rem;
+  margin: 1rem 0;
+}
+.alert {
+  border-left: 4px solid var(--danger);
+  background: var(--panel);
+  padding: 0.5rem 0.75rem;
+  margin: 1rem 0;
+  font-weight: 600;
+}
+
+.device {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 1rem;
+  margin: 0.5rem 0;
+}
+.device summary {
+  cursor: pointer;
+  padding: 0.75rem 0;
+  font-size: 1.1rem;
+}
+.device summary .name { font-weight: 700; }
+.device-body { padding-bottom: 0.5rem; }
+.device form { margin: 0.75rem 0; }
+.device .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; }
+
+.state-online { color: var(--ok); font-weight: 600; }
+.state-offline { color: var(--muted); font-weight: 600; }
+
+#streams li {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+  list-style: none;
+}
+#streams { padding: 0; }
+
+pre {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.code {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 1.25rem;
+  letter-spacing: 0.1em;
+}
+
+footer { margin-top: 3rem; color: var(--muted); font-size: 0.9375rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+/* The status log dialog. */
+dialog#status-log {
+  width: min(48rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 1rem 1.25rem;
+}
+dialog#status-log::backdrop { background: rgb(0 0 0 / 0.5); }
+dialog#status-log pre { max-height: 40vh; overflow-y: auto; }
+.dialog-buttons { display: flex; gap: 0.75rem; justify-content: space-between; }
+
+/* Per-stream volume and mute. */
+.stream-volume { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1.25rem; }
+.stream-volume input[type="checkbox"] { width: 1.25rem; height: 1.25rem; }
+.stream-volume input[type="range"] { min-height: 44px; width: min(16rem, 60vw); vertical-align: middle; }

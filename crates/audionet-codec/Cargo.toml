@@ -1,0 +1,16 @@
+[package]
+name = "audionet-codec"
+description = "AudioNet codec layer: Opus encode/decode with loss concealment, via libopus."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+audionet-protocol.workspace = true
+opus.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

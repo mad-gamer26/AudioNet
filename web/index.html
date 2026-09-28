@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AudioNet</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header>
+    <h1>AudioNet</h1>
+    <p id="account" hidden>
+      Signed in as <span id="account-name"></span>.
+      <button type="button" id="sign-out">Sign out</button>
+    </p>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <!-- Polite announcements (state changes) and assertive errors. -->
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+    <div id="alert" class="alert" role="alert"></div>
+
+    <section id="sign-in-section" aria-labelledby="sign-in-heading" hidden>
+      <h2 id="sign-in-heading" tabindex="-1">Sign in</h2>
+      <form id="sign-in-form">
+        <p>
+          <label for="username">Username</label>
+          <input id="username" name="username" autocomplete="username" required>
+        </p>
+        <p>
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </p>
+        <p>
+          <button type="submit">Sign in</button>
+        </p>
+      </form>
+      <p id="create-account-offer" hidden>
+        New to AudioNet?
+        <button type="button" id="show-create-account">Create an account</button>
+      </p>
+    </section>
+
+    <section id="create-account-section" aria-labelledby="create-account-heading" hidden>
+      <h2 id="create-account-heading" tabindex="-1">Create an account</h2>
+      <p>
+        Your account holds your devices. Sign in with it in the AudioNet
+        apps and here to use them together.
+      </p>
+      <form id="create-account-form" novalidate>
+        <p>
+          <label for="new-username">Username</label>
+          <input id="new-username" name="username" autocomplete="username" required
+                 maxlength="64" aria-describedby="new-username-hint">
+          <span id="new-username-hint" class="hint">Letters, digits, dots, dashes and underscores, up to 64 characters.</span>
+        </p>
+        <p>
+          <label for="new-password">Password</label>
+          <input id="new-password" name="password" type="password" autocomplete="new-password" required
+                 aria-describedby="new-password-hint">
+          <span id="new-password-hint" class="hint">At least 10 characters, and not containing your username.</span>
+        </p>
+        <p>
+          <label for="new-password-again">Password again</label>
+          <input id="new-password-again" name="password-again" type="password" autocomplete="new-password" required>
+        </p>
+        <p>
+          <button type="submit">Create account</button>
+          <button type="button" id="back-to-sign-in">Back to sign in</button>
+        </p>
+      </form>
+    </section>
+
+    <section id="app-section" aria-labelledby="devices-heading" hidden>
+      <h2 id="devices-heading" tabindex="-1">Your devices</h2>
+      <p id="connection-state">Connecting to the server…</p>
+      <p><button type="button" id="open-status-log">Status log</button></p>
+      <div id="devices"></div>
+      <p id="no-devices" hidden>
+        No devices are signed in to this account yet. See "Add a device" below.
+      </p>
+
+      <h2 id="streams-heading">Active streams</h2>
+      <p id="no-streams">No streams are running.</p>
+      <ul id="streams" aria-labelledby="streams-heading"></ul>
+
+      <h2 id="add-heading">Add a device</h2>
+      <p>
+        Install AudioNet on the device and sign in there with your account
+        name and password. Use this server address:
+        <code id="server-address"></code>
+      </p>
+      <p id="download" hidden>
+        Need AudioNet on the device first?
+        <a id="download-link" href="/downloads/">Download AudioNet for Windows or Mac</a>.
+      </p>
+      <p>
+        On a computer without a screen, sign in from a terminal (it asks for
+        the password):
+      </p>
+      <pre id="sign-in-command" tabindex="0"></pre>
+      <p><button type="button" id="copy-sign-in">Copy the command</button></p>
+
+    </section>
+
+    <!-- The status log: every announcement, and the streams' measurements.
+         A modal dialog: focus moves into it, Escape or Close closes it and
+         focus returns to the Status log button. -->
+    <dialog id="status-log" aria-labelledby="status-log-title">
+      <h2 id="status-log-title">Status log</h2>
+      <h3 id="events-heading">Events</h3>
+      <pre id="event-log" tabindex="0" aria-labelledby="events-heading">Nothing has happened yet.</pre>
+      <h3 id="diagnostics-heading">Diagnostics</h3>
+      <p>
+        Plain-text measurements for every active stream, updated every two
+        seconds. They are not announced automatically.
+      </p>
+      <pre id="diagnostics" tabindex="0" aria-labelledby="diagnostics-heading">No active streams.</pre>
+      <p class="dialog-buttons">
+        <button type="button" id="copy-status-log">Copy</button>
+        <button type="button" id="close-status-log">Close</button>
+      </p>
+    </dialog>
+  </main>
+
+  <footer>
+    <p>AudioNet is open-source software, licensed under the MIT license.</p>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,54 @@
+name: Bug report
+description: Something does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. For security problems, please do not open an
+        issue: report them privately (see SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: part
+    attributes:
+      label: Part of AudioNet
+      options:
+        - Windows app
+        - Mac app
+        - iPhone app
+        - Web client
+        - Command line (audionet)
+        - Server
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: AudioNet version
+      description: Shown in Settings, or by `audionet --version`.
+      placeholder: "0.8.1"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and version
+      placeholder: "Windows 11 24H2, macOS 15, iOS 18, Chrome 140..."
+  - type: input
+    id: screen-reader
+    attributes:
+      label: Screen reader or other assistive technology, if any
+      placeholder: "NVDA 2026.1, JAWS 2026, VoiceOver, none"
+  - type: textarea
+    id: log
+    attributes:
+      label: Status log or diagnostics
+      description: Copy the relevant lines from the app's Status log (it has a Copy button). Remove anything private.
+      render: text
