@@ -352,6 +352,56 @@ struct SpeakOutput {
     playout: Arc<audionet_engine::playout::PlayoutStats>,
 }
 
+/// What a sending session did between two reports, and how often its
+/// loop ran (it waits on the network between passes, so a coarse system
+/// timer shows here as long waits).
+struct SendCounters {
+    since: Instant,
+    captured_frames: u64,
+    packets: u64,
+    datagrams_at_start: u64,
+    last_wake: Instant,
+    wakes: u64,
+    longest_wait: Duration,
+}
+
+impl SendCounters {
+    fn new(datagrams: u64) -> Self {
+        let now = Instant::now();
+        Self {
+            since: now,
+            captured_frames: 0,
+            packets: 0,
+            datagrams_at_start: datagrams,
+            last_wake: now,
+            wakes: 0,
+            longest_wait: Duration::ZERO,
+        }
+    }
+
+    fn wake(&mut self) {
+        let now = Instant::now();
+        self.longest_wait = self.longest_wait.max(now - self.last_wake);
+        self.last_wake = now;
+        self.wakes += 1;
+    }
+
+    /// One line in words, then starts the next interval.
+    fn report(&mut self, capture_rate: u32, datagrams: u64) -> String {
+        let secs = self.since.elapsed().as_secs_f64().max(0.001);
+        let captured = self.captured_frames as f64 / f64::from(capture_rate.max(1)) / secs * 100.0;
+        let text = format!(
+            "Sending: audio captured at {captured:.1} % of real time, {:.0} packets per second (100 expected), {:.0} network datagrams per second; the loop ran {:.0} times per second, longest wait {:.1} ms.",
+            self.packets as f64 / secs,
+            datagrams.saturating_sub(self.datagrams_at_start) as f64 / secs,
+            self.wakes as f64 / secs,
+            self.longest_wait.as_secs_f64() * 1000.0,
+        );
+        *self = Self::new(datagrams);
+        text
+    }
+}
+
 /// One line of receive diagnostics, in words.
 fn receive_diagnostics(o: &SpeakOutput) -> String {
     let r = o.stage.stats().snapshot();
@@ -653,11 +703,15 @@ fn run(
     let mut last_send_error = String::new();
     let mut last_report = Instant::now();
     let mut last_diagnostics = Instant::now();
+    // Sending side: what went out since the last report, and how often
+    // this loop ran (it waits on the network between passes).
+    let mut sending = SendCounters::new(sent);
 
     loop {
         if stop.load(Relaxed) {
             return Ok(());
         }
+        sending.wake();
         if pending.is_some() {
             if let Ok(sdp) = answers.try_recv() {
                 mdns = find_hidden_addresses(&sdp, local_ip, network.relay_only);
@@ -778,6 +832,7 @@ fn run(
                         if frames == 0 {
                             break;
                         }
+                        sending.captured_frames += frames as u64;
                         if let Some(text) =
                             silence.observe(&read_buf[..frames * ch], Instant::now())
                         {
@@ -801,6 +856,7 @@ fn run(
                                     if let Ok(n) = encoder.encode(frame, packet) {
                                         if let (true, Some(m)) = (connected, mid) {
                                             write_media(&mut rtc, m, *rtp_time, &packet[..n]);
+                                            sending.packets += 1;
                                         }
                                     }
                                     *rtp_time += encoder.frame_samples() as u64;
@@ -850,6 +906,21 @@ fn run(
                     }
                 }
             }
+        }
+
+        if connected
+            && matches!(pipeline, Pipeline::Listen { .. })
+            && last_diagnostics.elapsed() >= DIAGNOSTICS_EVERY
+        {
+            last_diagnostics = Instant::now();
+            let rate = match &pipeline {
+                Pipeline::Listen { input: Ok(i), .. } => i.capture.sample_rate,
+                _ => 48_000,
+            };
+            events(SessionEvent::Diagnostics {
+                session_id: session_id.clone(),
+                text: sending.report(rate, sent),
+            });
         }
 
         // Drive str0m until it wants input.

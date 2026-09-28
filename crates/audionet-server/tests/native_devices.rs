@@ -57,16 +57,20 @@ impl FakeAudio {
     }
 }
 
-/// The newest receive diagnostics among the events waiting (other events
-/// are left out): what the receiving side measured.
+/// The newest receiving and sending diagnostics among the events waiting
+/// (other events are left out): what each side measured.
 fn latest_diagnostics(rx: &mut mpsc::UnboundedReceiver<AppEvent>) -> String {
-    let mut last = String::from("no diagnostics yet");
+    let (mut receiving, mut sending) = (String::new(), String::new());
     while let Ok(e) = rx.try_recv() {
         if let AppEvent::Diagnostics { text, .. } = e {
-            last = text;
+            if text.starts_with("Sending") {
+                sending = text;
+            } else {
+                receiving = text;
+            }
         }
     }
-    last
+    format!("{receiving} {sending}")
 }
 
 struct Guard(Arc<AtomicBool>);
@@ -406,6 +410,7 @@ async fn two_native_devices_stream_audio_both_ways() {
         pc_audio.timing(),
         latest_diagnostics(&mut events)
     );
+    println!("  {why}");
     assert!(level > -20.0, "phone hears {level:.1} dBFS ({why})");
     assert!(
         (hz - TONE_HZ).abs() < 15.0,
