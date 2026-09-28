@@ -231,8 +231,9 @@ Automated accessibility checks:
 * Email addresses and password reset: `cargo test -p audionet-server --test
   email` (over real HTTP with an in-memory mailer: confirming an address,
   single-use and newest-only links, changing the address with the
-  password, the neutral "forgot" answer, no reset link to an unconfirmed
-  address, reset signing out other browsers, the per-account and
+  password (the confirmed address kept, and told, until the new one is
+  confirmed), waiting addresses not blocking the owner, the neutral
+  "forgot" answer, no reset link to an unconfirmed address, reset signing out other browsers, the per-account and
   per-address limits, the server without email settings, and the real
   SMTP code path against a local SMTP responder).
   `scripts/test/web_email.py` checks the web client in headless Chrome

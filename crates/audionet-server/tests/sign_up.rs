@@ -114,7 +114,7 @@ async fn rules_for_new_accounts() {
     )
     .await;
     assert_eq!(status, 400);
-    // An email address is required, valid, and one per account.
+    // An email address is required and must look like one.
     let (status, body) = post(
         &addr,
         "/api/v1/register",
@@ -136,6 +136,8 @@ async fn rules_for_new_accounts() {
     .await;
     assert_eq!(status, 400, "{body}");
     assert!(body.contains("bad_email"), "{body}");
+    // Alice has not confirmed her address, so it does not stop someone else
+    // from giving it (tests/email.rs covers confirmed addresses).
     let (status, body) = post(
         &addr,
         "/api/v1/register",
@@ -143,8 +145,7 @@ async fn rules_for_new_accounts() {
         &[],
     )
     .await;
-    assert_eq!(status, 409, "{body}");
-    assert!(body.contains("email_taken"), "{body}");
+    assert_eq!(status, 200, "{body}");
     // The new account signs in normally.
     let (status, body) = post(&addr, "/api/v1/login", &account("alice"), &[]).await;
     assert_eq!(status, 200, "{body}");

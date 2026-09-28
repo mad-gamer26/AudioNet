@@ -28,7 +28,7 @@ async fn start_server(mailer: Mailer) -> String {
     db.with(|c| {
         db::create_user(c, "old", &hash)?;
         let id = db::create_user(c, "admin-made", &hash)?;
-        db::set_email(c, id, Some("made@example.com"), true)
+        db::set_email(c, id, Some("made@example.com"))
     })
     .unwrap();
     let app = router(Arc::new(AppState::new(config, db, mailer)));
@@ -130,9 +130,9 @@ async fn sign_up_confirms_the_address() {
     let session = r.cookie.unwrap();
     let me = request(&addr, "GET", "/api/v1/me", "", Some(&session)).await;
     assert!(
-        me.body.contains(r#""email":"Alice@Example.com""#)
-            && me.body.contains(r#""email_verified":false"#),
-        "{}",
+        me.body.contains(r#""email":null"#)
+            && me.body.contains(r#""pending_email":"Alice@Example.com""#),
+        "waiting for confirmation: {}",
         me.body
     );
 
@@ -156,11 +156,21 @@ async fn sign_up_confirms_the_address() {
     let r = post(&addr, "/api/v1/email/verify", &body, None).await;
     assert_eq!(r.status, 200, "{}", r.body);
     assert!(r.body.contains(r#""username":"alice""#));
+    assert!(
+        r.body.contains(r#""email":"Alice@Example.com""#),
+        "{}",
+        r.body
+    );
     let again = post(&addr, "/api/v1/email/verify", &body, None).await;
     assert_eq!(again.status, 400);
     assert!(again.body.contains("link_invalid"));
     let me = request(&addr, "GET", "/api/v1/me", "", Some(&session)).await;
-    assert!(me.body.contains(r#""email_verified":true"#), "{}", me.body);
+    assert!(
+        me.body.contains(r#""email":"Alice@Example.com""#)
+            && me.body.contains(r#""pending_email":null"#),
+        "{}",
+        me.body
+    );
     // Nothing more to confirm.
     let r = post(&addr, "/api/v1/account/email/send-link", "", Some(&session)).await;
     assert_eq!(r.status, 200);
@@ -415,6 +425,187 @@ async fn reset_requests_are_limited_per_address() {
     )
     .await;
     assert_eq!(r.status, 429, "{}", r.body);
+}
+
+#[tokio::test]
+async fn waiting_addresses_block_no_one() {
+    let (mailer, outbox) = Mailer::memory();
+    let addr = start_server(mailer).await;
+    let register = |name: &'static str, email: &'static str| {
+        let addr = addr.clone();
+        async move {
+            post(
+                &addr,
+                "/api/v1/register",
+                &format!(
+                    r#"{{"username":"{name}","password":"correct horse battery","email":"{email}"}}"#
+                ),
+                None,
+            )
+            .await
+        }
+    };
+    // Someone signs up with another person's address and never confirms;
+    // the owner can still sign up with it.
+    let squatter = register("squatter", "owner@example.com").await;
+    assert_eq!(squatter.status, 200, "{}", squatter.body);
+    let owner = register("owner", "Owner@example.com").await;
+    assert_eq!(owner.status, 200, "{}", owner.body);
+    let mail = take_mail(&outbox, 2).await;
+    assert_eq!(mail.len(), 2);
+    let squatter_link = format!(r#"{{"token":"{}"}}"#, link_token(&mail[0], "verify"));
+    let owner_link = format!(r#"{{"token":"{}"}}"#, link_token(&mail[1], "verify"));
+
+    // The owner confirms: the address is theirs, and the other account no
+    // longer waits for it.
+    let r = post(&addr, "/api/v1/email/verify", &owner_link, None).await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    let r = post(&addr, "/api/v1/email/verify", &squatter_link, None).await;
+    assert_eq!(r.status, 400, "{}", r.body);
+    let me = request(
+        &addr,
+        "GET",
+        "/api/v1/me",
+        "",
+        Some(squatter.cookie.as_deref().unwrap()),
+    )
+    .await;
+    assert!(
+        me.body.contains(r#""email":null"#) && me.body.contains(r#""pending_email":null"#),
+        "{}",
+        me.body
+    );
+    // Now it is confirmed, it is taken.
+    let r = register("third", "OWNER@example.com").await;
+    assert_eq!(r.status, 409, "{}", r.body);
+    assert!(r.body.contains("email_taken"));
+}
+
+#[tokio::test]
+async fn changing_keeps_the_confirmed_address_until_the_new_one_is() {
+    let (mailer, outbox) = Mailer::memory();
+    let addr = start_server(mailer).await;
+    let session = post(
+        &addr,
+        "/api/v1/login",
+        r#"{"username":"admin-made","password":"correct horse battery"}"#,
+        None,
+    )
+    .await
+    .cookie
+    .unwrap();
+    // A reset link sent before the change.
+    post(
+        &addr,
+        "/api/v1/password/forgot",
+        r#"{"account":"admin-made"}"#,
+        None,
+    )
+    .await;
+    let early_reset = take_mail(&outbox, 1).await;
+
+    let r = post(
+        &addr,
+        "/api/v1/account/email",
+        r#"{"email":"fresh@example.com","password":"correct horse battery"}"#,
+        Some(&session),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert!(
+        r.body.contains(r#""email":"made@example.com""#)
+            && r.body.contains(r#""pending_email":"fresh@example.com""#),
+        "{}",
+        r.body
+    );
+    let mail = take_mail(&outbox, 2).await;
+    let verify = mail
+        .iter()
+        .find(|m| m.to == "fresh@example.com")
+        .expect("link to the new address");
+    let notice = mail
+        .iter()
+        .find(|m| m.to == "made@example.com")
+        .expect("notice to the confirmed address");
+    assert!(
+        notice.subject.contains("being changed"),
+        "{}",
+        notice.subject
+    );
+    assert!(
+        notice.body.contains("fresh@example.com")
+            && notice.body.contains("still come to this address"),
+        "{}",
+        notice.body
+    );
+
+    // Meanwhile resets still go to the confirmed address.
+    post(
+        &addr,
+        "/api/v1/password/forgot",
+        r#"{"account":"admin-made"}"#,
+        None,
+    )
+    .await;
+    let mail = take_mail(&outbox, 1).await;
+    assert_eq!(mail.len(), 1);
+    assert_eq!(mail[0].to, "made@example.com");
+
+    // Confirming switches: the old address no longer gets reset links, and
+    // links already sent there stop working.
+    let body = format!(r#"{{"token":"{}"}}"#, link_token(verify, "verify"));
+    assert_eq!(
+        post(&addr, "/api/v1/email/verify", &body, None)
+            .await
+            .status,
+        200
+    );
+    let me = request(&addr, "GET", "/api/v1/me", "", Some(&session)).await;
+    assert!(
+        me.body.contains(r#""email":"fresh@example.com""#)
+            && me.body.contains(r#""pending_email":null"#),
+        "{}",
+        me.body
+    );
+    for old_link in [&early_reset[0], &mail[0]] {
+        let r = post(
+            &addr,
+            "/api/v1/password/reset",
+            &format!(
+                r#"{{"token":"{}","password":"a brand new password"}}"#,
+                link_token(old_link, "reset")
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(r.status, 400, "{}", r.body);
+    }
+    post(
+        &addr,
+        "/api/v1/password/forgot",
+        r#"{"account":"made@example.com"}"#,
+        None,
+    )
+    .await;
+    assert!(take_mail(&outbox, 0).await.is_empty());
+
+    // Choosing the confirmed address again cancels a change in progress.
+    post(
+        &addr,
+        "/api/v1/account/email",
+        r#"{"email":"typo@example.com","password":"correct horse battery"}"#,
+        Some(&session),
+    )
+    .await;
+    let r = post(
+        &addr,
+        "/api/v1/account/email",
+        r#"{"email":"FRESH@example.com","password":"correct horse battery"}"#,
+        Some(&session),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert!(r.body.contains(r#""pending_email":null"#), "{}", r.body);
 }
 
 /// A minimal SMTP server on this machine: accepts one message and returns

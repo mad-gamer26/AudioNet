@@ -18,9 +18,10 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   username: null,
-  // The account's email address and whether it is confirmed.
+  // The account's confirmed email address (where password-reset links go),
+  // and one waiting for confirmation (dropped after 7 days unless confirmed).
   email: null,
-  emailVerified: false,
+  pendingEmail: null,
   // Whether this server can send email (confirmation and password reset).
   passwordReset: false,
   ws: null,
@@ -143,7 +144,7 @@ function signedIn(me, moveFocus) {
   showOnly(null);
   $("account").hidden = false;
   $("app-section").hidden = false;
-  if ("email" in me) setEmailState(me.email, me.email_verified);
+  if ("email" in me) setEmailState(me.email, me.pending_email);
   else loadEmailState();
   if (moveFocus) $("devices-heading").focus();
   connect();
@@ -154,38 +155,45 @@ function signedIn(me, moveFocus) {
 async function loadEmailState() {
   try {
     const me = await api("GET", "/api/v1/me");
-    setEmailState(me.email, me.email_verified);
+    setEmailState(me.email, me.pending_email);
   } catch (_) { /* shown on the next sign-in */ }
 }
 
-// Shows the address in the Email address part and, when there is none or
-// it is unconfirmed, the banner above the devices.
-function setEmailState(email, verified) {
+// Shows the addresses in the Email address part and, when there is no
+// confirmed one or a change is waiting, the banner above the devices.
+function setEmailState(email, pending) {
   state.email = email || null;
-  state.emailVerified = !!verified;
+  state.pendingEmail = pending || null;
   const banner = $("email-banner");
-  if (!state.email) {
+  const confirmed = state.email;
+  const waiting = state.pendingEmail;
+  $("change-email").textContent = confirmed || waiting ? "Change the email address" : "Add an email address";
+  if (!confirmed && !waiting) {
     $("email-state").textContent = "Email address: none. Adding one is highly recommended: it is used only to reset your password if you forget it.";
-    $("change-email").textContent = "Add an email address";
     $("email-banner-heading").textContent = "Add an email address";
     $("email-banner-text").textContent = "An email address is highly recommended. It is used only to reset your password if you forget it.";
     $("banner-add-email").hidden = false;
     $("banner-send-link").hidden = true;
     banner.hidden = false;
-  } else if (!state.emailVerified) {
-    $("email-state").textContent = state.passwordReset
-      ? `Email address: ${state.email}, not confirmed yet. Open the link AudioNet emailed to it; until then it cannot be used to reset your password.`
-      : `Email address: ${state.email}.`;
-    $("change-email").textContent = "Change the email address";
+  } else if (waiting && !state.passwordReset) {
+    // This server cannot send the link: nothing to confirm, nothing expires.
+    $("email-state").textContent = confirmed
+      ? `Email address: ${confirmed}. Changing to ${waiting} (this server cannot send email to confirm it).`
+      : `Email address: ${waiting} (this server cannot send email to confirm it).`;
+    banner.hidden = true;
+  } else if (waiting) {
+    $("email-state").textContent = confirmed
+      ? `Email address: ${confirmed}, confirmed. Changing to ${waiting}: open the link AudioNet emailed there within 7 days. Until then, password-reset links still go to ${confirmed}.`
+      : `Email address: ${waiting}, not confirmed yet. Open the link AudioNet emailed there within 7 days; until then it cannot be used to reset your password, and after that it is removed.`;
     $("email-banner-heading").textContent = "Confirm your email address";
-    $("email-banner-text").textContent = `AudioNet emailed a link to ${state.email}. Open it to confirm the address, so it can be used to reset your password if you forget it. Check the spam folder if it did not arrive.`;
+    $("email-banner-text").textContent = confirmed
+      ? `AudioNet emailed a link to ${waiting}. Open it within 7 days to switch to that address; until then, password-reset links still go to ${confirmed}. Check the spam folder if it did not arrive.`
+      : `AudioNet emailed a link to ${waiting}. Open it within 7 days to confirm the address, so it can be used to reset your password if you forget it; unconfirmed addresses are removed after 7 days. Check the spam folder if it did not arrive.`;
     $("banner-add-email").hidden = true;
     $("banner-send-link").hidden = false;
-    // Without email on the server there is nothing to confirm.
-    banner.hidden = !state.passwordReset;
+    banner.hidden = false;
   } else {
-    $("email-state").textContent = `Email address: ${state.email}, confirmed. It is used only to reset your password if you forget it.`;
-    $("change-email").textContent = "Change the email address";
+    $("email-state").textContent = `Email address: ${confirmed}, confirmed. It is used only to reset your password if you forget it.`;
     banner.hidden = true;
   }
 }
@@ -194,7 +202,7 @@ function openEmailForm() {
   clearError();
   $("email-form").hidden = false;
   $("change-email").setAttribute("aria-expanded", "true");
-  $("email-address").value = state.email || "";
+  $("email-address").value = state.pendingEmail || state.email || "";
   $("email-address").focus();
 }
 
@@ -231,10 +239,11 @@ $("email-form").addEventListener("submit", async (e) => {
   try {
     const r = await api("POST", "/api/v1/account/email", { email, password });
     closeEmailForm(false);
-    setEmailState(r.email, r.email_verified);
-    announce(r.link_sent
-      ? `Email address saved. AudioNet emailed a link to ${r.email}; open it to confirm the address.`
-      : `Email address saved: ${r.email}.`);
+    setEmailState(r.email, r.pending_email);
+    if (!r.pending_email) announce(`Email address: ${r.email}, as before.`);
+    else if (!r.link_sent) announce(`Email address saved: ${r.pending_email}.`);
+    else if (r.email) announce(`AudioNet emailed a link to ${r.pending_email}. The address changes when you open it; until then, password-reset links still go to ${r.email}, which was told about the change.`);
+    else announce(`Email address saved. AudioNet emailed a link to ${r.pending_email}; open it within 7 days to confirm the address.`);
     $("email-heading").focus();
   } catch (err) {
     showError(err.message);
@@ -248,12 +257,12 @@ $("banner-send-link").addEventListener("click", async () => {
   clearError();
   try {
     const r = await api("POST", "/api/v1/account/email/send-link");
-    if (r.email_verified) {
-      setEmailState(state.email, true);
+    setEmailState(r.email, r.pending_email);
+    if (!r.pending_email) {
       announce("The email address is already confirmed.");
       $("email-heading").focus();
     } else {
-      announce(`AudioNet emailed a new link to ${state.email}. Earlier links no longer work.`);
+      announce(`AudioNet emailed a new link to ${r.pending_email}; it works for 7 days. Earlier links no longer work.`);
     }
   } catch (err) {
     showError(err.message);
@@ -374,7 +383,7 @@ async function submitCredentials(path) {
     $("password").value = "";
     let me = { username: r.username };
     try { me = await api("GET", "/api/v1/me"); } catch (_) { /* loaded again below */ }
-    announce(me.email === null
+    announce(me.email === null && !me.pending_email
       ? `Signed in as ${r.username}. This account has no email address; adding one is highly recommended.`
       : `Signed in as ${r.username}.`);
     signedIn(me, true);
@@ -443,7 +452,7 @@ $("create-account-form").addEventListener("submit", async (e) => {
     announce(state.passwordReset
       ? `Account ${r.username} created. You are signed in. AudioNet emailed a link to ${email}; open it to confirm the address.`
       : `Account ${r.username} created. You are signed in.`);
-    signedIn({ username: r.username, email, email_verified: false }, true);
+    signedIn({ username: r.username, email: null, pending_email: email }, true);
   } catch (err) {
     showError(err.message);
     // Send focus where the fix is: the email address, the name when it is

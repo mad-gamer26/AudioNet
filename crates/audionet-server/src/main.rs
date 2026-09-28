@@ -105,7 +105,7 @@ fn user_command(config: &Config, action: UserAction) -> Result<(), String> {
             db.with(|c| {
                 let id = db::create_user(c, &username, &hash)?;
                 if let Some(e) = &email {
-                    db::set_email(c, id, Some(e), true)?;
+                    db::set_email(c, id, Some(e))?;
                 }
                 Ok(())
             })
@@ -122,7 +122,7 @@ fn user_command(config: &Config, action: UserAction) -> Result<(), String> {
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("no user named {username}"))?;
             if remove {
-                db.with(|c| db::set_email(c, user.id, None, false))
+                db.with(|c| db::set_email(c, user.id, None))
                     .map_err(|e| e.to_string())?;
                 println!("Removed the email address of {}.", user.username);
             } else {
@@ -134,7 +134,7 @@ fn user_command(config: &Config, action: UserAction) -> Result<(), String> {
                 {
                     return Err(format!("another account already uses {email}"));
                 }
-                db.with(|c| db::set_email(c, user.id, Some(&email), true))
+                db.with(|c| db::set_email(c, user.id, Some(&email)))
                     .map_err(|e| e.to_string())?;
                 println!(
                     "Set the email address of {} to {email} (confirmed).",
@@ -166,10 +166,13 @@ fn user_command(config: &Config, action: UserAction) -> Result<(), String> {
             let users = db.with(db::list_users).map_err(|e| e.to_string())?;
             println!("{} users.", users.len());
             for u in users {
-                match (&u.email, u.email_verified) {
-                    (Some(e), true) => println!("{}: email {e}, confirmed", u.username),
-                    (Some(e), false) => println!("{}: email {e}, not confirmed", u.username),
-                    (None, _) => println!("{}: no email address", u.username),
+                let email = match &u.email {
+                    Some(e) => format!("email {e}"),
+                    None => "no confirmed email address".into(),
+                };
+                match &u.pending_email {
+                    Some(p) => println!("{}: {email}; waiting for confirmation: {p}", u.username),
+                    None => println!("{}: {email}", u.username),
                 }
             }
         }

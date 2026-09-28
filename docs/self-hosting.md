@@ -122,10 +122,14 @@ Passwords must be at least 10 characters. Changing a password signs the
 user out of all browsers.
 
 Email addresses are used only to reset forgotten passwords. Accounts
-created in the web client must give one (AudioNet emails a link to confirm
-it); accounts made before email addresses existed can add one in the web
-client, which recommends it with a notice until they do. An administrator
-can set an address, recorded as confirmed:
+created in the web client must give one, and AudioNet emails a link to
+confirm it. Until it is confirmed the address only waits: it keeps no one
+else from using it, and it is dropped after 7 days (the link's lifetime;
+"Send the link again" restarts them). Accounts made before email
+addresses existed can add one in the web client, which recommends it with
+a notice until they do. Changing a confirmed address keeps it in use, and
+tells it about the change, until the new address is confirmed. An
+administrator can set an address, recorded as confirmed:
 
 ```sh
 sudo -u audionet sh -c 'echo "a long password here" | /opt/audionet/bin/audionet-server --config /etc/audionet/config.toml user add alice --email alice@example.com'

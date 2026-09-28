@@ -122,8 +122,11 @@ Where the server allows it:
   headed "Add an email address", says "An email address is highly
   recommended. It is used only to reset your password if you forget it.",
   with an "Add an email address" button; signing in also announces that
-  the account has no address. With an unconfirmed address the region is
-  headed "Confirm your email address" and has "Send the link again".
+  the account has no address. With an address waiting for confirmation
+  the region is headed "Confirm your email address", says where the link
+  went, that it works for 7 days, and (when changing) that reset links
+  still go to the confirmed address meanwhile; it has "Send the link
+  again".
 * The "Email address" part (a heading, after "Add a device") states the
   address in words ("Email address: NAME, confirmed."). Its button is a
   disclosure (`aria-expanded`) for a form with the address and the

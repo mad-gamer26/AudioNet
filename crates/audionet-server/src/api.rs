@@ -8,8 +8,10 @@
 //!   device signs in with the account password.
 //!
 //! Email: new accounts give an address (older ones may add one); the server
-//! emails a link to confirm it, and password-reset links go only to
-//! confirmed addresses.
+//! emails a link to confirm it. Until then it is only waiting: it keeps no
+//! one else from using the address, and it is dropped after the link's 7
+//! days. Password-reset links go only to the confirmed address, which a
+//! change replaces only once the new address is confirmed.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -452,6 +454,7 @@ async fn create_account(s: &Shared, address: &str, c: &NewAccount) -> ApiResult<
         .map_err(ApiError::internal)?;
     let name = c.username.clone();
     let address_for_db = email.clone();
+    let pending_deadline = pending_deadline(s);
     let created =
         s.db.call(move |conn| {
             if db::user_by_name(conn, &name)?.is_some() {
@@ -465,7 +468,7 @@ async fn create_account(s: &Shared, address: &str, c: &NewAccount) -> ApiResult<
                 return Ok(Err(email_taken()));
             }
             let id = db::create_user(conn, &name, &hash)?;
-            db::set_email(conn, id, Some(&address_for_db), false)?;
+            db::set_pending_email(conn, id, Some(&address_for_db), pending_deadline)?;
             Ok(Ok(id))
         })
         .await;
@@ -485,6 +488,12 @@ async fn create_account(s: &Shared, address: &str, c: &NewAccount) -> ApiResult<
     tracing::info!(user = %c.username, "account created");
     send_link(s, user_id, &c.username, &email, EmailPurpose::Verify).await?;
     Ok(c.username.clone())
+}
+
+/// When an address given now stops waiting for confirmation: with the link
+/// (7 days); never on a server that cannot send the link.
+fn pending_deadline(s: &AppState) -> Option<i64> {
+    s.mailer.enabled().then(|| db::now_s() + VERIFY_LINK_TTL_S)
 }
 
 /// The server's host name, as emails name it.
@@ -527,8 +536,15 @@ async fn send_link(
     let token = new_token(prefix);
     let hash = hash_token(&token);
     let to = email.to_owned();
-    s.db.call(move |c| db::create_email_token(c, &hash, user_id, purpose, &to, ttl))
-        .await?;
+    s.db.call(move |c| {
+        db::create_email_token(c, &hash, user_id, purpose, &to, ttl)?;
+        if purpose == EmailPurpose::Verify {
+            // A new link gives the waiting address its full time again.
+            db::extend_pending_email(c, user_id, db::now_s() + ttl)?;
+        }
+        Ok(())
+    })
+    .await?;
     s.email_limit.record(&key, Instant::now());
     let link = format!(
         "{}/?{param}={token}",
@@ -542,7 +558,7 @@ async fn send_link(
                 "Hello {username},\n\n\
                  Confirm that this is the email address for your AudioNet account on {host} by opening this link:\n\n\
                  {link}\n\n\
-                 The link works for 7 days. AudioNet uses this address only to reset your password if you forget it.\n\n\
+                 The link works for 7 days; if the address is not confirmed by then, AudioNet forgets it. AudioNet uses this address only to reset your password if you forget it.\n\n\
                  If you did not create an AudioNet account or add this address, you can ignore this email.\n"
             ),
         ),
@@ -719,7 +735,7 @@ async fn me(State(s): State<Shared>, p: Principal) -> ApiResult<Json<serde_json:
         "username": p.username,
         "node_id": p.node.map(|n| n.id),
         "email": user.email,
-        "email_verified": user.email_verified,
+        "pending_email": user.pending_email,
     })))
 }
 
@@ -731,8 +747,9 @@ struct ChangeEmail {
     password: String,
 }
 
-/// Sets the account's email address (unconfirmed) and emails a link to
-/// confirm it.
+/// Starts changing (or adding) the account's address: the new one waits
+/// for confirmation, with a link emailed to it, while the confirmed one
+/// stays in use and is told about the change.
 async fn change_email(
     State(s): State<Shared>,
     p: Principal,
@@ -760,29 +777,72 @@ async fn change_email(
     })?;
     let uid = p.user_id;
     let address = email.clone();
-    let taken =
+    let deadline = pending_deadline(&s);
+    let outcome =
         s.db.call(move |c| {
-            if db::email_taken(c, &address, uid)? {
-                return Ok(true);
+            let Some(user) = db::user_by_id(c, uid)? else {
+                return Ok(None);
+            };
+            if user
+                .email
+                .as_deref()
+                .is_some_and(|e| e.eq_ignore_ascii_case(&address))
+            {
+                // Back to the confirmed address: nothing to confirm.
+                db::set_pending_email(c, uid, None, None)?;
+            } else if !db::email_taken(c, &address, uid)? {
+                db::set_pending_email(c, uid, Some(&address), deadline)?;
             }
-            db::set_email(c, uid, Some(&address), false)?;
-            Ok(false)
+            Ok(Some((user.email, db::user_by_id(c, uid)?)))
         })
-        .await
-        .map_err(|_| email_taken())?;
-    if taken {
+        .await?;
+    let Some((old, Some(now))) = outcome else {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Please sign in.",
+        ));
+    };
+    let Some(pending) = now.pending_email.clone() else {
+        if now.email.is_some() {
+            // The confirmed address was chosen again.
+            return Ok(Json(json!({
+                "email": now.email,
+                "pending_email": null,
+                "link_sent": false,
+            })));
+        }
+        return Err(email_taken());
+    };
+    if !pending.eq_ignore_ascii_case(&email) {
         return Err(email_taken());
     }
-    tracing::info!(user = %p.username, "email address changed");
-    let sent = send_link(&s, uid, &p.username, &email, EmailPurpose::Verify).await?;
+    tracing::info!(user = %p.username, "email address change started");
+    let sent = send_link(&s, uid, &p.username, &pending, EmailPurpose::Verify).await?;
+    if let Some(old) = old.filter(|_| s.mailer.enabled()) {
+        let host = server_host(&s);
+        s.mailer.send_later(
+            old,
+            "Your AudioNet email address is being changed",
+            format!(
+                "Hello {},\n\n\
+                 Someone signed in to your AudioNet account on {host} with its password and asked to change its email address to {pending}.\n\n\
+                 The change happens only when that address is confirmed; until then, password-reset links still come to this address.\n\n\
+                 If this was not you, reset your password now with \"Forgot your password?\" on {}, and then change the email address back.\n",
+                p.username,
+                s.config.public_url.trim_end_matches('/'),
+            ),
+        );
+    }
     Ok(Json(json!({
-        "email": email,
-        "email_verified": false,
+        "email": now.email,
+        "pending_email": pending,
         "link_sent": sent,
     })))
 }
 
-/// Emails the account's address another confirmation link.
+/// Emails the waiting address another confirmation link (and gives it 7
+/// more days).
 async fn send_verify_link(
     State(s): State<Shared>,
     p: Principal,
@@ -794,27 +854,35 @@ async fn send_verify_link(
             .ok_or_else(|| {
                 ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "Please sign in.")
             })?;
-    let Some(email) = user.email else {
+    let Some(pending) = user.pending_email else {
+        if user.email.is_some() {
+            return Ok(Json(json!({
+                "email": user.email,
+                "pending_email": null,
+                "link_sent": false,
+            })));
+        }
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "no_email",
             "This account has no email address. Add one first.",
         ));
     };
-    if user.email_verified {
-        return Ok(Json(json!({ "email_verified": true, "link_sent": false })));
-    }
     if !s.mailer.enabled() {
         return Err(no_email_service());
     }
-    if !send_link(&s, uid, &p.username, &email, EmailPurpose::Verify).await? {
+    if !send_link(&s, uid, &p.username, &pending, EmailPurpose::Verify).await? {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "email_limit",
             "Several emails were sent to this account in the last hour. Wait an hour, then try again.",
         ));
     }
-    Ok(Json(json!({ "email_verified": false, "link_sent": true })))
+    Ok(Json(json!({
+        "email": user.email,
+        "pending_email": pending,
+        "link_sent": true,
+    })))
 }
 
 fn no_email_service() -> ApiError {
@@ -845,21 +913,27 @@ async fn verify_email(
     Json(r): Json<LinkToken>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let hash = hash_token(&r.token);
-    let user =
+    let (user, confirmed) =
         s.db.call(move |c| {
-            let user = db::take_email_token(c, &hash, EmailPurpose::Verify)?;
-            if let Some(u) = &user {
-                db::mark_email_verified(c, u.id)?;
-            }
-            Ok(user)
+            let Some(user) = db::take_email_token(c, &hash, EmailPurpose::Verify)? else {
+                return Ok(None);
+            };
+            let confirmed = db::confirm_pending_email(c, user.id)?;
+            Ok(Some((user, confirmed)))
         })
         .await?
         .ok_or_else(link_invalid)?;
+    if !confirmed {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "email_taken",
+            "Another account confirmed this email address first. Choose another address.",
+        ));
+    }
     tracing::info!(user = %user.username, "email address confirmed");
     Ok(Json(json!({
         "username": user.username,
-        "email": user.email,
-        "email_verified": true,
+        "email": user.pending_email,
     })))
 }
 
@@ -918,7 +992,6 @@ async fn forgot_password(
             id,
             username,
             email: Some(email),
-            email_verified: true,
             ..
         }) => {
             if send_link(&s, id, &username, &email, EmailPurpose::Reset).await? {
@@ -973,8 +1046,6 @@ async fn reset_password(
             let user = db::take_email_token(c, &hash, EmailPurpose::Reset)?;
             if let Some(u) = &user {
                 db::set_password(c, u.id, &new_hash)?;
-                // The link reached the address, so it is confirmed.
-                db::mark_email_verified(c, u.id)?;
             }
             Ok(user)
         })

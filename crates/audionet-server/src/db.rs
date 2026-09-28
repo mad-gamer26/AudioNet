@@ -29,9 +29,13 @@ pub struct User {
     pub id: i64,
     pub username: String,
     pub password_hash: String,
-    /// Optional for accounts made before email addresses were required.
+    /// The confirmed address: where password-reset links go. Optional
+    /// (older accounts, and new ones until they confirm).
     pub email: Option<String>,
-    pub email_verified: bool,
+    /// An address waiting for confirmation (the one given at sign-up, or a
+    /// new one replacing `email`), until it is confirmed or expires. It does
+    /// not keep anyone else from using the address.
+    pub pending_email: Option<String>,
 }
 
 /// What an emailed link is for.
@@ -112,10 +116,14 @@ impl Db {
         }
         if version < 3 {
             // Version 3: email addresses (required for new accounts, optional
-            // for older ones) and single-use emailed links, stored hashed.
+            // for older ones): a confirmed one, unique, and one waiting for
+            // confirmation, which expires (NULL: never, on a server that
+            // cannot send email); and single-use emailed links, stored
+            // hashed.
             conn.execute_batch(
                 "ALTER TABLE users ADD COLUMN email TEXT;
-                ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE users ADD COLUMN pending_email TEXT;
+                ALTER TABLE users ADD COLUMN pending_email_expires_at INTEGER;
                 CREATE UNIQUE INDEX users_email ON users (email COLLATE NOCASE);
                 CREATE TABLE email_tokens (
                     token_hash BLOB PRIMARY KEY,
@@ -168,7 +176,10 @@ pub fn create_user(c: &Connection, username: &str, password_hash: &str) -> rusql
     Ok(c.last_insert_rowid())
 }
 
-const USER_COLUMNS: &str = "id, username, password_hash, email, email_verified";
+/// A waiting address counts only until it expires.
+const USER_COLUMNS: &str = "id, username, password_hash, email,
+    CASE WHEN pending_email_expires_at IS NULL OR pending_email_expires_at > unixepoch()
+         THEN pending_email END";
 
 fn user_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
     Ok(User {
@@ -176,7 +187,7 @@ fn user_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         username: r.get(1)?,
         password_hash: r.get(2)?,
         email: r.get(3)?,
-        email_verified: r.get(4)?,
+        pending_email: r.get(4)?,
     })
 }
 
@@ -198,6 +209,7 @@ pub fn user_by_id(c: &Connection, id: i64) -> rusqlite::Result<Option<User>> {
     .optional()
 }
 
+/// The account whose confirmed address is `email`.
 pub fn user_by_email(c: &Connection, email: &str) -> rusqlite::Result<Option<User>> {
     c.query_row(
         &format!("SELECT {USER_COLUMNS} FROM users WHERE email = ?1 COLLATE NOCASE"),
@@ -207,7 +219,8 @@ pub fn user_by_email(c: &Connection, email: &str) -> rusqlite::Result<Option<Use
     .optional()
 }
 
-/// Whether another account already uses `email`.
+/// Whether another account has confirmed `email` (addresses waiting for
+/// confirmation do not count).
 pub fn email_taken(c: &Connection, email: &str, except_user: i64) -> rusqlite::Result<bool> {
     c.query_row(
         "SELECT EXISTS (SELECT 1 FROM users WHERE email = ?1 COLLATE NOCASE AND id != ?2)",
@@ -216,24 +229,78 @@ pub fn email_taken(c: &Connection, email: &str, except_user: i64) -> rusqlite::R
     )
 }
 
-/// Sets (or, with `None`, removes) a user's address. A new address is
-/// unconfirmed unless `verified`; outstanding links for the old one stop
-/// working.
-pub fn set_email(
-    c: &Connection,
-    user_id: i64,
-    email: Option<&str>,
-    verified: bool,
-) -> rusqlite::Result<()> {
+/// Sets (or, with `None`, removes) a user's confirmed address, dropping
+/// any waiting one and outstanding links. Other accounts waiting for the
+/// same address lose it: it is now confirmed as someone else's.
+pub fn set_email(c: &Connection, user_id: i64, email: Option<&str>) -> rusqlite::Result<()> {
     c.execute(
-        "UPDATE users SET email = ?1, email_verified = ?2 WHERE id = ?3",
-        params![email, verified, user_id],
+        "UPDATE users SET email = ?1, pending_email = NULL, pending_email_expires_at = NULL WHERE id = ?2",
+        params![email, user_id],
     )?;
     c.execute(
         "DELETE FROM email_tokens WHERE user_id = ?1",
         params![user_id],
     )?;
+    if let Some(e) = email {
+        c.execute(
+            "UPDATE users SET pending_email = NULL, pending_email_expires_at = NULL
+             WHERE pending_email = ?1 COLLATE NOCASE AND id != ?2",
+            params![e, user_id],
+        )?;
+    }
     Ok(())
+}
+
+/// Sets (or, with `None`, cancels) the address waiting for confirmation;
+/// the confirmed one stays in use meanwhile. Earlier confirmation links stop
+/// working. `expires_at`: when it is dropped unless confirmed (`None`:
+/// never).
+pub fn set_pending_email(
+    c: &Connection,
+    user_id: i64,
+    email: Option<&str>,
+    expires_at: Option<i64>,
+) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE users SET pending_email = ?1, pending_email_expires_at = ?2 WHERE id = ?3",
+        params![email, email.and(expires_at), user_id],
+    )?;
+    c.execute(
+        "DELETE FROM email_tokens WHERE user_id = ?1 AND purpose = 'verify'",
+        params![user_id],
+    )?;
+    Ok(())
+}
+
+/// Gives the waiting address a new deadline (a new link was sent).
+pub fn extend_pending_email(c: &Connection, user_id: i64, expires_at: i64) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE users SET pending_email_expires_at = ?1 WHERE id = ?2 AND pending_email IS NOT NULL",
+        params![expires_at, user_id],
+    )?;
+    Ok(())
+}
+
+/// Makes the waiting address the confirmed one. `false` if another account
+/// confirmed it first (it stays unconfirmed here).
+pub fn confirm_pending_email(c: &Connection, user_id: i64) -> rusqlite::Result<bool> {
+    let Some(email) = user_by_id(c, user_id)?.and_then(|u| u.pending_email) else {
+        return Ok(false);
+    };
+    if email_taken(c, &email, user_id)? {
+        return Ok(false);
+    }
+    set_email(c, user_id, Some(&email))?;
+    Ok(true)
+}
+
+/// Forgets waiting addresses past their deadline.
+pub fn drop_expired_pending_emails(c: &Connection) -> rusqlite::Result<usize> {
+    c.execute(
+        "UPDATE users SET pending_email = NULL, pending_email_expires_at = NULL
+         WHERE pending_email_expires_at IS NOT NULL AND pending_email_expires_at <= ?1",
+        params![now_s()],
+    )
 }
 
 /// Stores a new emailed link for `user_id`, replacing any earlier link for
@@ -247,6 +314,7 @@ pub fn create_email_token(
     ttl_s: i64,
 ) -> rusqlite::Result<()> {
     let now = now_s();
+    drop_expired_pending_emails(c)?;
     c.execute(
         "DELETE FROM email_tokens WHERE expires_at < ?1 OR (user_id = ?2 AND purpose = ?3)",
         params![now, user_id, purpose.as_str()],
@@ -259,7 +327,8 @@ pub fn create_email_token(
 }
 
 /// Uses up a link: returns its user if it exists, has not expired, is for
-/// `purpose`, and was sent to the address the account has now.
+/// `purpose`, and was sent to the address it is for now (the waiting
+/// address for confirmation, the confirmed one for a reset).
 pub fn take_email_token(
     c: &Connection,
     hash: &TokenHash,
@@ -284,9 +353,11 @@ pub fn take_email_token(
     }
     let user = user_by_id(c, user_id)?;
     Ok(user.filter(|u| {
-        u.email
-            .as_deref()
-            .is_some_and(|e| e.eq_ignore_ascii_case(&email))
+        let current = match purpose {
+            EmailPurpose::Verify => u.pending_email.as_deref(),
+            EmailPurpose::Reset => u.email.as_deref(),
+        };
+        current.is_some_and(|e| e.eq_ignore_ascii_case(&email))
     }))
 }
 
@@ -303,14 +374,6 @@ pub fn email_token_owner(
         |r| r.get(0),
     )
     .optional()
-}
-
-pub fn mark_email_verified(c: &Connection, user_id: i64) -> rusqlite::Result<()> {
-    c.execute(
-        "UPDATE users SET email_verified = 1 WHERE id = ?1",
-        params![user_id],
-    )?;
-    Ok(())
 }
 
 pub fn set_password(c: &Connection, user_id: i64, password_hash: &str) -> rusqlite::Result<()> {
@@ -510,46 +573,74 @@ mod tests {
             let a = create_user(c, "alice", "hash")?;
             let b = create_user(c, "bob", "hash")?;
             assert_eq!(user_by_name(c, "alice")?.unwrap().email, None);
-            set_email(c, a, Some("Alice@Example.com"), false)?;
-            assert!(email_taken(c, "alice@example.COM", b)?);
-            assert!(!email_taken(c, "alice@example.com", a)?);
-            assert!(
-                set_email(c, b, Some("alice@example.com"), false).is_err(),
-                "one account per address"
-            );
-            assert_eq!(user_by_email(c, "ALICE@example.com")?.unwrap().id, a);
 
+            // A waiting address blocks no one: both may wait for it.
+            set_pending_email(c, a, Some("Shared@Example.com"), Some(now_s() + 60))?;
+            assert!(!email_taken(c, "shared@example.com", b)?);
+            set_pending_email(c, b, Some("shared@example.com"), Some(now_s() + 60))?;
+            assert!(
+                user_by_email(c, "shared@example.com")?.is_none(),
+                "not confirmed"
+            );
+
+            // The first to confirm gets it; the other stops waiting for it.
             let t = hash_token("verify-link");
-            create_email_token(c, &t, a, EmailPurpose::Verify, "Alice@Example.com", 60)?;
+            create_email_token(c, &t, a, EmailPurpose::Verify, "Shared@Example.com", 60)?;
             assert!(
                 take_email_token(c, &t, EmailPurpose::Reset)?.is_none(),
                 "wrong purpose"
             );
+            let tb = hash_token("verify-b");
+            create_email_token(c, &tb, b, EmailPurpose::Verify, "shared@example.com", 60)?;
             let u = take_email_token(c, &t, EmailPurpose::Verify)?.unwrap();
-            assert_eq!(u.id, a);
+            assert!(confirm_pending_email(c, u.id)?);
+            let alice = user_by_id(c, a)?.unwrap();
+            assert_eq!(
+                (alice.email.as_deref(), alice.pending_email),
+                (Some("Shared@Example.com"), None)
+            );
+            assert_eq!(user_by_id(c, b)?.unwrap().pending_email, None);
+            assert!(
+                take_email_token(c, &tb, EmailPurpose::Verify)?.is_none(),
+                "bob's link is for an address he no longer waits for"
+            );
             assert!(
                 take_email_token(c, &t, EmailPurpose::Verify)?.is_none(),
                 "single use"
             );
+            assert!(email_taken(c, "SHARED@example.com", b)?);
+            // A confirmed address is still unique.
+            assert!(set_email(c, b, Some("shared@example.com")).is_err());
 
-            // Only the newest reset link works, and changing the address
-            // cancels links sent to the old one.
+            // Changing: the confirmed address keeps working for resets until
+            // the new one is confirmed.
             let r1 = hash_token("reset-1");
             let r2 = hash_token("reset-2");
-            create_email_token(c, &r1, a, EmailPurpose::Reset, "alice@example.com", 60)?;
-            create_email_token(c, &r2, a, EmailPurpose::Reset, "alice@example.com", 60)?;
-            assert!(take_email_token(c, &r1, EmailPurpose::Reset)?.is_none());
-            set_email(c, a, Some("new@example.com"), false)?;
-            assert!(take_email_token(c, &r2, EmailPurpose::Reset)?.is_none());
+            create_email_token(c, &r1, a, EmailPurpose::Reset, "shared@example.com", 60)?;
+            create_email_token(c, &r2, a, EmailPurpose::Reset, "shared@example.com", 60)?;
+            assert!(
+                take_email_token(c, &r1, EmailPurpose::Reset)?.is_none(),
+                "newest only"
+            );
+            set_pending_email(c, a, Some("new@example.com"), Some(now_s() + 60))?;
+            assert_eq!(user_by_email(c, "shared@example.com")?.unwrap().id, a);
+            assert!(take_email_token(c, &r2, EmailPurpose::Reset)?.is_some());
 
-            // Expired links do not work.
+            // Expired links and expired waiting addresses do not count.
             let old = hash_token("old");
-            create_email_token(c, &old, a, EmailPurpose::Reset, "new@example.com", -1)?;
+            create_email_token(c, &old, a, EmailPurpose::Reset, "shared@example.com", -1)?;
             assert!(take_email_token(c, &old, EmailPurpose::Reset)?.is_none());
+            set_pending_email(c, b, Some("late@example.com"), Some(now_s() - 1))?;
+            assert_eq!(user_by_id(c, b)?.unwrap().pending_email, None);
+            assert_eq!(drop_expired_pending_emails(c)?, 1);
+            // Without a deadline (a server without email), it stays.
+            set_pending_email(c, b, Some("kept@example.com"), None)?;
+            assert_eq!(drop_expired_pending_emails(c)?, 0);
+            assert!(user_by_id(c, b)?.unwrap().pending_email.is_some());
 
-            // Several accounts may have no address.
-            set_email(c, a, None, false)?;
-            assert!(!email_taken(c, "new@example.com", b)?);
+            // Several accounts may have no confirmed address.
+            set_email(c, a, None)?;
+            assert!(!email_taken(c, "shared@example.com", b)?);
             Ok(())
         })
         .unwrap();
@@ -574,7 +665,7 @@ mod tests {
         }
         let db = Db::open(&path).unwrap();
         let u = db.with(|c| user_by_name(c, "old")).unwrap().unwrap();
-        assert_eq!((u.email, u.email_verified), (None, false));
+        assert_eq!((u.email, u.pending_email), (None, None));
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -22,6 +22,8 @@ to a small SMTP sink in this script, so no real email is sent:
 7. Adding an address needs the password (a wrong one is refused, with
    focus on the password field); afterwards the confirmation email
    arrives and the state is announced.
+8. Changing a confirmed address says the old one stays in use until the
+   new one is confirmed; the new one gets a link and the old one a notice.
 
 Environment: AUDIONET_SERVER (default target/release/audionet-server.exe).
 Requires: pip install selenium; Chrome.
@@ -309,6 +311,29 @@ try:
     check("Send the link again announces it", "emailed a new link" in status, status)
     to, message = wait_mail(4)
     check("...and the email arrives", to == "veteran@example.com", str(to))
+
+    # 8. Changing a confirmed address keeps it until the new one is confirmed.
+    drv.get(link_in(message, "verify"))
+    w.until(lambda d: shown(d, "app-section"))
+    status_text(drv, "confirmed")
+    time.sleep(0.3)
+    drv.find_element(By.ID, "change-email").click()
+    field = drv.find_element(By.ID, "email-address")
+    field.clear()
+    field.send_keys("veteran.new@example.com")
+    drv.find_element(By.ID, "email-password").send_keys("correct horse battery")
+    submit(drv, "email-form")
+    status = status_text(drv, "changes when you open it")
+    check("changing announces that the old address stays until confirmed",
+          "veteran.new@example.com" in status and "still go to veteran@example.com" in status, status)
+    state = drv.find_element(By.ID, "email-state").text
+    check("...the Email address part says both", "veteran@example.com, confirmed. Changing to veteran.new@example.com" in state, state)
+    banner = drv.find_element(By.ID, "email-banner-text").text
+    check("...the banner asks to confirm the new one", shown(drv, "email-banner") and "still go to veteran@example.com" in banner, banner)
+    wait_mail(6)
+    sent_to = sorted(t for t, _ in inbox[4:6])
+    check("...a link to the new address and a notice to the old one",
+          sent_to == ["veteran.new@example.com", "veteran@example.com"], str(sent_to))
 finally:
     drv.quit()
     if proc:

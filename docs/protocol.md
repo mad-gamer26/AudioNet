@@ -335,14 +335,14 @@ All bodies are JSON. Errors: HTTP status plus
 | `GET /api/v1/health` | none | `{"status":"ok","connections":N}` |
 | `GET /api/v1/info` | none | `{"name":"AudioNet","version","protocol_version","allow_registration","email_required","password_reset"}`; `password_reset` is whether the server can send email; clients use it to check a server URL |
 | `POST /api/v1/login` | none (Origin checked if present) | `{username, password}` → sets the session cookie; returns `{username, token}` |
-| `POST /api/v1/register` | none (Origin checked if present) | `{username, password, email}`: creates an account and signs in, like login, and emails a link to confirm the address. Only if `allow_registration`; within the sign-up limits (`429 sign_up_limit`); reserved names and passwords containing the username are refused (`400`); a missing or malformed address is `400 bad_email`; a taken name is `409 username_taken`, an address another account uses `409 email_taken` |
+| `POST /api/v1/register` | none (Origin checked if present) | `{username, password, email}`: creates an account and signs in, like login, and emails a link to confirm the address. Only if `allow_registration`; within the sign-up limits (`429 sign_up_limit`); reserved names and passwords containing the username are refused (`400`); a missing or malformed address is `400 bad_email`; a taken name is `409 username_taken`, an address another account has confirmed `409 email_taken` (an address only waiting for confirmation elsewhere is accepted) |
 | `POST /api/v1/logout` | session | clears the session |
-| `GET /api/v1/me` | session or device | `{username, node_id, email, email_verified}`; `email` is `null` for older accounts without one |
-| `POST /api/v1/account/email` | session or device | `{email, password}` (the account password, `401 bad_password` if wrong): sets the address, unconfirmed, and emails a link to confirm it; `{email, email_verified, link_sent}` |
-| `POST /api/v1/account/email/send-link` | session or device | emails a new confirmation link (earlier ones stop working); `400 no_email`, `503 email_unavailable`, `429 email_limit` |
-| `POST /api/v1/email/verify` | none (the link's token) | `{token}` → `{username, email, email_verified: true}`; `400 link_invalid` when used or expired |
+| `GET /api/v1/me` | session or device | `{username, node_id, email, pending_email}`: `email` is the confirmed address (`null` if none), `pending_email` one waiting for confirmation (`null` if none) |
+| `POST /api/v1/account/email` | session or device | `{email, password}` (the account password, `401 bad_password` if wrong): the address waits for confirmation and a link is emailed to it; a confirmed address stays in use until then and is emailed a notice of the change. Giving the confirmed address again cancels a change. `{email, pending_email, link_sent}`; `409 email_taken` if another account has confirmed it |
+| `POST /api/v1/account/email/send-link` | session or device | emails a new confirmation link to the waiting address (earlier ones stop working) and gives it 7 more days; `{email, pending_email, link_sent}`; `400 no_email`, `503 email_unavailable`, `429 email_limit` |
+| `POST /api/v1/email/verify` | none (the link's token) | `{token}` → `{username, email}`: the waiting address becomes the confirmed one, and other accounts waiting for it stop; `400 link_invalid` when used, expired or no longer waiting; `409 email_taken` if another account confirmed it first |
 | `POST /api/v1/password/forgot` | none (Origin checked if present) | `{account}` (username or email address) → always `{"requested": true}`, so it does not reveal whether the account exists; emails a reset link only to a confirmed address. `503 email_unavailable` without email settings; `429 reset_limit` after 10 requests from one client address in an hour |
-| `POST /api/v1/password/reset` | none (the link's token) | `{token, password}`: sets the password (the link works once, for 1 hour), confirms the address, signs out every browser session, and signs this browser in like login. Device tokens stay valid. A rejected password (`400 bad_password`) does not use up the link |
+| `POST /api/v1/password/reset` | none (the link's token) | `{token, password}`: sets the password (the link works once, for 1 hour, and only while the address it went to is still the confirmed one), signs out every browser session, and signs this browser in like login. Device tokens stay valid. A rejected password (`400 bad_password`) does not use up the link |
 | `POST /api/v1/nodes/sign-in` | account password (throttled like sign-in) | `{username, password, name, platform}` → `{node_id, token, username}`; the only way to add a device to an account; the password is not kept on the device |
 | `GET /api/v1/nodes` | session | `{nodes: [NodeSummary]}` |
 | `PATCH /api/v1/nodes/{id}` | session | `{name}` renames a device |
@@ -351,8 +351,11 @@ All bodies are JSON. Errors: HTTP status plus
 Failed sign-ins (web and device) are throttled per account name with
 exponential backoff.
 
-Emailed links are `{public_url}/?verify=TOKEN` (confirm an address, valid 7
-days) and `{public_url}/?reset=TOKEN` (choose a new password, valid 1
+An account has at most a confirmed address (unique) and one waiting for
+confirmation, which does not keep anyone else from using the address and
+is dropped when its 7 days end (on a server without email settings, where
+it cannot be confirmed, it is kept). Emailed links are
+`{public_url}/?verify=TOKEN` (confirm an address, valid 7 days) and `{public_url}/?reset=TOKEN` (choose a new password, valid 1
 hour); the web client takes the token out of the address bar at once.
 Tokens are stored only as SHA-256 hashes, and only the newest link of each
 kind works. An account is sent at most 3 emails an hour, the server at
