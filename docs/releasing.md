@@ -59,21 +59,25 @@ python scripts/release_sign.py keygen %USERPROFILE%\.audionet-release\update-sig
    ```sh
    powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 ^
      -DefaultServer https://audionet.mad-gamer.com ^
-     -UpdateUrl https://audionet.mad-gamer.com/downloads/latest.json
+     -UpdateUrl https://github.com/mad-gamer26/AudioNet/releases/latest/download/latest.json
    ```
 
    The script refuses to build if the signing key does not match the
    committed public key. It writes the zip, its `.sha256`, `latest.json`
    and `latest.json.sig` to `dist/`.
-3. For automatic updates, copy the zip and its `.sha256` to
-   `/opt/audionet/downloads/` on the server, then `latest.json` and its
-   signature last, so no one is offered a package that is not there yet.
-   The apps only accept a package next to the manifest, so the update
-   files stay on the server; older zips there can be removed.
-4. For people downloading AudioNet, publish a GitHub release (tag
-   `v<version>`) with the Windows and Mac zips and their `.sha256` files
-   attached, and the install steps in its notes. The web client and the
-   server's `/downloads/` page link to the latest release.
+3. Publish a GitHub release (tag `v<version>`, marked latest) with the
+   Windows and Mac zips, their `.sha256` files, and the signed manifests
+   `latest.json`, `latest.json.sig`, `latest-macos.json` and
+   `latest-macos.json.sig`, and the install steps in its notes.
+
+   That is also the update source: the apps are built to check
+   `.../releases/latest/download/latest.json` (the Mac app
+   `latest-macos.json` beside it). GitHub redirects those addresses to the
+   latest release's files, so the manifest and its package are always
+   the same release's; the app checks the manifest's signature with the
+   release key, then the package's size and SHA-256. The web client
+   links to the latest release for downloads. Nothing about releases is
+   on the AudioNet server.
 
 ## Self-hosters and forks
 
@@ -99,7 +103,7 @@ being moved there by the person who uses it.
 
    ```sh
    apps/macos/package.sh --default-server https://audionet.mad-gamer.com \
-     --update-url https://audionet.mad-gamer.com/downloads/latest.json \
+     --update-url https://github.com/mad-gamer26/AudioNet/releases/latest/download/latest.json \
      --public-key-file deploy/official/update-public-key.txt
    ```
 
@@ -143,9 +147,8 @@ being moved there by the person who uses it.
      --product audionet-macos-universal --name latest-macos.json
    ```
 
-3. Publish the zip and `.sha256` on the server first, then
-   `latest-macos.json` and its `.sig`; attach the zip and `.sha256` to the
-   same GitHub release as the Windows app.
+3. Attach the zip, its `.sha256`, `latest-macos.json` and its `.sig` to
+   the same GitHub release as the Windows app.
 
 ## Testing
 

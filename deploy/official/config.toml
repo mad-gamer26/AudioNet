@@ -3,7 +3,6 @@ public_url = "https://audionet.mad-gamer.com"
 bind = "127.0.0.1:8740"
 database = "/var/lib/audionet/audionet.db"
 web_root = "/opt/audionet/web"
-downloads_dir = "/opt/audionet/downloads"
 allow_registration = true
 # nginx's proxy-common.conf sets X-Real-IP from $remote_addr.
 client_address_header = "X-Real-IP"

@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "audionet-audio"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "audionet-protocol",
  "rtrb",
@@ -251,7 +251,7 @@ dependencies = [
 
 [[package]]
 name = "audionet-cli"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "audionet-audio",
  "audionet-codec",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "audionet-codec"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "audionet-protocol",
  "opus",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "audionet-desktop"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "audionet-node",
  "audionet-protocol",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "audionet-engine"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "audioadapter-buffers",
  "audionet-audio",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "audionet-ffi"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "audionet-node",
  "audionet-protocol",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "audionet-node"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "audionet-audio",
  "audionet-codec",
@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "audionet-protocol"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "audionet-server"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "argon2",
  "audionet-audio",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "audionet-transport"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "chacha20poly1305 0.11.0",
  "hkdf 0.13.0",
@@ -399,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "audionet-wasapi"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "audionet-audio",
  "audionet-protocol",
