@@ -2,10 +2,12 @@
 # Rust engine; no web view). Build the engine first, then:
 #   apps/ios/build-core.sh && cd apps/ios && xcodegen generate
 # Official builds may set AUDIONET_DEFAULT_SERVER (pre-filled at sign-in);
-# nothing in the app depends on a particular server.
+# nothing in the app depends on a particular server. The app icon is drawn
+# by make-icon.py. The bundle ID is the one registered for the official
+# App Store app; a build under another developer team needs its own.
 name: AudioNet
 options:
-  bundleIdPrefix: org.audionet
+  bundleIdPrefix: com.matthewdovi
   deploymentTarget:
     iOS: "17.0"
 settings:
@@ -34,11 +36,16 @@ targets:
         NSMicrophoneUsageDescription: "AudioNet sends this iPhone's microphone to your other devices when you choose to."
         NSLocalNetworkUsageDescription: "AudioNet connects directly to your other devices on this network, for the best sound and least delay."
         AudioNetDefaultServer: "$(AUDIONET_DEFAULT_SERVER)"
+        # Only standard, published encryption (ChaCha20-Poly1305, DTLS/SRTP
+        # for WebRTC, TLS), which is exempt: builds skip Apple's
+        # export-compliance question.
+        ITSAppUsesNonExemptEncryption: false
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.audionet.AudioNet
+        PRODUCT_BUNDLE_IDENTIFIER: com.matthewdovi.AudioNet
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
         # The engine is Rust with a C interface; UniFFI's generated Swift.
@@ -59,7 +66,7 @@ targets:
       - target: AudioNet
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.audionet.AudioNetUITests
+        PRODUCT_BUNDLE_IDENTIFIER: com.matthewdovi.AudioNetUITests
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.0"
 schemes:

@@ -70,7 +70,7 @@ try:
     account = "\n".join(lines)
     subprocess.run(["ssh", MAC, "umask 077; cat > /tmp/audionet-ios-account"], input=account.encode(), check=True)
     test = subprocess.run(["ssh", MAC,
-                           f"xcrun simctl boot {SIM} 2>/dev/null; xcrun simctl privacy {SIM} grant microphone org.audionet.AudioNet 2>/dev/null; "
+                           f"xcrun simctl boot {SIM} 2>/dev/null; xcrun simctl privacy {SIM} grant microphone com.matthewdovi.AudioNet 2>/dev/null; "
                            "export TEST_RUNNER_AUDIONET_TEST_ACCOUNT=\"$(cat /tmp/audionet-ios-account)\"; rm -f /tmp/audionet-ios-account; "
                            "cd ~/audionet-src/apps/ios && rm -rf /tmp/audionet-ios-uitests.xcresult && "
                            f"xcodebuild test -project AudioNet.xcodeproj -scheme AudioNet -destination 'platform=iOS Simulator,id={SIM}' "
