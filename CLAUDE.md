@@ -112,7 +112,10 @@ crypto (WebRTC for devices), `axum`/`tokio`/`rusqlite`/`argon2` (server),
 (no color), `hound` (WAV for verification), `ctrlc`, `ed25519-dalek`
 (update signature check, verify only) and `zip` (unpacking updates,
 pure-Rust deflate) in the desktop app, `turn-client-proto` (TURN relay
-client, sans-I/O like str0m) in the device agent.
+client, sans-I/O like str0m) in the device agent, `lettre` (SMTP for the
+server's confirmation and password-reset emails: STARTTLS/TLS and
+authentication over rustls; chosen over a local sendmail, which self-hosters
+may not have, and over hand-written SMTP).
 
 ## Project decisions
 
