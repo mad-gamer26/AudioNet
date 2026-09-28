@@ -26,8 +26,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-All four must pass; GitHub Actions runs them on Linux, Windows and macOS
-for every pull request. The simulation suite (`cargo test -p audionet-engine
+All four must pass. The simulation suite (`cargo test -p audionet-engine
 --test sim`) takes a few minutes; run it for any change to the receiver,
 playout or controllers. See [docs/testing.md](docs/testing.md) for hardware
 and soak testing.

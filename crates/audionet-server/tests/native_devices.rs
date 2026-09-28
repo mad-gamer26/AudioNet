@@ -30,47 +30,6 @@ const TONE_HZ: f64 = 997.0;
 #[derive(Default)]
 struct FakeAudio {
     played: Arc<Mutex<Vec<f32>>>,
-    timing: Arc<Timing>,
-}
-
-/// How well the simulated sound cards kept real time (for a failure's
-/// message: a slow test machine shows here, a network or playout problem
-/// does not).
-#[derive(Default)]
-struct Timing {
-    /// Longest single render call, in microseconds.
-    render_max_us: std::sync::atomic::AtomicU64,
-    /// Most 10 ms blocks the speakers or microphone were behind at once.
-    speaker_lag_blocks: std::sync::atomic::AtomicU64,
-    mic_lag_blocks: std::sync::atomic::AtomicU64,
-}
-
-impl FakeAudio {
-    fn timing(&self) -> String {
-        let t = &self.timing;
-        format!(
-            "longest render {} us; most blocks behind: speakers {}, microphone {}",
-            t.render_max_us.load(Relaxed),
-            t.speaker_lag_blocks.load(Relaxed),
-            t.mic_lag_blocks.load(Relaxed)
-        )
-    }
-}
-
-/// The newest receiving and sending diagnostics among the events waiting
-/// (other events are left out): what each side measured.
-fn latest_diagnostics(rx: &mut mpsc::UnboundedReceiver<AppEvent>) -> String {
-    let (mut receiving, mut sending) = (String::new(), String::new());
-    while let Ok(e) = rx.try_recv() {
-        if let AppEvent::Diagnostics { text, .. } = e {
-            if text.starts_with("Sending") {
-                sending = text;
-            } else {
-                receiving = text;
-            }
-        }
-    }
-    format!("{receiving} {sending}")
 }
 
 struct Guard(Arc<AtomicBool>);
@@ -108,7 +67,6 @@ impl NodeAudio for FakeAudio {
         let (mut producer, consumer) = audio_ring(RATE as usize, 2);
         let stop = Arc::new(AtomicBool::new(false));
         let done = Arc::clone(&stop);
-        let timing = Arc::clone(&self.timing);
         std::thread::spawn(move || {
             let start = Instant::now();
             let mut written = 0u64;
@@ -116,9 +74,6 @@ impl NodeAudio for FakeAudio {
             while !done.load(Relaxed) {
                 // Real-time pacing, like a sound card.
                 let due = (start.elapsed().as_secs_f64() * f64::from(RATE)) as u64;
-                timing
-                    .mic_lag_blocks
-                    .fetch_max(due.saturating_sub(written) / 480, Relaxed);
                 while written + 480 <= due {
                     for (i, frame) in block.chunks_mut(2).enumerate() {
                         let t = (written + i as u64) as f64 / f64::from(RATE);
@@ -149,22 +104,14 @@ impl NodeAudio for FakeAudio {
         let stop = Arc::new(AtomicBool::new(false));
         let done = Arc::clone(&stop);
         let played = Arc::clone(&self.played);
-        let timing = Arc::clone(&self.timing);
         std::thread::spawn(move || {
             let start = Instant::now();
             let mut rendered = 0u64;
             let mut buf = vec![0f32; 480 * 2];
             while !done.load(Relaxed) {
                 let due = (start.elapsed().as_secs_f64() * f64::from(RATE)) as u64;
-                timing
-                    .speaker_lag_blocks
-                    .fetch_max(due.saturating_sub(rendered) / 480, Relaxed);
                 while rendered + 480 <= due {
-                    let began = Instant::now();
                     source.render(&mut buf, audionet_audio::clock::now_ns());
-                    timing
-                        .render_max_us
-                        .fetch_max(began.elapsed().as_micros() as u64, Relaxed);
                     let mut p = played.lock().unwrap();
                     p.extend(buf.iter().step_by(2));
                     let excess = p.len().saturating_sub(RATE as usize * 3);
@@ -404,18 +351,8 @@ async fn two_native_devices_stream_audio_both_ways() {
     tokio::time::sleep(Duration::from_secs(3)).await;
     let (level, hz) = analyse(&phone_audio.played);
     println!("phone hears the PC: {level:.1} dBFS at {hz:.0} Hz");
-    let why = format!(
-        "phone: {}; PC {}; receiver: {}",
-        phone_audio.timing(),
-        pc_audio.timing(),
-        latest_diagnostics(&mut events)
-    );
-    println!("  {why}");
-    assert!(level > -20.0, "phone hears {level:.1} dBFS ({why})");
-    assert!(
-        (hz - TONE_HZ).abs() < 15.0,
-        "phone hears {hz:.0} Hz ({why})"
-    );
+    assert!(level > -20.0, "phone hears {level:.1} dBFS");
+    assert!((hz - TONE_HZ).abs() < 15.0, "phone hears {hz:.0} Hz");
     // The listening stream's volume, on what the phone plays.
     let full = level;
     check_volume(&commands, &listen, &phone_audio.played, full, "phone").await;
@@ -589,11 +526,7 @@ async fn a_device_that_does_not_share_receives_but_does_not_send() {
     println!("the laptop (not sharing) plays the phone: {level:.1} dBFS at {hz:.0} Hz");
     assert!(
         level > -20.0 && (hz - TONE_HZ).abs() < 15.0,
-        "{level:.1} dBFS at {hz:.0} Hz (laptop: {}; phone: {}; laptop receiver: {}; phone sender: {})",
-        laptop_audio.timing(),
-        phone_audio.timing(),
-        latest_diagnostics(&mut laptop_events),
-        latest_diagnostics(&mut phone_events)
+        "{level:.1} dBFS at {hz:.0} Hz"
     );
 
     // ...and listens to the phone.
@@ -632,10 +565,7 @@ async fn a_device_that_does_not_share_receives_but_does_not_send() {
     println!("the phone hears the laptop (sharing): {level:.1} dBFS at {hz:.0} Hz");
     assert!(
         level > -20.0 && (hz - TONE_HZ).abs() < 15.0,
-        "{level:.1} dBFS at {hz:.0} Hz (phone: {}; laptop: {}; phone receiver: {})",
-        phone_audio.timing(),
-        laptop_audio.timing(),
-        latest_diagnostics(&mut phone_events)
+        "{level:.1} dBFS at {hz:.0} Hz"
     );
 
     // 6. Stopping sharing ends what it sends, on the phone too; what it

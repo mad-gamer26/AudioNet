@@ -1,7 +1,5 @@
 # AudioNet
 
-[![CI](https://github.com/mad-gamer26/AudioNet/actions/workflows/ci.yml/badge.svg)](https://github.com/mad-gamer26/AudioNet/actions/workflows/ci.yml)
-
 AudioNet is open-source software for moving live audio between computers,
 phones and browsers with low latency: system audio from a PC to a phone,
 a microphone to another room, one application's sound to a browser tab.
