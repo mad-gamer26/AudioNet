@@ -6,7 +6,14 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+
+# A newer push to the same branch replaces a run still going.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -37,5 +44,11 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Lints
         run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Tests
+      # The audio simulation suite (tests/sim.rs) is pure computation: it
+      # gives the same results everywhere, so it runs on Linux only.
+      - name: Tests (everything)
+        if: runner.os == 'Linux'
         run: cargo test --all-targets
+      - name: Tests (all but the simulation suite)
+        if: runner.os != 'Linux'
+        run: cargo test --workspace --lib --bins --test list_output --test device_loss --test native_devices --test sign_up --test signaling
