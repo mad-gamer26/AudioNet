@@ -65,6 +65,8 @@ LAYER = {
 	"kb:h": "layerHelp",
 	"kb:escape": "layerCancel",
 }
+# The layer's commands that end it (the others keep it on).
+LAYER_ENDERS = {"script_openWindow", "script_layerCancel"}
 
 
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
@@ -208,12 +210,20 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		elif kind == "session":
 			s = self.model.streams.get(msg["session_id"])
 			if s is not None:
-				new = "connected" if msg["state"] == "active" else ("connecting" if msg["state"] == "starting" else msg["detail"])
 				self.model.add_log(f"{s.title}: {msg['detail']}")
-				if new != s.state:
-					s.state = new
-					if new == "connected" and conf["announceStreams"]:
-						self.say(_("{stream}: connected").format(stream=s.short_title))
+				state = msg["state"]
+				if state == "active":
+					s.state = "connected"
+					if not s.announced:
+						s.announced = True
+						if conf["announceStreams"]:
+							self.say(_("{stream}: connected").format(stream=s.short_title))
+				elif state == "failed":
+					s.state = msg["detail"]
+				elif state == "starting" and not s.announced:
+					# Progress from either device; once connected, the other
+					# device's "starting" is old news.
+					s.state = "connecting"
 		elif kind == "session_ended":
 			s = self.model.streams.pop(msg["session_id"], None)
 			if s is not None:
@@ -474,7 +484,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	# The command layer.
 
 	@script(
-		description=_("AudioNet commands: press a key after this one (H lists them)"),
+		description=_("AudioNet commands: keys after this one run AudioNet commands until Escape (H lists them)"),
 		gesture="kb:NVDA+alt+a",
 	)
 	def script_layer(self, gesture):
@@ -501,21 +511,25 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			return super().getScript(gesture)
 		found = super().getScript(gesture)
 		if found is None:
-			found = self.script_layerUnknown
+			return self.script_layerUnknown
+		if found.__name__ not in LAYER_ENDERS:
+			# Everything else keeps the layer on, so several commands (volume
+			# steps, reports) follow one another.
+			return found
 
-		# One key, then the layer ends. The wrapper keeps the script's name
-		# and description, which NVDA reads.
+		# Opening the window or Escape ends the layer. The wrapper keeps the
+		# script's name and description, which NVDA reads.
 		@functools.wraps(found)
-		def once(g):
+		def last(g):
 			self._exitLayer()
 			found(g)
 
-		return once
+		return last
 
 	# Layer-only scripts: no description, so Input Gestures does not list them.
 
 	def script_layerUnknown(self, gesture):
-		self.say(_("Not an AudioNet command. AudioNet commands off."))
+		self.say(_("Not an AudioNet command. Escape leaves AudioNet commands."))
 
 	def script_layerCancel(self, gesture):
 		self.say(_("AudioNet commands off"))
@@ -525,6 +539,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			_(
 				"AudioNet commands: W or O, open the AudioNet window. L, listen again. S, stop all streams. "
 				"R, report streams. M, mute or unmute. Up and down arrows, volume. D, report devices. "
-				"Escape, cancel."
+				"The commands stay on until you press Escape or open the window."
 			)
 		)

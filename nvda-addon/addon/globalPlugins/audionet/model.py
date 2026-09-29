@@ -17,9 +17,8 @@ LOG_LINES = 500
 
 
 def source_label(s):
-	"""A sound a device offers, or one of this computer's."""
-	if s.get("source_type") == "loopback":
-		return f"Sound playing on {s['name']}"
+	"""A sound a device offers, or one of this computer's. Devices already
+	name them in words ("Sound playing on Speakers", "Yeti Microphone")."""
 	return s["name"]
 
 
@@ -65,6 +64,9 @@ class Stream:
 		self.local_id = local_id
 		self.local_name = local_name
 		self.state = "connecting"
+		# Whether "connected" was announced: both devices report progress,
+		# and it is said once.
+		self.announced = False
 		self.volume = 100
 		self.muted = False
 

@@ -148,10 +148,11 @@ Where the server allows it:
 * NVDA's own conventions: a Tools menu item (AudioNet...), an AudioNet
   category in NVDA's settings (accounts, announcement choices), and
   commands in Input Gestures under AudioNet.
-* NVDA+Alt+A starts a command layer: the next key runs one command (W open
-  the window, L listen again, S stop all, R report streams, M mute or
-  unmute, up and down arrows volume, D report devices, H list the keys,
-  Escape cancel); any other key leaves it and says so.
+* NVDA+Alt+A turns on AudioNet commands: W or O open the window, L listen
+  again, S stop all, R report streams, M mute or unmute, up and down arrows
+  volume, D report devices, H list the keys. They stay on until Escape,
+  NVDA+Alt+A again, or opening the window (W or O); another key says it is
+  not an AudioNet command and that Escape leaves.
 * The AudioNet window uses standard controls, each labelled through NVDA's
   guiHelper: an Account choice (with its connection state in words), a
   Devices tree (a device, then "Sounds to listen to" and "Outputs to send

@@ -398,6 +398,8 @@ class MainWindow(wx.Dialog):
 		return self.tree.GetItemData(item) if item.IsOk() else None
 
 	def update_buttons(self):
+		if getattr(self, "_closing", False):
+			return
 		key = self.selected_key() or ()
 		kind = key[0] if key else None
 		self.listenButton.Enable(kind == "source" and self.playOn.GetCount() > 0)
@@ -464,6 +466,10 @@ class MainWindow(wx.Dialog):
 
 	def onClose(self, evt):
 		self.owner.window = None
+		# While the window is destroyed the tree reports its items going
+		# away as selection changes, after the buttons are gone.
+		self._closing = True
+		self.tree.Unbind(wx.EVT_TREE_SEL_CHANGED)
 		self.Destroy()
 
 

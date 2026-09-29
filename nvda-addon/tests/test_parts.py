@@ -72,8 +72,10 @@ class WordsTests(unittest.TestCase):
 		self.assertEqual(model.device_label({"name": "Mac", "online": False, "platform": None}), "Mac: offline")
 
 	def test_sources(self):
+		# Devices already say it in words; nothing is added.
 		self.assertEqual(
-			model.source_label({"name": "Speakers", "source_type": "loopback"}), "Sound playing on Speakers"
+			model.source_label({"name": "Sound playing on Speakers", "source_type": "loopback"}),
+			"Sound playing on Speakers",
 		)
 		self.assertEqual(model.source_label({"name": "Yeti", "source_type": "input"}), "Yeti")
 
