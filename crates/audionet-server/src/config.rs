@@ -373,14 +373,15 @@ mod tests {
         let path = dir.join("config.toml");
         std::fs::write(
             &path,
-            "public_url = \"https://a.example.com\"
-[ice]
-turn_urls = [\"turn:a.example.com:3478\"]
-[email]
-from = \"x@example.com\"
-smtp_host = \"smtp.example.com\"
-smtp_username = \"u\"
-",
+            concat!(
+                "public_url = \"https://a.example.com\"\n",
+                "[ice]\n",
+                "turn_urls = [\"turn:a.example.com:3478\"]\n",
+                "[email]\n",
+                "from = \"x@example.com\"\n",
+                "smtp_host = \"smtp.example.com\"\n",
+                "smtp_username = \"u\"\n",
+            ),
         )
         .unwrap();
         // Unless the test environment happens to set them.

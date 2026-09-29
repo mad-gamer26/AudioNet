@@ -90,6 +90,22 @@ keychain; with one, `package.sh` signs with it and, given an App Store
 Connect API key, notarizes. macOS treats each ad-hoc build as a new app,
 so it asks for permissions again after a rebuild.
 
+## The NVDA add-on (`nvda-addon`)
+
+Python for NVDA 2026.1 or later, with the engine as a separate program
+(`crates/audionet-visitor`, built for Windows x64). To package it:
+
+```sh
+python nvda-addon/build.py                      # dist/audionet-<version>.nvda-addon
+python nvda-addon/build.py --default-server https://audionet.example.com
+```
+
+The version is the workspace version. `--default-server` fills in the
+server address offered when adding an account; the add-on works with any
+server. Install the package by opening it (NVDA asks, then restarts).
+The engine client, account store and words are tested outside NVDA (see
+[testing.md](testing.md#4b-the-nvda-add-on)).
+
 ## The iPhone app (`apps/ios`)
 
 A native SwiftUI app on the same Rust engine as the Mac and Windows apps,

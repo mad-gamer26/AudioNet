@@ -55,7 +55,25 @@ Types: `crates/audionet-protocol`; wire formats: `docs/protocol.md`.
 | `audionet-node` | Device agent: sign-in, signaling client, WebRTC sessions, TURN relay |
 | `audionet-server` | Coordination server |
 | `audionet-cli` | `audionet` program |
+| `audionet-visitor` | Engine program of the NVDA add-on (JSON lines on standard input and output) |
 | `web/` | Browser client |
+| `nvda-addon/` | NVDA add-on (Python) |
+
+### Visitors
+
+A visitor uses an account without being one of its devices: the web client,
+and the NVDA add-on. It signs in with a web session (the password is used
+once), connects to the signaling WebSocket as a browser-kind client, and
+is never listed among the account's devices. It offers nothing to listen
+to and receives no offers, but starts sessions with the account's devices:
+listening to their sources, and sending to their outputs (a visitor may
+always send, as browsers may). `Agent::visitor` gives the native agent this
+role; the NVDA add-on runs one such agent per account in
+`audionet-visitor.exe`, a separate process started by NVDA, so audio
+threads, networking and any failure stay outside the screen reader. The
+add-on stores only each account's web session token, encrypted with
+Windows DPAPI for the Windows user; signing out ends the session on the
+server (`POST /api/v1/logout` with the token).
 
 ## 4. Control path versus media path
 

@@ -117,6 +117,54 @@ fn register(
     })
 }
 
+/// A visitor's sign-in (the NVDA add-on): a web session like the web
+/// client's, with no device record. Returns the canonical username and the
+/// session token, which stands in for the password until it expires or
+/// [`visitor_sign_out`] ends it.
+pub fn visitor_sign_in(
+    server_url: &str,
+    username: &str,
+    password: &str,
+) -> Result<(String, String), String> {
+    let url = check_server(server_url)?;
+    let mut resp = agent()
+        .post(format!("{url}/api/v1/login"))
+        .send_json(json!({ "username": username, "password": password }))
+        .map_err(|e| format!("could not reach {url}: {e}"))?;
+    if resp.status() != 200 {
+        return Err(resp
+            .body_mut()
+            .read_json::<ErrorBody>()
+            .map(|b| b.error.message)
+            .unwrap_or_else(|_| format!("the server answered HTTP {}", resp.status())));
+    }
+    #[derive(Deserialize)]
+    struct Session {
+        username: String,
+        token: String,
+    }
+    let s: Session = resp
+        .body_mut()
+        .read_json()
+        .map_err(|e| format!("unexpected answer from the server: {e}"))?;
+    Ok((s.username, s.token))
+}
+
+/// Ends a visitor's web session on the server. A session the server no
+/// longer knows counts as ended.
+pub fn visitor_sign_out(server_url: &str, token: &str) -> Result<(), String> {
+    let url = normalize_server_url(server_url)?;
+    let resp = agent()
+        .post(format!("{url}/api/v1/logout"))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send_empty()
+        .map_err(|e| format!("could not reach {url}: {e}"))?;
+    match resp.status().as_u16() {
+        200 | 204 | 401 => Ok(()),
+        other => Err(format!("the server answered HTTP {other}")),
+    }
+}
+
 /// Removes this device from its account on the server (signing out): its
 /// record and token are deleted, so nothing is left behind. A device the
 /// server no longer knows counts as removed.

@@ -26,6 +26,8 @@ replace it.
 | `crates/audionet-server` | Self-hostable coordination server (axum, SQLite). |
 | `crates/audionet-cli` | The `audionet` executable. |
 | `crates/audionet-ffi` | UniFFI bindings of the engine for Swift apps. |
+| `crates/audionet-visitor` | Engine program of the NVDA add-on (visitor, JSON lines). |
+| `nvda-addon/` | NVDA add-on (Python); `build.py` makes the `.nvda-addon`. |
 | `apps/macos` | Native macOS app (SwiftUI, XcodeGen). |
 | `apps/ios` | Native iPhone app (SwiftUI, XcodeGen). |
 | `apps/shared` | Swift shared by both Apple apps. |

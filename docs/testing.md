@@ -159,6 +159,26 @@ A MacBook with its lid closed disconnects the built-in microphone in
 hardware: it records exact silence, and AudioNet then warns that the
 microphone sends only digital silence. Use a loopback input in that case.
 
+## 4b. The NVDA add-on
+
+* `cargo test -p audionet-server --test native_devices a_visitor` signs a
+  visitor in with a web session, listens to a device and sends to it
+  (997 Hz both ways through the real Opus, WebRTC and playout path, with
+  simulated sound hardware), checks that the account's devices are only
+  the real device, and that signing out ends the session.
+* `python scripts/test/nvda_engine.py` drives `audionet-visitor.exe`
+  through the add-on's own engine client against a local server, with a
+  command-line device on this computer (real WASAPI audio, silent virtual
+  devices where present): sign-in, visitor connection, listening (packets
+  arrive), volume, stop, sending, no device record, a wrong password in
+  words, sign-out ending the session, and the engine exiting when the
+  add-on goes away.
+* `python -m unittest discover nvda-addon/tests`: the account store
+  (DPAPI-encrypted tokens) and the words the add-on says.
+* Not automated: the add-on inside a running NVDA (its window, settings
+  panel, command layer and announcements). That needs a manual session
+  with NVDA.
+
 ## 5. Soak tests
 
 Run the native path for at least an hour with diagnostics every minute and

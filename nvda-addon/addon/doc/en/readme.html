@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AudioNet for NVDA</title>
+</head>
+<body>
+<h1>AudioNet for NVDA</h1>
+
+<p>
+AudioNet moves live audio between your computers, phones and browsers.
+With this add-on, NVDA listens to your AudioNet devices on this computer,
+and sends this computer's microphone or sound to them.
+</p>
+
+<h2>NVDA is a visitor, not a device</h2>
+<p>
+NVDA joins your accounts the way the AudioNet web client does. It is not
+added to your account as a device, so it does not appear in your device
+list, and your other devices cannot listen to it or send to it. It can
+listen to your devices and send to them. To make this computer a device of
+your account instead, install the AudioNet app for Windows.
+</p>
+
+<h2>Adding an account</h2>
+<p>
+Open NVDA's settings (NVDA+N, Preferences, Settings) and choose the
+AudioNet category, then Add account. Enter your server address, your
+account name and your password. Your password is used once to sign in and
+is never kept; NVDA keeps only its sign-in, encrypted for your Windows
+user. You can add several accounts. Removing an account signs NVDA out of
+it; your devices and the account are not affected.
+</p>
+<p>
+You need an AudioNet account first: create one in your server's web
+client. Forgot your password? The Forgot password button opens your
+server's password reset page.
+</p>
+
+<h2>The AudioNet window</h2>
+<p>
+Open it from NVDA's Tools menu (AudioNet...), or press NVDA+Alt+A and then
+W. It has:
+</p>
+<ul>
+<li><strong>Account</strong>: which account's devices to show, with its connection state.</li>
+<li><strong>Devices</strong>: a tree. Each device says whether it is online and sharing.
+Expand it for <em>Sounds to listen to</em> (a device shares its sounds only when sharing is on)
+and <em>Outputs to send to</em>. Press Enter on a sound to listen to it, or on an output to send to it.</li>
+<li><strong>Play on this computer</strong>: where what you listen to plays.</li>
+<li><strong>Send from this computer</strong>: which microphone or sound you send.</li>
+<li><strong>Listen</strong> and <strong>Send</strong>: the same as Enter in the tree.</li>
+<li><strong>Streams</strong>: the streams you started, with their state. Select one to
+<strong>Stop</strong> it, or change its <strong>Volume</strong> and <strong>Mute</strong>
+(on this computer: what it plays here, or what it sends from here).</li>
+<li><strong>Status log</strong>: what happened, and each stream's measurements in words.</li>
+<li><strong>Accounts</strong>: opens the AudioNet settings.</li>
+</ul>
+<p>Closing the window keeps your streams running.</p>
+
+<h2>Keyboard commands</h2>
+<p>Press NVDA+Alt+A, then one of these keys:</p>
+<ul>
+<li>W or O: open the AudioNet window.</li>
+<li>L: listen again to the sound you last listened to.</li>
+<li>S: stop all streams.</li>
+<li>R: report the streams and their state.</li>
+<li>M: mute or unmute all streams.</li>
+<li>Up arrow and down arrow: all streams' volume, 10 percent at a time.</li>
+<li>D: report which devices are online.</li>
+<li>H: list these keys.</li>
+<li>Escape: cancel.</li>
+</ul>
+<p>
+Each of these commands can also have its own key: open Input Gestures
+(NVDA+N, Preferences, Input gestures) and look under AudioNet. NVDA+Alt+A
+can be changed there too.
+</p>
+
+<h2>Announcements</h2>
+<p>
+NVDA announces when a stream connects and when it ends for a reason other
+than your stopping it. In the AudioNet settings you can turn that off, or
+turn on announcements when devices go online or offline.
+</p>
+
+<h2>Privacy and security</h2>
+<p>
+Audio is always encrypted, and goes straight between this computer and
+your device (through your server's relay only when a direct path is
+impossible, and still encrypted). The AudioNet engine runs as a separate
+program started by NVDA (audionet-visitor.exe), so streaming never slows
+NVDA down; it stops when NVDA exits. The add-on does nothing on secure
+screens.
+</p>
+
+<p>AudioNet is open source under the MIT license: https://github.com/mad-gamer26/AudioNet</p>
+</body>
+</html>

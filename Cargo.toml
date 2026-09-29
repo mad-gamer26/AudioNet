@@ -12,6 +12,7 @@ members = [
     "crates/audionet-node",
     "crates/audionet-desktop",
     "crates/audionet-ffi",
+    "crates/audionet-visitor",
 ]
 
 [workspace.package]

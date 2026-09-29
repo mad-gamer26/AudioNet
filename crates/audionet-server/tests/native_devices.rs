@@ -266,6 +266,7 @@ fn agent_with(
         control,
         relay_only,
         sharing: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        visitor: false,
     }
 }
 
@@ -765,4 +766,169 @@ async fn audio_flows_through_a_real_turn_relay() {
     let result = tokio::time::timeout(Duration::from_secs(60), outcome).await;
     let _ = stop_tx.send(true);
     result.expect("the relay test timed out");
+}
+
+/// A visitor (the NVDA add-on): signed in with a web session, like the web
+/// client, it listens to a device and sends to it, while the account's
+/// devices stay just the one real device; signing out ends its session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_visitor_listens_and_sends_without_becoming_a_device() {
+    let base = start_server().await;
+    let pc_config = sign_in(&base, "Studio PC");
+    let pc_id = NodeId::new(pc_config.node_id.clone()).unwrap();
+    let (username, token) = {
+        let base = base.clone();
+        std::thread::spawn(move || {
+            audionet_node::account::visitor_sign_in(&base, "ALICE", "correct horse battery")
+        })
+        .join()
+        .unwrap()
+        .unwrap()
+    };
+    assert_eq!(username, "alice", "the canonical name comes back");
+    assert!(
+        token.starts_with("ans_"),
+        "a web session, not a device token"
+    );
+    let visitor_config = NodeConfig {
+        server_url: base.clone(),
+        node_id: String::new(),
+        token: token.clone(),
+        name: "NVDA".into(),
+        username,
+    };
+
+    let pc_audio = Arc::new(FakeAudio::default());
+    let visitor_audio = Arc::new(FakeAudio::default());
+    let (event_tx, mut events) = mpsc::unbounded_channel();
+    let (control, commands) = Control::new(Arc::new(move |e| {
+        let _ = event_tx.send(e);
+    }));
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let mut stop = stop_rx.clone();
+    tokio::spawn(
+        agent(pc_config, Arc::clone(&pc_audio), None).run(async move {
+            let _ = stop.changed().await;
+        }),
+    );
+    let mut visitor = agent(visitor_config, Arc::clone(&visitor_audio), Some(control));
+    visitor.visitor = true;
+    // Not sharing: a visitor needs no sharing to send (like the web client).
+    visitor.sharing.store(false, Relaxed);
+    let mut stop = stop_rx.clone();
+    tokio::spawn(visitor.run(async move {
+        let _ = stop.changed().await;
+    }));
+
+    let connected = next_event(&mut events, "the visitor connected", |e| {
+        matches!(e, AppEvent::Connected { .. })
+    })
+    .await;
+    assert!(
+        matches!(connected, AppEvent::Connected { node_id: None }),
+        "a visitor has no device id: {connected:?}"
+    );
+    next_event(&mut events, "the PC online", |e| match e {
+        AppEvent::Devices(nodes) => nodes.iter().any(|n| n.name == "Studio PC" && n.online),
+        AppEvent::DeviceUpdate(n) => n.name == "Studio PC" && n.online,
+        _ => false,
+    })
+    .await;
+
+    // Listen to the PC.
+    let listen = SessionId::new("visitor-listen").unwrap();
+    commands
+        .send(Command::Start {
+            session_id: listen.clone(),
+            node_id: pc_id.clone(),
+            remote: SessionMedia::Listen {
+                source_id: "input:mic".into(),
+            },
+            local: LocalMedia::Receive {
+                destination_id: "output:speakers".into(),
+            },
+        })
+        .unwrap();
+    next_event(&mut events, "listen connected", |e| {
+        matches!(e, AppEvent::Session { session_id, state: SessionState::Active, .. } if *session_id == listen)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let (level, hz) = analyse(&visitor_audio.played);
+    println!("the visitor hears the PC: {level:.1} dBFS at {hz:.0} Hz");
+    assert!(
+        level > -20.0 && (hz - TONE_HZ).abs() < 15.0,
+        "{level:.1} dBFS, {hz:.0} Hz"
+    );
+    commands
+        .send(Command::Stop {
+            session_id: listen.clone(),
+        })
+        .unwrap();
+
+    // Send to the PC's speakers.
+    let speak = SessionId::new("visitor-speak").unwrap();
+    commands
+        .send(Command::Start {
+            session_id: speak.clone(),
+            node_id: pc_id,
+            remote: SessionMedia::Speak {
+                destination_id: "output:speakers".into(),
+            },
+            local: LocalMedia::Send {
+                source_id: "input:mic".into(),
+            },
+        })
+        .unwrap();
+    next_event(&mut events, "send connected", |e| {
+        matches!(e, AppEvent::Session { session_id, state: SessionState::Active, .. } if *session_id == speak)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let (level, hz) = analyse(&pc_audio.played);
+    println!("the PC plays the visitor: {level:.1} dBFS at {hz:.0} Hz");
+    assert!(
+        level > -20.0 && (hz - TONE_HZ).abs() < 15.0,
+        "{level:.1} dBFS, {hz:.0} Hz"
+    );
+    commands.send(Command::Stop { session_id: speak }).unwrap();
+
+    // The account's devices: only the PC. The visitor is not a device.
+    let (base2, token2) = (base.clone(), token.clone());
+    let nodes: serde_json::Value = std::thread::spawn(move || {
+        ureq::get(&format!("{base2}/api/v1/nodes"))
+            .header("Authorization", &format!("Bearer {token2}"))
+            .call()
+            .unwrap()
+            .body_mut()
+            .read_json()
+            .unwrap()
+    })
+    .join()
+    .unwrap();
+    let names: Vec<&str> = nodes["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Studio PC"]);
+
+    // Signing out ends the web session: it no longer works.
+    let _ = stop_tx.send(true);
+    let status = std::thread::spawn(move || {
+        audionet_node::account::visitor_sign_out(&base, &token).unwrap();
+        ureq::get(&format!("{base}/api/v1/me"))
+            .header("Authorization", &format!("Bearer {token}"))
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .call()
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .join()
+    .unwrap();
+    assert_eq!(status, 401, "the session ended");
 }

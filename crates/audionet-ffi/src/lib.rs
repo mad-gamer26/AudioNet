@@ -475,6 +475,7 @@ impl Client {
             active_sessions: Arc::clone(&active),
             control: Some(control),
             relay_only: false,
+            visitor: false,
             sharing: Arc::clone(&self.sharing),
         };
         let ended = Arc::clone(&self.listener);

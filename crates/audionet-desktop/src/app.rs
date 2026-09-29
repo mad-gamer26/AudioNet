@@ -198,6 +198,7 @@ impl Running {
                 active_sessions: sessions,
                 control: Some(control),
                 relay_only: false,
+                visitor: false,
                 sharing: agent_sharing,
             };
             let result = rt.block_on(agent.run(async {

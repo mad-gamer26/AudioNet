@@ -713,7 +713,14 @@ async fn add_device(
 }
 
 async fn logout(State(s): State<Shared>, headers: HeaderMap, _p: Principal) -> ApiResult<Response> {
-    if let Some(token) = cookie_value(&headers, COOKIE) {
+    // The browser's cookie, or a visitor's (the NVDA add-on's) bearer web
+    // session; a device token is not a web session and is left alone.
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|t| !t.starts_with("ann_"));
+    if let Some(token) = cookie_value(&headers, COOKIE).or(bearer) {
         let hash = hash_token(token);
         s.db.call(move |c| db::delete_web_session(c, &hash)).await?;
     }

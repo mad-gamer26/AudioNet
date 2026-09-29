@@ -1,0 +1,25 @@
+[package]
+name = "audionet-visitor"
+description = "AudioNet engine for the NVDA add-on: joins accounts as a visitor (no device record) and streams audio, driven by JSON lines on standard input and output."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "audionet-visitor"
+path = "src/main.rs"
+
+[dependencies]
+audionet-node.workspace = true
+audionet-protocol.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+audionet-wasapi.workspace = true
+
+[lints]
+workspace = true

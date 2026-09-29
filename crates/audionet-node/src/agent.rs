@@ -5,8 +5,15 @@
 //! devices, and start sessions with them (listen to another device's
 //! source here, or send a source from here to another device's output).
 //!
+//! A visitor (`Agent::visitor`) is such a remote without being a device:
+//! like the web client, it signs in with a web session instead of a device
+//! credential, is not listed among the account's devices, offers nothing to
+//! listen to and receives nothing unasked, but listens to devices and sends
+//! to them. The NVDA add-on runs one per account.
+//!
 //! Reconnects with backoff after network problems. Stops for good only if
-//! the server rejects the device credential (the device was removed).
+//! the server rejects the credential (the device was removed, or the
+//! visitor's web session ended).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -149,6 +156,10 @@ pub struct Agent {
     /// it sees the other devices, listens to them and plays what they send
     /// it. Changed with [`Command::SetSharing`] (the app keeps its choice).
     pub sharing: Arc<AtomicBool>,
+    /// Connect as a visitor rather than a device: `config.token` is a web
+    /// session (`ans_…`), nothing about this computer's audio is announced,
+    /// and sending needs no sharing (as in the web client).
+    pub visitor: bool,
 }
 
 impl std::fmt::Debug for Agent {
@@ -236,9 +247,11 @@ impl Agent {
         {
             Ok((ws, _)) => ws,
             Err(tokio_tungstenite::tungstenite::Error::Http(resp)) if resp.status() == 401 => {
-                return Outcome::Fatal(
-                    "The server no longer recognizes this device. It may have been removed from your account. Sign it in again with `audionet node sign-in`.".into(),
-                );
+                return Outcome::Fatal(if self.visitor {
+                    "The sign-in to this account has ended (it expired, or the password was changed). Sign in again.".into()
+                } else {
+                    "The server no longer recognizes this device. It may have been removed from your account. Sign it in again with `audionet node sign-in`.".into()
+                });
             }
             Err(e) => return Outcome::Retry(format!("could not connect ({e})")),
         };
@@ -246,7 +259,11 @@ impl Agent {
         let hello = ClientMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
             client: ClientInfo {
-                kind: ClientKind::Node,
+                kind: if self.visitor {
+                    ClientKind::Browser
+                } else {
+                    ClientKind::Node
+                },
                 software: self.software.clone(),
                 platform: Some(self.platform),
             },
@@ -271,19 +288,30 @@ impl Agent {
                 }
                 _ => return Outcome::Retry("no reply from the server".into()),
             };
-        (self.status)(&format!(
-            "Connected to {} as \"{}\" for account {}.",
-            self.config.server_url, self.config.name, self.config.username
-        ));
-
-        // Before anything else: whether this device shares.
-        let sharing_now = ClientMessage::Sharing {
-            sharing: self.sharing.load(Relaxed),
-        };
-        if sink.send(send(&sharing_now)).await.is_err() {
-            return Outcome::Retry("the connection closed during sign-in".into());
+        if self.visitor {
+            (self.status)(&format!(
+                "Connected to {} as a visitor for account {}.",
+                self.config.server_url, self.config.username
+            ));
+        } else {
+            (self.status)(&format!(
+                "Connected to {} as \"{}\" for account {}.",
+                self.config.server_url, self.config.name, self.config.username
+            ));
+            // Before anything else: whether this device shares.
+            let sharing_now = ClientMessage::Sharing {
+                sharing: self.sharing.load(Relaxed),
+            };
+            if sink.send(send(&sharing_now)).await.is_err() {
+                return Outcome::Retry("the connection closed during sign-in".into());
+            }
         }
-        let mut last_endpoints = self.endpoints().await;
+        // A visitor offers nothing: it announces no sounds or outputs.
+        let mut last_endpoints = if self.visitor {
+            None
+        } else {
+            self.endpoints().await
+        };
         // Other devices as the server last described them (for names).
         let mut known: std::collections::HashMap<String, NodeSummary> =
             std::collections::HashMap::new();
@@ -477,7 +505,7 @@ impl Agent {
                         Command::Start { session_id, node_id, remote, local } => {
                             if sessions.contains_key(session_id.as_str()) {
                                 None
-                            } else if matches!(local, LocalMedia::Send { .. }) && !self.sharing.load(Relaxed) {
+                            } else if matches!(local, LocalMedia::Send { .. }) && !self.visitor && !self.sharing.load(Relaxed) {
                                 // Sending needs sharing; nothing reaches the network.
                                 self.emit(AppEvent::SessionEnded {
                                     session_id,
@@ -548,7 +576,7 @@ impl Agent {
                         }
                     }
                 }
-                _ = refresh.tick() => {
+                _ = refresh.tick(), if !self.visitor => {
                     let now = self.endpoints().await;
                     if now.is_some() && now != last_endpoints {
                         if let Some(m) = &now {

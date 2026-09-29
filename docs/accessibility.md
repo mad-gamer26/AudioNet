@@ -143,6 +143,26 @@ Where the server allows it:
   server's reset page in the browser, or, without a server address, says
   so and (Mac) moves focus to that field.
 
+## NVDA add-on
+
+* NVDA's own conventions: a Tools menu item (AudioNet...), an AudioNet
+  category in NVDA's settings (accounts, announcement choices), and
+  commands in Input Gestures under AudioNet.
+* NVDA+Alt+A starts a command layer: the next key runs one command (W open
+  the window, L listen again, S stop all, R report streams, M mute or
+  unmute, up and down arrows volume, D report devices, H list the keys,
+  Escape cancel); any other key leaves it and says so.
+* The AudioNet window uses standard controls, each labelled through NVDA's
+  guiHelper: an Account choice (with its connection state in words), a
+  Devices tree (a device, then "Sounds to listen to" and "Outputs to send
+  to"; Enter listens or sends), Play on and Send from choices, a Streams
+  list, Stop, a Volume slider (5 percent per arrow, 10 per page) and a Mute
+  check box. Updates change items in place so NVDA's position is kept.
+* Streams connecting and ending (other than by Stop) are announced; devices
+  going online or offline can be. The status log is read-only text that
+  starts at the newest event, with each stream's measurements after it.
+* Not yet checked in a running NVDA: see docs/testing.md.
+
 ## Web client specifics
 
 * Semantic landmarks (`header`, `main`, `footer`) and a skip link.
