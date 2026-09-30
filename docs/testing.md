@@ -179,6 +179,15 @@ microphone sends only digital silence. Use a loopback input in that case.
   panel, command layer and announcements). That needs a manual session
   with NVDA.
 
+## 4c. Sending rate on slow-timer PCs
+
+`python scripts/test/sender_rate.py` runs a command-line device on this
+computer with `AUDIONET_TEST_MIN_WAIT_MS=15` (its media loop never waits
+less than 15 ms, like a PC whose timer resolution nobody raised) sending to
+a visitor through a local server, and checks 100 packets a second sent with
+no frames refused, about 100 arriving, and no underruns. Before the fix it
+measured 79 packets a second and an underrun every few hundred ms.
+
 ## 5. Soak tests
 
 Run the native path for at least an hour with diagnostics every minute and

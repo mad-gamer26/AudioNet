@@ -51,6 +51,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const DISCONNECT_GRACE: Duration = Duration::from_secs(10);
 /// Loop cadence while idle, so captured audio is encoded promptly.
 const PUMP_INTERVAL: Duration = Duration::from_millis(5);
+/// Deadlines already past that one trip round the media loop hands to
+/// str0m at once (each releases a packet): enough for any backlog of a few
+/// hundred milliseconds, while still returning to read the network.
+const MAX_IMMEDIATE_TIMEOUTS: u32 = 64;
 /// How long a session waits for a removed or reconfigured audio device to
 /// come back before it ends. The network connection stays up meanwhile.
 const DEVICE_RETURN_GRACE: Duration = Duration::from_secs(30);
@@ -413,6 +417,8 @@ fn is_local_address(ip: std::net::IpAddr) -> bool {
 #[derive(Debug, Default)]
 struct RouteCounter {
     counts: [u64; 4],
+    /// When counting started (the last report).
+    since: Option<Instant>,
 }
 
 impl RouteCounter {
@@ -420,8 +426,26 @@ impl RouteCounter {
         self.counts[route as usize] += 1;
     }
 
-    /// "Route: …" for the packets since the last call, and starts again.
-    fn take_text(&mut self) -> String {
+    /// "Route: …" for the packets since the last call, with how many
+    /// datagrams a second reached this device from the network (before
+    /// WebRTC handles them: audio, and a few checks and reports), and
+    /// starts again.
+    fn take_text(&mut self, now: Instant) -> String {
+        let secs = self
+            .since
+            .replace(now)
+            .map(|at| now.saturating_duration_since(at).as_secs_f64());
+        let rate = match secs {
+            Some(s) if s > 0.0 => format!(
+                " Network: {:.1} datagrams a second.",
+                self.counts.iter().sum::<u64>() as f64 / s
+            ),
+            _ => String::new(),
+        };
+        self.route_text() + &rate
+    }
+
+    fn route_text(&mut self) -> String {
         const ALL: [Route; 4] = [
             Route::DirectLocal,
             Route::DirectInternet,
@@ -496,15 +520,17 @@ fn receive_diagnostics(o: &SpeakOutput) -> String {
 struct SendMeter {
     at: Instant,
     rtp: u64,
+    refused: u64,
     totals: crate::audio::CaptureTotals,
     ring: audionet_audio::ring::RingSnapshot,
 }
 
 impl SendMeter {
-    fn new(now: Instant, rtp: u64, capture: &crate::audio::OpenCapture) -> Self {
+    fn new(now: Instant, rtp: u64, refused: u64, capture: &crate::audio::OpenCapture) -> Self {
         Self {
             at: now,
             rtp,
+            refused,
             totals: capture.guard.capture_totals().unwrap_or_default(),
             ring: capture.consumer.stats().snapshot(),
         }
@@ -514,6 +540,7 @@ impl SendMeter {
         &mut self,
         now: Instant,
         rtp: u64,
+        refused: u64,
         frame_samples: u64,
         capture: &crate::audio::OpenCapture,
     ) -> String {
@@ -523,9 +550,11 @@ impl SendMeter {
         let rate = f64::from(capture.sample_rate.max(1));
         let ms = |frames: u64| frames as f64 * 1000.0 / rate;
         let packets = rtp.saturating_sub(self.rtp) / frame_samples.max(1);
+        let lost = refused.saturating_sub(self.refused).min(packets);
         let mut text = format!(
-            "Sending: {:.1} packets a second. Capture at {} Hz",
-            packets as f64 / secs,
+            "Sending: {:.1} packets a second ({} encoded frames refused by WebRTC for falling behind). Capture at {} Hz",
+            (packets - lost) as f64 / secs,
+            lost,
             capture.sample_rate
         );
         if let Some(t) = totals {
@@ -555,6 +584,7 @@ impl SendMeter {
         ));
         self.at = now;
         self.rtp = rtp;
+        self.refused = refused;
         self.ring = ring;
         text
     }
@@ -855,6 +885,17 @@ fn run(
     let mut route = RouteCounter::default();
     let mut rate = RateMeter::default();
     let mut send_meter: Option<SendMeter> = None;
+    // Encoded frames WebRTC refused (see `write_media`).
+    let mut refused_frames = 0u64;
+    // Test only: the shortest wait for network input, to reproduce PCs whose
+    // short waits last one 15.6 ms timer tick (no program raised the timer
+    // resolution). Unset in normal use: 1 ms.
+    let min_wait = Duration::from_millis(
+        std::env::var("AUDIONET_TEST_MIN_WAIT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1),
+    );
     let mut last_send_error = String::new();
     let mut last_report = Instant::now();
     let mut last_diagnostics = Instant::now();
@@ -1005,7 +1046,9 @@ fn run(
                                     *fill = 0;
                                     if let Ok(n) = encoder.encode(frame, packet) {
                                         if let (true, Some(m)) = (connected, mid) {
-                                            write_media(&mut rtc, m, *rtp_time, &packet[..n]);
+                                            if !write_media(&mut rtc, m, *rtp_time, &packet[..n]) {
+                                                refused_frames += 1;
+                                            }
                                         }
                                     }
                                     *rtp_time += encoder.frame_samples() as u64;
@@ -1017,11 +1060,15 @@ fn run(
                     if connected {
                         let now = Instant::now();
                         match &mut send_meter {
-                            None => send_meter = Some(SendMeter::new(now, *rtp_time, capture)),
+                            None => {
+                                send_meter =
+                                    Some(SendMeter::new(now, *rtp_time, refused_frames, capture))
+                            }
                             Some(m) if now.duration_since(m.at) >= SEND_REPORT_EVERY => {
                                 let text = m.report(
                                     now,
                                     *rtp_time,
+                                    refused_frames,
                                     encoder.frame_samples() as u64,
                                     capture,
                                 );
@@ -1080,7 +1127,7 @@ fn run(
                                     o.stage.stats().snapshot().datagrams,
                                     Instant::now()
                                 ),
-                                route.take_text()
+                                route.take_text(Instant::now())
                             ),
                         });
                     }
@@ -1088,13 +1135,30 @@ fn run(
             }
         }
 
-        // Drive str0m until it wants input.
+        // Drive str0m until it wants input. Its pacer releases one packet per
+        // poll and then asks to be woken at once (a deadline already past):
+        // that wake-up is given here, not after a wait on the socket, because
+        // a short wait can last a whole 15.6 ms timer tick on many PCs. With
+        // the socket wait in between, such a sender got out fewer than 100
+        // packets a second and WebRTC refused the rest (measured 79 a second
+        // with 15 ms waits, and about 92 from a laptop), so every listener
+        // ran dry. Bounded, so the loop still reads the network.
+        let mut due_now = 0;
         let deadline = loop {
             match rtc
                 .poll_output()
                 .map_err(|e| format!("WebRTC error: {e}"))?
             {
-                Output::Timeout(t) => break t,
+                Output::Timeout(t) => {
+                    let now = Instant::now();
+                    if t <= now && due_now < MAX_IMMEDIATE_TIMEOUTS {
+                        due_now += 1;
+                        rtc.handle_input(Input::Timeout(now))
+                            .map_err(|e| format!("WebRTC error: {e}"))?;
+                        continue;
+                    }
+                    break t;
+                }
                 Output::Transmit(t) => {
                     // From the relayed candidate: send through the relay.
                     if let Some(r) = relay.as_mut().filter(|r| t.source == r.relayed()) {
@@ -1157,8 +1221,8 @@ fn run(
 
         let wait = deadline
             .saturating_duration_since(Instant::now())
-            .min(PUMP_INTERVAL)
-            .max(Duration::from_millis(1));
+            .min(PUMP_INTERVAL.max(min_wait))
+            .max(min_wait);
         let _ = socket.set_read_timeout(Some(wait));
         let received_packet = socket.recv_from(&mut buf);
         if received_packet.is_ok() {
@@ -1217,19 +1281,25 @@ fn run(
     }
 }
 
-fn write_media(rtc: &mut Rtc, mid: Mid, rtp_time: u64, data: &[u8]) {
+/// Hands one encoded frame to WebRTC. `false` when it was refused (str0m
+/// holds at most about 100 frames it has not yet packetized: a sending loop
+/// that falls behind loses frames here, before they get sequence numbers,
+/// so receivers see fewer packets but no loss).
+fn write_media(rtc: &mut Rtc, mid: Mid, rtp_time: u64, data: &[u8]) -> bool {
     let Some(writer) = rtc.writer(mid) else {
-        return;
+        return false;
     };
     let Some(pt) = writer
         .payload_params()
         .find(|p| p.spec().codec == Codec::Opus)
         .map(|p| p.pt())
     else {
-        return;
+        return false;
     };
     let time = MediaTime::new(rtp_time, Frequency::FORTY_EIGHT_KHZ);
-    let _ = writer.write(pt, Instant::now(), time, data.to_vec());
+    writer
+        .write(pt, Instant::now(), time, data.to_vec())
+        .is_ok()
 }
 
 /// What the lookup of a peer's hidden (`.local`) addresses found.
@@ -1474,7 +1544,7 @@ mod route_tests {
 
         let mut c = RouteCounter::default();
         assert_eq!(
-            c.take_text(),
+            c.route_text(),
             "Route: nothing arrived since the last report."
         );
         for _ in 0..95 {
@@ -1483,7 +1553,7 @@ mod route_tests {
         for _ in 0..5 {
             c.count(Route::OurRelay);
         }
-        assert_eq!(c.take_text(), "Route: direct, across the internet.");
+        assert_eq!(c.route_text(), "Route: direct, across the internet.");
         for _ in 0..60 {
             c.count(Route::TheirRelay);
         }
@@ -1491,11 +1561,11 @@ mod route_tests {
             c.count(Route::DirectInternet);
         }
         assert_eq!(
-            c.take_text(),
+            c.route_text(),
             "Route: mostly through the relay (the other device's allocation) (60 % of packets), the rest by other paths."
         );
         assert_eq!(
-            c.take_text(),
+            c.route_text(),
             "Route: nothing arrived since the last report.",
             "starts again after each report"
         );

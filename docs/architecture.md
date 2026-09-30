@@ -305,9 +305,11 @@ Native sessions report both ends in words:
   jitter, the largest gap between packets, the clock difference the drift
   estimator sees, packets arriving a second, and the route since the last
   report (direct on the local network, direct across the internet, or
-  through the TURN relay, this device's allocation or the other's).
+  through the TURN relay, this device's allocation or the other's), with
+  the datagrams a second reaching this device before WebRTC handles them.
 * Sending, every 10 seconds (in the sending device's status log, and with
-  the stream when this device started it): packets a second, and on
+  the stream when this device started it): packets a second, encoded
+  frames WebRTC refused because the media loop fell behind, and on
   Windows the capture against real time (with the share of silence filled
   in while a loopback played nothing) and device glitches; audio dropped
   for falling behind (stale trim) and for a full buffer (overflow).
@@ -315,6 +317,15 @@ Native sessions report both ends in words:
 A sender short of real time (fewer packets a second, no loss) makes
 listeners run dry and re-buffer however good the network is; these two
 reports tell that apart from network loss and from the playback side.
+
+The media loop hands str0m every deadline that is already due before it
+waits on the socket: str0m's pacer releases one packet per poll and then
+asks to be woken at once, and a short socket wait lasts a whole 15.6 ms
+timer tick on PCs where no program raised the timer resolution. Waiting in
+between capped such senders below 100 packets a second (measured about 92
+from a laptop, 79 with 15 ms waits), with the rest refused unnumbered, so
+receivers saw no loss but ran dry. `scripts/test/sender_rate.py` keeps it
+fixed.
 
 ## 11. Open work (in order)
 
