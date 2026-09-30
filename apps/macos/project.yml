@@ -16,7 +16,7 @@ settings:
     # Signed automatic updates (docs/releasing.md); empty: never updates.
     AUDIONET_UPDATE_URL: ""
     AUDIONET_UPDATE_PUBLIC_KEY: ""
-    MARKETING_VERSION: "1.1.0"
+    MARKETING_VERSION: "1.1.1"
     CURRENT_PROJECT_VERSION: "1"
 targets:
   AudioNet:

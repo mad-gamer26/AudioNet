@@ -900,6 +900,23 @@ async fn a_visitor_listens_and_sends_without_becoming_a_device() {
     tokio::time::sleep(Duration::from_secs(3)).await;
     let (level, hz) = analyse(&pc_audio.played);
     println!("the PC plays the visitor: {level:.1} dBFS at {hz:.0} Hz");
+    // The sender reports what it sent: a full real-time stream, nothing
+    // dropped.
+    let report = next_event(&mut events, "the sending report", |e| {
+        matches!(e, AppEvent::Diagnostics { session_id, text } if *session_id == speak && text.starts_with("Sending:"))
+    })
+    .await;
+    if let AppEvent::Diagnostics { text, .. } = &report {
+        println!("{text}");
+        let rate: f64 = text["Sending: ".len()..]
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((95.0..=105.0).contains(&rate), "{text}");
+        assert!(text.contains("dropped 0 ms for falling behind"), "{text}");
+    }
     assert!(
         level > -20.0 && (hz - TONE_HZ).abs() < 15.0,
         "{level:.1} dBFS, {hz:.0} Hz"

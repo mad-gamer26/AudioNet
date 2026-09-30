@@ -62,6 +62,9 @@ const DEVICE_RETRY: Duration = Duration::from_secs(1);
 const SILENT_INPUT_WARNING: Duration = Duration::from_secs(3);
 /// How often a receiving session reports its diagnostics.
 const DIAGNOSTICS_EVERY: Duration = Duration::from_secs(2);
+/// How often a sending session reports what it sent (into the sending
+/// device's status log, so not as often as receive diagnostics).
+const SEND_REPORT_EVERY: Duration = Duration::from_secs(10);
 /// How long to wait for the TURN server to allocate a relayed address.
 const RELAY_ALLOCATE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -486,6 +489,77 @@ fn receive_diagnostics(o: &SpeakOutput) -> String {
     )
 }
 
+/// What a sending session delivered between reports: packets a second,
+/// the capture against real time, and what was dropped by cause. A sender
+/// that falls short of real time makes its listeners run dry however good
+/// the network is; this says where the audio went.
+struct SendMeter {
+    at: Instant,
+    rtp: u64,
+    totals: crate::audio::CaptureTotals,
+    ring: audionet_audio::ring::RingSnapshot,
+}
+
+impl SendMeter {
+    fn new(now: Instant, rtp: u64, capture: &crate::audio::OpenCapture) -> Self {
+        Self {
+            at: now,
+            rtp,
+            totals: capture.guard.capture_totals().unwrap_or_default(),
+            ring: capture.consumer.stats().snapshot(),
+        }
+    }
+
+    fn report(
+        &mut self,
+        now: Instant,
+        rtp: u64,
+        frame_samples: u64,
+        capture: &crate::audio::OpenCapture,
+    ) -> String {
+        let secs = now.duration_since(self.at).as_secs_f64().max(1e-3);
+        let totals = capture.guard.capture_totals();
+        let ring = capture.consumer.stats().snapshot();
+        let rate = f64::from(capture.sample_rate.max(1));
+        let ms = |frames: u64| frames as f64 * 1000.0 / rate;
+        let packets = rtp.saturating_sub(self.rtp) / frame_samples.max(1);
+        let mut text = format!(
+            "Sending: {:.1} packets a second. Capture at {} Hz",
+            packets as f64 / secs,
+            capture.sample_rate
+        );
+        if let Some(t) = totals {
+            let captured = t.captured.saturating_sub(self.totals.captured);
+            let filled = t.filled.saturating_sub(self.totals.filled);
+            let delivered = (captured + filled) as f64;
+            text.push_str(&format!(
+                ": {:.1} % of real time ({:.1} % of it silence filled in while nothing played), {} device glitches",
+                delivered / (secs * rate) * 100.0,
+                if delivered > 0.0 {
+                    filled as f64 / delivered * 100.0
+                } else {
+                    0.0
+                },
+                t.glitches.saturating_sub(self.totals.glitches),
+            ));
+            self.totals = t;
+        }
+        text.push_str(&format!(
+            "; dropped {:.0} ms for falling behind, {:.0} ms for a full buffer.",
+            ms(ring
+                .stale_trim_frames
+                .saturating_sub(self.ring.stale_trim_frames)),
+            ms(ring
+                .overflow_frames
+                .saturating_sub(self.ring.overflow_frames)),
+        ));
+        self.at = now;
+        self.rtp = rtp;
+        self.ring = ring;
+        text
+    }
+}
+
 /// Packets per second between reports: a sender that delivers less audio
 /// than real time (native devices send 100 packets a second, browsers 50)
 /// shows here, whatever the network does.
@@ -780,6 +854,7 @@ fn run(
     let (mut sent, mut send_errors, mut received) = (0u64, 0u64, 0u64);
     let mut route = RouteCounter::default();
     let mut rate = RateMeter::default();
+    let mut send_meter: Option<SendMeter> = None;
     let mut last_send_error = String::new();
     let mut last_report = Instant::now();
     let mut last_diagnostics = Instant::now();
@@ -938,6 +1013,29 @@ fn run(
                             }
                         });
                     }
+                    // What this device sent, every few seconds while connected.
+                    if connected {
+                        let now = Instant::now();
+                        match &mut send_meter {
+                            None => send_meter = Some(SendMeter::new(now, *rtp_time, capture)),
+                            Some(m) if now.duration_since(m.at) >= SEND_REPORT_EVERY => {
+                                let text = m.report(
+                                    now,
+                                    *rtp_time,
+                                    encoder.frame_samples() as u64,
+                                    capture,
+                                );
+                                events(SessionEvent::Diagnostics {
+                                    session_id: session_id.clone(),
+                                    text,
+                                });
+                            }
+                            Some(_) => {}
+                        }
+                    }
+                } else {
+                    // The device is gone: start measuring again when it is back.
+                    send_meter = None;
                 }
             }
             Pipeline::Speak {

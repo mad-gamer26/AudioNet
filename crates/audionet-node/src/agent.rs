@@ -448,6 +448,11 @@ impl Agent {
                     let msg = match event {
                         SessionEvent::Answer { session_id, sdp } => ClientMessage::SessionAnswer { session_id, sdp },
                         SessionEvent::Diagnostics { session_id, text } => {
+                            if !outgoing.contains_key(session_id.as_str()) {
+                                // A session another device asked for: its
+                                // report goes to this device's status log.
+                                (self.status)(&format!("Session {session_id}: {text}"));
+                            }
                             self.emit(AppEvent::Diagnostics { session_id, text });
                             continue;
                         }

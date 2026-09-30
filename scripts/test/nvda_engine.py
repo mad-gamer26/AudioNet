@@ -101,7 +101,8 @@ try:
 		[CLI, "node", "sign-in", "--server", base, "--user", "tester", "--password-stdin", "--name", "Test PC", "--config", node_cfg],
 		input=PASSWORD + "\n", text=True, check=True, capture_output=True,
 	)
-	procs.append(subprocess.Popen([CLI, "node", "run", "--config", node_cfg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+	node_log = open(os.path.join(work, "node.log"), "w", encoding="utf-8")
+	procs.append(subprocess.Popen([CLI, "node", "run", "--config", node_cfg], stdout=node_log, stderr=subprocess.STDOUT))
 
 	eng = engine.Engine(VISITOR, events.append)
 	eng.start()
@@ -149,6 +150,17 @@ try:
 
 	got = wait_for(packets, 20)
 	check("...and audio packets arrive", got is not None, got)
+	def sending_report():
+		with open(os.path.join(work, "node.log"), encoding="utf-8", errors="replace") as f:
+			return next((l.strip() for l in f if "Sending:" in l and "% of real time" in l), None)
+
+	report = wait_for(sending_report, 25)
+	print(f"   device: {report}")
+	check("...and the sending device reports its capture against real time", report is not None, report)
+	if report:
+		pct = float(report.split("Hz: ")[1].split(" %")[0])
+		check("...a full real-time stream from Windows loopback", 97.0 <= pct <= 103.0, pct)
+		check("...nothing dropped for falling behind", "dropped 0 ms for falling behind" in report, report)
 	eng.call("set_volume", session_id=sid, volume=0.5, muted=True)
 	check("5. volume and mute are accepted", True)
 	eng.call("stop", session_id=sid)

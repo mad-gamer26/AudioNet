@@ -19,6 +19,25 @@ pub trait StreamGuard: Send {
     /// If the stream has stopped (device removed, format changed...),
     /// returns why, in words. Non-blocking.
     fn failure(&mut self) -> Option<String>;
+
+    /// A capture stream's running totals, where the platform counts them:
+    /// what the device delivered, silence filled in for it, and its
+    /// glitches. Read from a non-real-time thread (atomics).
+    fn capture_totals(&self) -> Option<CaptureTotals> {
+        None
+    }
+}
+
+/// Running totals of a capture stream, in frames at its sample rate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaptureTotals {
+    /// Frames the device delivered.
+    pub captured: u64,
+    /// Frames of silence written while a loopback endpoint delivered
+    /// nothing (nothing playing).
+    pub filled: u64,
+    /// Gaps the device reported in its stream.
+    pub glitches: u64,
 }
 
 /// An open capture stream.

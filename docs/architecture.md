@@ -298,6 +298,24 @@ extremes). Reports are produced on control threads as linear text or JSON:
 `audionet capture-test`, `send`, `receive` (the AGENTS.md §22 snapshot),
 node status lines, and the web client's text diagnostics from `getStats`.
 
+Native sessions report both ends in words:
+
+* Receiving, every 2 seconds (shown with the stream): packets, loss, late
+  and concealed packets, buffer depth and its lowest point, underruns,
+  jitter, the largest gap between packets, the clock difference the drift
+  estimator sees, packets arriving a second, and the route since the last
+  report (direct on the local network, direct across the internet, or
+  through the TURN relay, this device's allocation or the other's).
+* Sending, every 10 seconds (in the sending device's status log, and with
+  the stream when this device started it): packets a second, and on
+  Windows the capture against real time (with the share of silence filled
+  in while a loopback played nothing) and device glitches; audio dropped
+  for falling behind (stale trim) and for a full buffer (overflow).
+
+A sender short of real time (fewer packets a second, no loss) makes
+listeners run dry and re-buffer however good the network is; these two
+reports tell that apart from network loss and from the playback side.
+
 ## 11. Open work (in order)
 
 1. Sleep/resume and network changes (a new local address) during node

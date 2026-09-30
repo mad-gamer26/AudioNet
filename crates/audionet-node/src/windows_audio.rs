@@ -31,6 +31,16 @@ impl StreamGuard for CaptureGuard {
             None => None,
         }
     }
+
+    fn capture_totals(&self) -> Option<crate::audio::CaptureTotals> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let c = &self.0.diagnostics().counters;
+        Some(crate::audio::CaptureTotals {
+            captured: c.frames_captured.load(Relaxed),
+            filled: c.idle_fill_frames.load(Relaxed),
+            glitches: c.device_discontinuities.load(Relaxed),
+        })
+    }
 }
 
 struct RenderGuard(RenderStream);
