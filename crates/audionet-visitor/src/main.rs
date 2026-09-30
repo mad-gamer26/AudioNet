@@ -172,6 +172,7 @@ impl Engine {
             relay_only: false,
             sharing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             visitor: true,
+            measurements_in_status: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
         let out = self.out.clone();

@@ -31,7 +31,7 @@ Early but working. What exists and is tested today:
 | Codec and transport | Opus, RTP framing, per-packet authenticated encryption (pre-shared-key LAN mode), WebRTC (DTLS-SRTP) for the server-coordinated path |
 | Receiver | Reordering, loss concealment, bounded playout buffer that adapts to the network, clock-drift correction, buffer-depth correction, stall recovery |
 | Server | Accounts, password sign-in for devices, device tokens, presence, WebRTC signaling, TURN credentials; self-hostable |
-| Web client | Sign in, see devices, listen to a device's sound, send your microphone to a device, text diagnostics |
+| Web client | Sign in, see devices, listen to a device's sound, send your microphone to a device, measurements for troubleshooting (off by default) |
 | Windows desktop app | Sign in with your account; share this computer; listen to your other devices and send audio to them; system tray, signed automatic updates; standard Win32 controls with UI Automation announcements |
 | iPhone app | Native SwiftUI app on the same engine: sign in, share this iPhone's microphone and output, listen to your other devices and send the microphone to them, background audio, mixes with other apps' audio; Xcode accessibility audit and a listen flow pass in the simulator; not yet in the App Store |
 | macOS app | Native SwiftUI app on the same engine: sign in, share this Mac, listen to your other devices and send to them, menu bar, start at login; microphones, outputs and system audio (Core Audio process taps); engine tested end to end between a Mac and a Windows PC, system audio included; Xcode accessibility audit passes; signed automatic updates; download from the GitHub releases; Developer ID signed and notarized |

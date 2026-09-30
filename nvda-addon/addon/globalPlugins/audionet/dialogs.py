@@ -124,17 +124,19 @@ class StatusLogDialog(wx.Dialog):
 		main = wx.BoxSizer(wx.VERTICAL)
 		sHelper = guiHelper.BoxSizerHelper(self, orientation=wx.VERTICAL)
 		events = plugin.model.log or [_("Nothing has happened yet.")]
-		diags = [
-			f"{s.title}\n{getattr(s, 'diagnostics', _('Not measured yet.'))}"
-			for s in plugin.model.streams.values()
-		]
-		text = (
-			"\n".join(events)
-			+ "\n\n"
-			+ _("Diagnostics")
-			+ "\n"
-			+ ("\n\n".join(diags) if diags else _("No active streams."))
-		)
+		text = "\n".join(events)
+		# Measurements only when "Show measurements" is on (settings).
+		if config.conf["audionet"]["showMeasurements"]:
+			diags = [
+				f"{s.title}\n{getattr(s, 'diagnostics', _('Not measured yet.'))}"
+				for s in plugin.model.streams.values()
+			]
+			text += (
+				"\n\n"
+				+ _("Measurements")
+				+ "\n"
+				+ ("\n\n".join(diags) if diags else _("No active streams."))
+			)
 		self.text = sHelper.addLabeledControl(
 			_("&Log:"),
 			wx.TextCtrl,
@@ -153,7 +155,7 @@ class StatusLogDialog(wx.Dialog):
 		self.SetSizer(main)
 		main.Fit(self)
 		self.CentreOnScreen()
-		# Start reading at the newest event (the diagnostics follow it).
+		# Start reading at the newest event (any measurements follow it).
 		self.text.SetInsertionPoint(self.text.XYToPosition(0, len(events) - 1))
 		self.text.SetFocus()
 
@@ -496,6 +498,10 @@ class AudioNetPanel(SettingsPanel):
 			wx.CheckBox(self, label=_("Announce when &streams connect and end"))
 		)
 		self.announceStreams.SetValue(conf["announceStreams"])
+		self.showMeasurements = sHelper.addItem(
+			wx.CheckBox(self, label=_("Show &measurements in the status log (for troubleshooting)"))
+		)
+		self.showMeasurements.SetValue(conf["showMeasurements"])
 		self.refreshAccounts()
 
 	def refreshAccounts(self, select=None):
@@ -533,3 +539,4 @@ class AudioNetPanel(SettingsPanel):
 		conf = config.conf["audionet"]
 		conf["announceDevices"] = self.announceDevices.GetValue()
 		conf["announceStreams"] = self.announceStreams.GetValue()
+		conf["showMeasurements"] = self.showMeasurements.GetValue()

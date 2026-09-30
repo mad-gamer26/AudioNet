@@ -161,14 +161,15 @@ Where the server allows it:
   check box. Updates change items in place so NVDA's position is kept.
 * Streams connecting and ending (other than by Stop) are announced; devices
   going online or offline can be. The status log is read-only text that
-  starts at the newest event, with each stream's measurements after it.
+  starts at the newest event; with "Show measurements" on (AudioNet
+  settings, off by default) each stream's measurements follow.
 * Not yet checked in a running NVDA: see docs/testing.md.
 
 ## Web client specifics
 
 * Semantic landmarks (`header`, `main`, `footer`) and a skip link.
 * Headings: "Sign in", "Your devices", "Active streams", "Add a device",
-  "Diagnostics".
+  and "Measurements" in the status log when shown.
 * Each device is a native disclosure (`<details>`/`<summary>`): one line,
   "Studio PC: online, Windows, 11 sounds, 6 outputs", announced as
   collapsed or expanded; Enter or Space opens it to its listen and send
@@ -179,8 +180,10 @@ Where the server allows it:
   command as plain text, with a copy button.
 * A "Status log" button opens a modal dialog (a native `<dialog>`) named
   "Status log": the Events (every announcement and problem so far, with
-  the time) and the Diagnostics (plain-text measurements for each stream,
-  never announced), both focusable text blocks, then Copy and Close.
+  the time), a "Show measurements" check box (off by default, kept in the
+  browser) and, when checked, the Measurements (plain-text measurements
+  for each stream, never announced); both are focusable text blocks, then
+  Copy and Close.
   Focus moves to the events; Escape or Close closes it and focus returns
   to the button (`scripts/test/web_status_log.py` checks this in Chrome's
   accessibility tree).
@@ -277,8 +280,9 @@ menu and button with its name, role and state:
   PC").
 - Each stream is a line of text such as "Listening to Speakers on Studio
   PC, playing on MacBook Air Speakers: connected",
-  with its measurements in a second line that VoiceOver reads on demand
-  and never announces. Each Stop button names its stream.
+  and, with "Show Measurements" on in Settings (off by default), its
+  measurements in a second line that VoiceOver reads on demand and never
+  announces. Each Stop button names its stream.
 - Changes that matter (online, a stream connected or ended, a warning such
   as a silent microphone, errors) are announced with VoiceOver
   announcements and also added to the status log. The **Status Log…**
@@ -390,8 +394,9 @@ With a screen reader running (NVDA, JAWS or VoiceOver):
 5. Sign a device in and start it: "NAME is now online" is announced once.
 6. In the device's "Sound to listen to" select, arrow through the sources;
    press Listen: "Starting …" then "… connected" are announced.
-7. Move to "Diagnostics": the text reads line by line and is not announced
-   on its own while you do other things.
+7. In the status log, check "Show measurements" and move to "Measurements":
+   the text reads line by line and is not announced on its own while you
+   do other things.
 8. Press the stream's Stop button: "Stopped: … You stopped it." is
    announced and focus lands on the "Active streams" heading.
 9. Sign out: focus moves to the "Sign in" heading.
@@ -420,8 +425,9 @@ With VoiceOver running (Command+F5):
    sound with the arrow keys and Return. Do the same for "Play it on", then
    press Listen: "Starting: Listening to …" and "…: connected." are
    announced.
-7. Read the stream line and its measurements with VO-arrow keys; the
-   measurements are never announced by themselves.
+7. Turn on Show Measurements in Settings, then read the stream line and
+   its measurements with VO-arrow keys; the measurements are never
+   announced by themselves.
 8. Press the stream's Stop button (its name includes the stream): "Stopped:
    …" is announced.
 9. Press Status Log…: a dialog opens. Read the log with VO-arrow keys line

@@ -298,7 +298,13 @@ extremes). Reports are produced on control threads as linear text or JSON:
 `audionet capture-test`, `send`, `receive` (the AGENTS.md §22 snapshot),
 node status lines, and the web client's text diagnostics from `getStats`.
 
-Native sessions report both ends in words:
+Native sessions report both ends in words. People see these reports only
+when they turn on "Show measurements" (Windows Settings, Mac and iPhone
+Settings, the web client's status log, the NVDA add-on's settings; off by
+default): otherwise the apps say what happens in words, without numbers.
+Technical setup details (addresses, candidates, packet counts while
+connecting, relay problems) are measurements too. The command line always
+shows them.
 
 * Receiving, every 2 seconds (shown with the stream): packets, loss, late
   and concealed packets, buffer depth and its lowest point, underruns,

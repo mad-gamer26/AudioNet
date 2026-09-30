@@ -160,6 +160,12 @@ pub struct Agent {
     /// session (`ans_…`), nothing about this computer's audio is announced,
     /// and sending needs no sharing (as in the web client).
     pub visitor: bool,
+    /// Whether measurements go to the status log too: technical notes of
+    /// every session, and the reports of sessions other devices asked for
+    /// (receive reports every 2 seconds stay with the stream). Off in the
+    /// apps unless the person turns on "Show measurements"; on in the
+    /// command line.
+    pub measurements_in_status: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -448,9 +454,7 @@ impl Agent {
                     let msg = match event {
                         SessionEvent::Answer { session_id, sdp } => ClientMessage::SessionAnswer { session_id, sdp },
                         SessionEvent::Diagnostics { session_id, text } => {
-                            if !outgoing.contains_key(session_id.as_str()) {
-                                // A session another device asked for: its
-                                // report goes to this device's status log.
+                            if self.measurements_in_status.load(Relaxed) && !text.starts_with("Receiving:") {
                                 (self.status)(&format!("Session {session_id}: {text}"));
                             }
                             self.emit(AppEvent::Diagnostics { session_id, text });

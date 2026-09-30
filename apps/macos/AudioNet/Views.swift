@@ -252,8 +252,9 @@ struct MainView: View {
                             VStack(alignment: .leading) {
                                 Text("\(row.title): \(row.state)")
                                     .accessibilityIdentifier("stream")
-                                // Measurements, readable on demand; never announced.
-                                if let live = model.diagnostics[row.id] {
+                                // Measurements only when "Show Measurements" is
+                                // on (Settings); never announced.
+                                if model.showMeasurements, let live = model.diagnostics[row.id] {
                                     LiveTextRow(live: live)
                                         .font(.callout)
                                         .foregroundStyle(.primary)
@@ -500,6 +501,9 @@ struct SettingsView: View {
                 .onChange(of: model.keepInMenuBar) { if !model.keepInMenuBar { model.startInMenuBar = false } }
             Toggle("Start AudioNet in the menu bar, without its window or Dock icon", isOn: $model.startInMenuBar)
                 .onChange(of: model.startInMenuBar) { if model.startInMenuBar { model.keepInMenuBar = true } }
+            Toggle("Show measurements under streams and in the status log (for troubleshooting)",
+                   isOn: $model.showMeasurements)
+                .accessibilityIdentifier("showMeasurements")
             Section {
                 Toggle("Keep AudioNet up to date automatically", isOn: $updater.automatic)
                     .disabled(!updater.configured)

@@ -13,6 +13,11 @@ use audionet_protocol::Platform;
 use audionet_protocol::signal::{DestinationInfo, SourceInfo};
 use tokio::sync::{mpsc, oneshot};
 
+/// "Show measurements" (Settings, off by default): whether the agents also
+/// write measurements to the status log. Shared by every account.
+pub static MEASUREMENTS: std::sync::LazyLock<Arc<AtomicBool>> =
+    std::sync::LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+
 /// The server URL official builds suggest, set at build time with
 /// `AUDIONET_DEFAULT_SERVER`. Source builds leave it empty: nothing in the
 /// code depends on a particular server.
@@ -199,6 +204,7 @@ impl Running {
                 control: Some(control),
                 relay_only: false,
                 visitor: false,
+                measurements_in_status: Arc::clone(&MEASUREMENTS),
                 sharing: agent_sharing,
             };
             let result = rt.block_on(agent.run(async {

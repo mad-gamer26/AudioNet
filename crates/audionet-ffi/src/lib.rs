@@ -16,7 +16,7 @@
 //!
 //! The only `unsafe` in this crate is UniFFI's generated FFI glue.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -219,6 +219,18 @@ pub trait AudioUseListener: Send + Sync {
 }
 
 /// Sets (or removes, with `None`) the [`AudioUseListener`].
+/// "Show measurements" (off by default): whether the agents also write
+/// measurements (network details, what other devices were sent) to the
+/// status log. Shared by every account.
+static MEASUREMENTS: std::sync::LazyLock<Arc<AtomicBool>> =
+    std::sync::LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+
+/// Turns "Show measurements" on or off for every account.
+#[uniffi::export]
+pub fn set_show_measurements(on: bool) {
+    MEASUREMENTS.store(on, Relaxed);
+}
+
 #[uniffi::export]
 pub fn set_audio_use_listener(listener: Option<Arc<dyn AudioUseListener>>) {
     audionet_node::audio::set_audio_use_hook(listener.map(|l| {
@@ -476,6 +488,7 @@ impl Client {
             control: Some(control),
             relay_only: false,
             visitor: false,
+            measurements_in_status: Arc::clone(&MEASUREMENTS),
             sharing: Arc::clone(&self.sharing),
         };
         let ended = Arc::clone(&self.listener);

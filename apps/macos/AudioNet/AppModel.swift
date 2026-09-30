@@ -74,6 +74,12 @@ final class AppModel: ObservableObject {
     /// read once, to carry that choice over to accounts with no sharing
     /// choice of their own yet. No longer offered.
     @AppStorage("startSharing", store: AccountStore.settings) var startSharing = false
+    /// "Show Measurements" (Settings, off by default): numbers about streams
+    /// and the network, under each stream and in the status log, for
+    /// troubleshooting. Off, AudioNet says what happens in words only.
+    @AppStorage("showMeasurements", store: AccountStore.settings) var showMeasurements = false {
+        didSet { setShowMeasurements(on: showMeasurements) }
+    }
     @AppStorage("keepInMenuBar", store: AccountStore.settings) var keepInMenuBar = true
     /// Start with no window and no Dock icon, in the menu bar only.
     @AppStorage("startInMenuBar", store: AccountStore.settings) var startInMenuBar = false
@@ -100,6 +106,7 @@ final class AppModel: ObservableObject {
     init() {
         Updater.reportStarted()
         AccountStore.prepareTestProfile()
+        setShowMeasurements(on: showMeasurements)
         updater.model = self
         updater.afterLaunch()
         updater.start()

@@ -4,7 +4,8 @@
 1. The main page has a "Status log" button, not the log itself.
 2. The button opens a modal dialog named "Status log"; focus moves to the
    events, which hold every announcement so far (the sign-in).
-3. The dialog holds the Diagnostics and Copy and Close buttons.
+3. Measurements are hidden unless "Show measurements" (a check box, off)
+   is checked; then they are there, named. Copy and Close buttons.
 4. Escape closes it and focus returns to the Status log button; Close does
    the same.
 
@@ -67,9 +68,17 @@ try:
     check("the events include the sign-in announcement", "Signed in as" in events, events[-200:])
     role, name, _, _ = ax(drv, "#event-log")
     check("the events are named", name == "Events", f"{role} {name!r}")
+    role, name, props, _ = ax(drv, "#show-measurements")
+    check("Show measurements is a check box, off", role == "checkbox" and name.startswith("Show measurements")
+          and props.get("checked") in (False, "false"), f"{role} {name!r} {props}")
+    check("...and no measurements are shown", not drv.find_element(By.ID, "diagnostics").is_displayed())
+    drv.find_element(By.ID, "show-measurements").click()
+    time.sleep(0.3)
     role, name, _, _ = ax(drv, "#diagnostics")
-    check("the diagnostics are in the dialog, named", name == "Diagnostics" and drv.find_element(By.ID, "diagnostics").is_displayed(),
+    check("checked, the measurements are shown, named", name == "Measurements" and drv.find_element(By.ID, "diagnostics").is_displayed(),
           f"{role} {name!r}")
+    drv.find_element(By.ID, "show-measurements").click()
+    drv.find_element(By.ID, "event-log").click()
     check("Copy and Close are there", drv.find_element(By.ID, "copy-status-log").is_displayed()
           and drv.find_element(By.ID, "close-status-log").is_displayed())
 

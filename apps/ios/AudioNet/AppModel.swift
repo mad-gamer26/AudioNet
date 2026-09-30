@@ -76,6 +76,12 @@ final class AppModel: ObservableObject {
     /// read once, to carry that choice over to accounts with no sharing
     /// choice of their own yet. No longer offered.
     @AppStorage("startSharing", store: AccountStore.settings) var startSharing = false
+    /// "Show Measurements" (Settings, off by default): numbers about streams
+    /// and the network, under each stream and in the status log, for
+    /// troubleshooting. Off, AudioNet says what happens in words only.
+    @AppStorage("showMeasurements", store: AccountStore.settings) var showMeasurements = false {
+        didSet { setShowMeasurements(on: showMeasurements) }
+    }
     /// The microphones and the one chosen (a separate object: the list
     /// screen redraws only when they change, never for log or stream
     /// updates).
@@ -99,6 +105,7 @@ final class AppModel: ObservableObject {
 
     init() {
         AccountStore.prepareTestProfile()
+        setShowMeasurements(on: showMeasurements)
         microphones.start()
         micWatch = NotificationCenter.default.addObserver(
             forName: AudioSession.microphoneInUse, object: nil, queue: .main) { note in

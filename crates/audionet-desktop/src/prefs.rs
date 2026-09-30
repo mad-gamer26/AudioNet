@@ -25,6 +25,7 @@ const ID_AUTO_UPDATE: i32 = 305;
 const ID_CHECK_UPDATES: i32 = 306;
 const ID_UPDATE_STATUS: i32 = 307;
 const ID_VERSION: i32 = 308;
+const ID_MEASUREMENTS: i32 = 309;
 /// Escape sends IDCANCEL through `IsDialogMessageW`.
 const ID_CLOSE: i32 = IDCANCEL.0;
 
@@ -56,7 +57,7 @@ pub fn open(owner: HWND) {
         owner,
         "Settings",
         "AudioNet Settings",
-        (560, 300),
+        (560, 330),
         Some(wndproc),
     ) else {
         return;
@@ -78,7 +79,7 @@ fn build(hwnd: HWND, scale: f32, font: HFONT) {
     let button = WINDOW_STYLE(BS_PUSHBUTTON as u32) | tab;
     let st = WINDOW_STYLE(0);
     let (x, full) = (16, 528);
-    let rows: [(&str, i32); 4] = [
+    let rows: [(&str, i32); 5] = [
         (
             "Start AudioNet &automatically when I sign in to Windows",
             ID_AUTOSTART,
@@ -89,6 +90,10 @@ fn build(hwnd: HWND, scale: f32, font: HFONT) {
         ),
         ("Start minimi&zed to the system tray", ID_START_IN_TRAY),
         ("Keep AudioNet up to &date automatically", ID_AUTO_UPDATE),
+        (
+            "Show &measurements in the status log (for troubleshooting)",
+            ID_MEASUREMENTS,
+        ),
     ];
     for (i, (text, id)) in rows.iter().enumerate() {
         control(
@@ -110,7 +115,7 @@ fn build(hwnd: HWND, scale: f32, font: HFONT) {
         button,
         WINDOW_EX_STYLE(0),
         ID_CHECK_UPDATES,
-        (x, 140, 220, 30),
+        (x, 170, 220, 30),
         scale,
         font,
     );
@@ -123,7 +128,7 @@ fn build(hwnd: HWND, scale: f32, font: HFONT) {
         st,
         WINDOW_EX_STYLE(0),
         ID_UPDATE_STATUS,
-        (x, 180, full, 40),
+        (x, 210, full, 40),
         scale,
         font,
     );
@@ -134,7 +139,7 @@ fn build(hwnd: HWND, scale: f32, font: HFONT) {
         st,
         WINDOW_EX_STYLE(0),
         ID_VERSION,
-        (x, 224, full, 22),
+        (x, 254, full, 22),
         scale,
         font,
     );
@@ -145,7 +150,7 @@ fn build(hwnd: HWND, scale: f32, font: HFONT) {
         WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | tab,
         WINDOW_EX_STYLE(0),
         ID_CLOSE,
-        (x + full - 110, 256, 110, 30),
+        (x + full - 110, 286, 110, 30),
         scale,
         font,
     );
@@ -162,6 +167,11 @@ fn build(hwnd: HWND, scale: f32, font: HFONT) {
         settings::get(settings::START_IN_TRAY),
     );
     ui::set_checked(hwnd, ID_AUTO_UPDATE, settings::get(settings::AUTO_UPDATE));
+    ui::set_checked(
+        hwnd,
+        ID_MEASUREMENTS,
+        settings::get(settings::SHOW_MEASUREMENTS),
+    );
     if update::configured().is_none() {
         // Source builds have no update source: say so through the state.
         ui::enable(hwnd, ID_AUTO_UPDATE, false);
@@ -186,15 +196,22 @@ fn on_command(hwnd: HWND, id: i32) {
                 ui::set_checked(hwnd, ID_AUTOSTART, autostart::is_enabled());
             }
         }
-        ID_CLOSE_TO_TRAY | ID_START_IN_TRAY | ID_AUTO_UPDATE => {
+        ID_CLOSE_TO_TRAY | ID_START_IN_TRAY | ID_AUTO_UPDATE | ID_MEASUREMENTS => {
             let setting = match id {
                 ID_CLOSE_TO_TRAY => settings::CLOSE_TO_TRAY,
                 ID_START_IN_TRAY => settings::START_IN_TRAY,
+                ID_MEASUREMENTS => settings::SHOW_MEASUREMENTS,
                 _ => settings::AUTO_UPDATE,
             };
             if let Err(e) = settings::set(setting, ui::is_checked(hwnd, id)) {
                 ui::message(hwnd, &e, true);
                 ui::set_checked(hwnd, id, settings::get(setting));
+            }
+            if id == ID_MEASUREMENTS {
+                crate::app::MEASUREMENTS.store(
+                    settings::get(settings::SHOW_MEASUREMENTS),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             }
         }
         ID_CHECK_UPDATES => ui::check_for_updates(OWNER.with(Cell::get), true),

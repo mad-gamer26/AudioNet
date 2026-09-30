@@ -267,6 +267,7 @@ fn agent_with(
         relay_only,
         sharing: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         visitor: false,
+        measurements_in_status: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     }
 }
 

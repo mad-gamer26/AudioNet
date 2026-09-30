@@ -1777,6 +1777,11 @@ pub fn run(launch: Launch) {
             "To add this computer, sign in with your AudioNet account name and password.",
         );
     }
+    // "Show measurements" (Settings), before any account connects.
+    crate::app::MEASUREMENTS.store(
+        settings::get(settings::SHOW_MEASUREMENTS),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let tip = with_state(|s| tray_tip(s)).unwrap_or_default();
     tray::add(hwnd, &tip);
     refresh(hwnd);

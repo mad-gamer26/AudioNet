@@ -212,8 +212,9 @@ struct MainView: View {
                     ForEach(model.streams) { row in
                         Text("\(row.title): \(row.state)")
                             .accessibilityIdentifier("stream")
-                        // Measurements, readable on demand; never announced.
-                        if let live = model.diagnostics[row.id] {
+                        // Measurements only when "Show Measurements" is on
+                        // (Settings); never announced.
+                        if model.showMeasurements, let live = model.diagnostics[row.id] {
                             LiveTextRow(live: live)
                         }
                         StreamVolume(row: row)
@@ -427,6 +428,11 @@ struct SettingsView: View {
                     .accessibilityIdentifier("addAccount")
             } header: {
                 heading("Accounts")
+            }
+            Section {
+                Toggle("Show Measurements", isOn: $model.showMeasurements)
+                    .accessibilityIdentifier("showMeasurements")
+                Text("Numbers about streams and the network, under each stream and in the status log, for troubleshooting.")
             }
             Section {
                 LabeledContent("Version",

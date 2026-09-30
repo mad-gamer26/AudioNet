@@ -190,19 +190,26 @@
 
     </section>
 
-    <!-- The status log: every announcement, and the streams' measurements.
-         A modal dialog: focus moves into it, Escape or Close closes it and
-         focus returns to the Status log button. -->
+    <!-- The status log: every announcement, and (only when "Show
+         measurements" is checked) the streams' measurements. A modal dialog:
+         focus moves into it, Escape or Close closes it and focus returns to
+         the Status log button. -->
     <dialog id="status-log" aria-labelledby="status-log-title">
       <h2 id="status-log-title">Status log</h2>
       <h3 id="events-heading">Events</h3>
       <pre id="event-log" tabindex="0" aria-labelledby="events-heading">Nothing has happened yet.</pre>
-      <h3 id="diagnostics-heading">Diagnostics</h3>
       <p>
-        Plain-text measurements for every active stream, updated every two
-        seconds. They are not announced automatically.
+        <label><input type="checkbox" id="show-measurements">
+          Show measurements (for troubleshooting)</label>
       </p>
-      <pre id="diagnostics" tabindex="0" aria-labelledby="diagnostics-heading">No active streams.</pre>
+      <div id="measurements" hidden>
+        <h3 id="diagnostics-heading">Measurements</h3>
+        <p>
+          Plain-text measurements for every active stream, updated every two
+          seconds. They are not announced automatically.
+        </p>
+        <pre id="diagnostics" tabindex="0" aria-labelledby="diagnostics-heading">No active streams.</pre>
+      </div>
       <p class="dialog-buttons">
         <button type="button" id="copy-status-log">Copy</button>
         <button type="button" id="close-status-log">Close</button>

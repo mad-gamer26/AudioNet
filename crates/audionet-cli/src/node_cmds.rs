@@ -221,6 +221,7 @@ pub fn run(config: Option<PathBuf>, background: bool) -> Result<(), String> {
         control: None,
         relay_only: false,
         visitor: false,
+        measurements_in_status: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         // A plain device shares: that is what it runs for.
         sharing: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };

@@ -1098,7 +1098,12 @@ pub fn on_event(hwnd: HWND, account: &str, event: AppEvent) {
                 refresh(hwnd);
             }
         }
-        AppEvent::Diagnostics { .. } => {}
+        // Measurements only when "Show measurements" is on (Settings).
+        AppEvent::Diagnostics { text, .. } => {
+            if crate::app::MEASUREMENTS.load(std::sync::atomic::Ordering::Relaxed) {
+                log(hwnd, &text);
+            }
+        }
         AppEvent::ServerError { message } => {
             announce(hwnd, &message);
         }

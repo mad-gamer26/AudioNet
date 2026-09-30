@@ -719,6 +719,14 @@ fn run(
             detail,
         })
     };
+    // Technical detail (addresses, candidates, packet counts): a
+    // measurement, which apps show only when asked to, not a status in words.
+    let note = |detail: String| {
+        events(SessionEvent::Diagnostics {
+            session_id: session_id.clone(),
+            text: detail,
+        })
+    };
 
     // ── Network setup ──
     let ice_servers = &network.ice_servers;
@@ -756,7 +764,7 @@ fn run(
         Some(server) => match Relay::allocate(&socket, local, &server, RELAY_ALLOCATE_TIMEOUT) {
             Ok(r) => Some(r),
             Err(e) => {
-                status(SessionState::Starting, format!("Relay unavailable: {e}."));
+                note(format!("Relay unavailable: {e}."));
                 None
             }
         },
@@ -799,13 +807,10 @@ fn run(
     let mut pending: Option<SdpPendingOffer> = None;
     let local_sdp = match negotiation {
         Negotiation::Answer { offer_sdp } => {
-            status(
-                SessionState::Starting,
-                format!(
-                    "Network: local address {local}; public address {public_text}. Peer offered {}.",
-                    describe_candidates(&offer_sdp)
-                ),
-            );
+            note(format!(
+                "Network: local address {local}; public address {public_text}. Peer offered {}.",
+                describe_candidates(&offer_sdp)
+            ));
             mdns = find_hidden_addresses(&offer_sdp, local_ip, network.relay_only);
             let offer = SdpOffer::from_sdp_string(&offer_sdp)
                 .map_err(|e| format!("the offer is not valid SDP: {e}"))?;
@@ -819,10 +824,9 @@ fn run(
             }
         }
         Negotiation::Offer => {
-            status(
-                SessionState::Starting,
-                format!("Network: local address {local}; public address {public_text}."),
-            );
+            note(format!(
+                "Network: local address {local}; public address {public_text}."
+            ));
             let direction = match local_media {
                 LocalMedia::Send { .. } => Direction::SendOnly,
                 LocalMedia::Receive { .. } => Direction::RecvOnly,
@@ -913,10 +917,10 @@ fn run(
                 rtc.sdp_api()
                     .accept_answer(pend, answer)
                     .map_err(|e| format!("could not accept the answer: {e}"))?;
-                status(
-                    SessionState::Starting,
-                    format!("The other device answered ({}).", describe_candidates(&sdp)),
-                );
+                note(format!(
+                    "The other device answered ({}).",
+                    describe_candidates(&sdp)
+                ));
             }
         }
         // Hidden local addresses the lookup found: direct paths to try.
@@ -941,7 +945,7 @@ fn run(
             if connected {
                 tracing::info!(session = %session_id, "{text}");
             } else {
-                status(SessionState::Starting, text);
+                note(text);
             }
         }
         if !connected && last_report.elapsed() >= Duration::from_secs(5) {
@@ -952,7 +956,7 @@ fn run(
             if !last_send_error.is_empty() {
                 text.push_str(&format!(" Last send error: {last_send_error}."));
             }
-            status(SessionState::Starting, text);
+            note(text);
         }
         if !connected && started.elapsed() > CONNECT_TIMEOUT {
             return Err("Could not connect to the other side. A firewall or network may be blocking the audio connection.".into());

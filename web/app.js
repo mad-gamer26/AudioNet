@@ -990,7 +990,31 @@ async function sessionDiagnostics(s) {
   return lines.join("\n");
 }
 
+// Measurements are for troubleshooting: shown (and gathered) only when
+// "Show measurements" is checked in the status log. The choice is kept in
+// this browser.
+function measurementsOn() {
+  return $("show-measurements").checked;
+}
+
+function applyMeasurementsChoice() {
+  $("measurements").hidden = !measurementsOn();
+  if (measurementsOn()) updateDiagnostics();
+}
+
+try {
+  $("show-measurements").checked = localStorage.getItem("audionet-show-measurements") === "1";
+} catch (_) { /* storage unavailable: off */ }
+applyMeasurementsChoice();
+$("show-measurements").addEventListener("change", () => {
+  try {
+    localStorage.setItem("audionet-show-measurements", measurementsOn() ? "1" : "0");
+  } catch (_) { /* not kept; still applies now */ }
+  applyMeasurementsChoice();
+});
+
 async function updateDiagnostics() {
+  if (!measurementsOn()) return;
   const parts = [];
   for (const s of state.sessions.values()) parts.push(await sessionDiagnostics(s));
   $("diagnostics").textContent = parts.length ? parts.join("\n\n") : "No active streams.";
@@ -1011,11 +1035,14 @@ $("close-status-log").addEventListener("click", () => $("status-log").close());
 $("status-log").addEventListener("close", () => $("open-status-log").focus());
 
 $("copy-status-log").addEventListener("click", async () => {
-  const text = `Events
-${$("event-log").textContent}
+  let text = `Events
+${$("event-log").textContent}`;
+  if (measurementsOn()) {
+    text += `
 
-Diagnostics
+Measurements
 ${$("diagnostics").textContent}`;
+  }
   try {
     await navigator.clipboard.writeText(text);
     announce("Status log copied to the clipboard.");

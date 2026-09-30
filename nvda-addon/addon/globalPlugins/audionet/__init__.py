@@ -34,6 +34,8 @@ VOLUME_STEP = 10
 config.conf.spec["audionet"] = {
 	"announceDevices": "boolean(default=false)",
 	"announceStreams": "boolean(default=true)",
+	# Measurements in the status log, for troubleshooting.
+	"showMeasurements": "boolean(default=false)",
 	# This computer's output to play on and source to send (engine ids;
 	# empty: the system default).
 	"playOn": "string(default='')",
