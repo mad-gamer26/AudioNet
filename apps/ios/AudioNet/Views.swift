@@ -407,6 +407,7 @@ struct StatusLogView: View {
 
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var notifications: Notifications
     /// The account Sign Out was chosen for (asked first).
     @State private var signingOut: Account?
 
@@ -428,6 +429,18 @@ struct SettingsView: View {
                     .accessibilityIdentifier("addAccount")
             } header: {
                 heading("Accounts")
+            }
+            Section {
+                Toggle("Devices Coming Online or Going Offline", isOn: $notifications.presence)
+                    .accessibilityIdentifier("notifyPresence")
+                Toggle("Devices Starting or Stopping Sharing", isOn: $notifications.sharing)
+                    .accessibilityIdentifier("notifySharing")
+                Text("About the other devices in your accounts, titled with the account name. They do not appear while AudioNet is open.")
+                if let problem = notifications.problem {
+                    Text(problem)
+                }
+            } header: {
+                heading("Notifications")
             }
             Section {
                 Toggle("Show Measurements", isOn: $model.showMeasurements)

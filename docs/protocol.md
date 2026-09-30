@@ -351,6 +351,26 @@ All bodies are JSON. Errors: HTTP status plus
 Failed sign-ins (web and device) are throttled per account name with
 exponential backoff.
 
+### Push notifications
+
+| Method and path | Auth | Purpose |
+| --- | --- | --- |
+| `PUT /api/v1/push/pusher` | device | `{gateway, handle, key, presence, sharing}`: this device (a phone) wants notifications about its account's other devices: `presence` (online, offline), `sharing` (started, stopped sharing). `gateway` must be this server's `push_gateway` (from `/api/v1/info`); `handle` comes from that gateway; `key` is 32 bytes, base64. Both false removes it |
+| `DELETE /api/v1/push/pusher` | device | no more notifications for this device |
+| `POST /push/v1/register` | none (rate limited) | on a push gateway: `{apns_token, sandbox}` → `{handle}` |
+| `POST /push/v1/send` | the handle | on a push gateway: `{handle, payload, collapse_id}`; `410` when the device no longer receives notifications (the server then drops the pusher) |
+| `POST /push/v1/unregister` | the handle | on a push gateway: forget the handle |
+
+A notification's title is the account name and its body one of "NAME is
+online.", "NAME is offline.", "NAME started sharing its audio.", "NAME
+stopped sharing its audio." The server seals `{"title", "body"}` with
+ChaCha20-Poly1305 and the device's key (base64 of nonce, ciphertext and
+tag), so the gateway and Apple see only a placeholder and ciphertext; the
+app's notification extension opens it. "Offline" is sent only after a device
+has stayed away 30 seconds, "online" only after an "offline" or a longer
+absence, never for devices reconnecting just after the server starts;
+sharing only for changes while online.
+
 An account has at most a confirmed address (unique) and one waiting for
 confirmation, which does not keep anyone else from using the address and
 is dropped when its 7 days end (on a server without email settings, where

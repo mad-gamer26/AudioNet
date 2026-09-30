@@ -117,7 +117,10 @@ pure-Rust deflate) in the desktop app, `turn-client-proto` (TURN relay
 client, sans-I/O like str0m) in the device agent, `lettre` (SMTP for the
 server's confirmation and password-reset emails: STARTTLS/TLS and
 authentication over rustls; chosen over a local sendmail, which self-hosters
-may not have, and over hand-written SMTP).
+may not have, and over hand-written SMTP), `hyper` with HTTP/2 (`h2`) over
+the existing rustls, and `ring`, for the push gateway's APNs client (APNs
+requires HTTP/2 and ES256 tokens; chosen over the `a2` crate, which would
+add a second, older rustls).
 
 ## Project decisions
 

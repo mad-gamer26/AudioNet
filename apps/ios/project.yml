@@ -36,12 +36,20 @@ targets:
         NSMicrophoneUsageDescription: "AudioNet sends this iPhone's microphone to your other devices when you choose to."
         NSLocalNetworkUsageDescription: "AudioNet connects directly to your other devices on this network, for the best sound and least delay."
         AudioNetDefaultServer: "$(AUDIONET_DEFAULT_SERVER)"
+        AudioNetKeychainGroup: "$(AppIdentifierPrefix)com.matthewdovi.AudioNet.shared"
         # Only standard, published encryption (ChaCha20-Poly1305, DTLS/SRTP
         # for WebRTC, TLS), which is exempt: builds skip Apple's
         # export-compliance question.
         ITSAppUsesNonExemptEncryption: false
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+    # Push notifications (off until turned on in Settings), and the keychain
+    # group the notification extension reads the notification key from.
+    entitlements:
+      path: AudioNet/AudioNet.entitlements
+      properties:
+        aps-environment: development
+        keychain-access-groups: ["$(AppIdentifierPrefix)com.matthewdovi.AudioNet.shared"]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.matthewdovi.AudioNet
@@ -51,6 +59,7 @@ targets:
         # The engine is Rust with a C interface; UniFFI's generated Swift.
         SWIFT_STRICT_CONCURRENCY: minimal
     dependencies:
+      - target: NotificationService
       - framework: Generated/AudioNetCore.xcframework
         embed: false
       - sdk: AVFoundation.framework
@@ -58,6 +67,30 @@ targets:
       - sdk: CoreAudio.framework
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework
+  # Decrypts AudioNet's notifications (the text is sealed for this iPhone).
+  NotificationService:
+    type: app-extension
+    platform: iOS
+    sources: [NotificationService]
+    info:
+      path: NotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: AudioNet Notifications
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).NotificationService"
+        AudioNetKeychainGroup: "$(AppIdentifierPrefix)com.matthewdovi.AudioNet.shared"
+    entitlements:
+      path: NotificationService/NotificationService.entitlements
+      properties:
+        keychain-access-groups: ["$(AppIdentifierPrefix)com.matthewdovi.AudioNet.shared"]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.matthewdovi.AudioNet.NotificationService
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
   AudioNetUITests:
     type: bundle.ui-testing
     platform: iOS

@@ -93,6 +93,8 @@ curl http://127.0.0.1:8740/api/v1/info
 | `[email] smtp_username` | none | Account on the mail server. |
 | `[email] smtp_password` | none | Its password. Prefer `AUDIONET_SMTP_PASSWORD` in the environment file. |
 | `[ice] stun_urls` | `[]` | STUN servers given to clients. |
+| `push_gateway_url` | none | The push gateway this server sends notifications through (and tells the apps to register with). Unset: no push notifications. For the official iPhone app, the official instance's gateway. |
+| `[push_gateway] apns_key_file` | none | Only to run a push gateway yourself, for an iPhone app built under your own Apple team: the APNs key (`.p8`). With `apns_key_id`, `apns_team_id` and `apns_topic` (the app's bundle ID). |
 | `[ice] turn_urls` | `[]` | TURN servers given to clients (require a secret). |
 | `[ice] turn_secret` | none | Shared secret with coturn. Prefer the environment variable. |
 | `[ice] turn_credential_ttl_s` | `3600` | Lifetime of generated TURN credentials. |

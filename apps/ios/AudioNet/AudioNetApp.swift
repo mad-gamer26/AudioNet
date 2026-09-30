@@ -3,6 +3,7 @@ import UIKit
 
 @main
 struct AudioNetApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
     init() {
@@ -13,7 +14,9 @@ struct AudioNetApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView().environmentObject(model)
+            RootView()
+                .environmentObject(model)
+                .environmentObject(Notifications.shared)
         }
     }
 }

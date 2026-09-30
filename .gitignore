@@ -10,6 +10,9 @@ apps/macos/build/
 apps/ios/AudioNet.xcodeproj/
 apps/ios/Generated/
 apps/ios/AudioNet/Info.plist
+apps/ios/AudioNet/AudioNet.entitlements
+apps/ios/NotificationService/Info.plist
+apps/ios/NotificationService/NotificationService.entitlements
 __pycache__/
 # Test settings naming your own machines (see scripts/test/testenv.py)
 scripts/test/local.env

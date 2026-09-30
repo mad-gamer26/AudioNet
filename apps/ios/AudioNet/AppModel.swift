@@ -106,6 +106,8 @@ final class AppModel: ObservableObject {
     init() {
         AccountStore.prepareTestProfile()
         setShowMeasurements(on: showMeasurements)
+        Notifications.shared.accounts = { [unowned self] in self.accounts }
+        Notifications.shared.note = { [unowned self] text in self.note(text) }
         microphones.start()
         micWatch = NotificationCenter.default.addObserver(
             forName: AudioSession.microphoneInUse, object: nil, queue: .main) { note in
@@ -133,6 +135,7 @@ final class AppModel: ObservableObject {
             return
         }
         note("Welcome back. This iPhone is signed in to \(accountList).")
+        Notifications.shared.appStarted()
         // An account with no saved choice yet (0.7 had one switch for all)
         // shares if 0.7 went online at launch.
         for a in read where savedSharing(a.nodeId) == nil {
@@ -212,6 +215,7 @@ final class AppModel: ObservableObject {
                     self.announce("Signed in as \"\(account.deviceName)\" to \(account.accountName). This iPhone is online there, not sharing its audio: turn on sharing to share it.")
                     self.connectAll()
                     self.connect(account)
+                    Notifications.shared.accountsChanged()
                     done(true)
                 case .failure(let error):
                     self.signInProblem = "Signing in failed: \(describe(error))\(forgotHint(error))"
