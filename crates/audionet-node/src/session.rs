@@ -352,6 +352,101 @@ struct SpeakOutput {
     playout: Arc<audionet_engine::playout::PlayoutStats>,
 }
 
+/// How a packet reached this device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Route {
+    /// Straight from the other device, on this network.
+    DirectLocal,
+    /// Straight from the other device, across the internet.
+    DirectInternet,
+    /// Through this device's allocation on the TURN relay.
+    OurRelay,
+    /// From the other device's allocation on the same TURN relay.
+    TheirRelay,
+}
+
+impl Route {
+    /// A packet that arrived on the session's own socket from `source`.
+    /// `relay_ip`: the TURN relay's public address, if this session has an
+    /// allocation there.
+    fn of_direct(source: SocketAddr, relay_ip: Option<std::net::IpAddr>) -> Self {
+        if relay_ip == Some(source.ip()) {
+            Self::TheirRelay
+        } else if is_local_address(source.ip()) {
+            Self::DirectLocal
+        } else {
+            Self::DirectInternet
+        }
+    }
+
+    fn words(self) -> &'static str {
+        match self {
+            Self::DirectLocal => "direct, on the local network",
+            Self::DirectInternet => "direct, across the internet",
+            Self::OurRelay => "through the relay (this device's allocation)",
+            Self::TheirRelay => "through the relay (the other device's allocation)",
+        }
+    }
+}
+
+fn is_local_address(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_private() || v4.is_link_local() || v4.is_loopback()
+                // Carrier-grade NAT (100.64.0.0/10) is not the internet side.
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // unique local
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link local
+        }
+    }
+}
+
+/// Which way received packets came, between two reports: the route in
+/// words for the diagnostics. Counted off the audio path (the network
+/// loop), only as small integers.
+#[derive(Debug, Default)]
+struct RouteCounter {
+    counts: [u64; 4],
+}
+
+impl RouteCounter {
+    fn count(&mut self, route: Route) {
+        self.counts[route as usize] += 1;
+    }
+
+    /// "Route: …" for the packets since the last call, and starts again.
+    fn take_text(&mut self) -> String {
+        const ALL: [Route; 4] = [
+            Route::DirectLocal,
+            Route::DirectInternet,
+            Route::OurRelay,
+            Route::TheirRelay,
+        ];
+        let total: u64 = self.counts.iter().sum();
+        let (top, n) = ALL
+            .iter()
+            .map(|r| (*r, self.counts[*r as usize]))
+            .max_by_key(|(_, n)| *n)
+            .unwrap_or((Route::DirectInternet, 0));
+        self.counts = [0; 4];
+        if total == 0 {
+            return "Route: nothing arrived since the last report.".into();
+        }
+        let share = n * 100 / total;
+        if share >= 90 {
+            format!("Route: {}.", top.words())
+        } else {
+            format!(
+                "Route: mostly {} ({share} % of packets), the rest by other paths.",
+                top.words()
+            )
+        }
+    }
+}
+
 /// One line of receive diagnostics, in words.
 fn receive_diagnostics(o: &SpeakOutput) -> String {
     let r = o.stage.stats().snapshot();
@@ -650,6 +745,7 @@ fn run(
     let mut buf = vec![0u8; 2000];
     // Connection diagnostics while ICE is still checking.
     let (mut sent, mut send_errors, mut received) = (0u64, 0u64, 0u64);
+    let mut route = RouteCounter::default();
     let mut last_send_error = String::new();
     let mut last_report = Instant::now();
     let mut last_diagnostics = Instant::now();
@@ -845,7 +941,7 @@ fn run(
                         last_diagnostics = Instant::now();
                         events(SessionEvent::Diagnostics {
                             session_id: session_id.clone(),
-                            text: receive_diagnostics(o),
+                            text: format!("{} {}", receive_diagnostics(o), route.take_text()),
                         });
                     }
                 }
@@ -936,6 +1032,7 @@ fn run(
                     // relayed address.
                     let relayed = r.relayed();
                     for (peer, data) in r.receive(&socket, &buf[..*n], now) {
+                        route.count(Route::OurRelay);
                         if let Ok(contents) = data.as_slice().try_into() {
                             rtc.handle_input(Input::Receive(
                                 now,
@@ -953,6 +1050,12 @@ fn run(
                 }
             }
             r.tick(&socket, now);
+        }
+        if let Ok((_, source)) = &received_packet {
+            route.count(Route::of_direct(
+                *source,
+                relay.as_ref().map(|r| r.relayed().ip()),
+            ));
         }
         let input = match received_packet {
             Ok((n, source)) => match buf[..n].try_into() {
@@ -1178,5 +1281,65 @@ mod tests {
             "1 local, 1 hidden local (mDNS), 1 public, 1 relay candidates"
         );
         assert_eq!(describe_candidates("v=0"), "no network candidates");
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    #[test]
+    fn routes_in_words() {
+        let relay: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let at = |s: &str| s.parse::<SocketAddr>().unwrap();
+        assert_eq!(
+            Route::of_direct(at("192.168.5.106:5000"), Some(relay)),
+            Route::DirectLocal
+        );
+        assert_eq!(
+            Route::of_direct(at("100.72.1.2:5000"), None),
+            Route::DirectLocal,
+            "carrier-grade NAT"
+        );
+        assert_eq!(
+            Route::of_direct(at("198.51.100.20:5000"), Some(relay)),
+            Route::DirectInternet
+        );
+        assert_eq!(
+            Route::of_direct(at("203.0.113.7:49318"), Some(relay)),
+            Route::TheirRelay
+        );
+        assert_eq!(
+            Route::of_direct(at("[fe80::1]:5000"), None),
+            Route::DirectLocal
+        );
+
+        let mut c = RouteCounter::default();
+        assert_eq!(
+            c.take_text(),
+            "Route: nothing arrived since the last report."
+        );
+        for _ in 0..95 {
+            c.count(Route::DirectInternet);
+        }
+        for _ in 0..5 {
+            c.count(Route::OurRelay);
+        }
+        assert_eq!(c.take_text(), "Route: direct, across the internet.");
+        for _ in 0..60 {
+            c.count(Route::TheirRelay);
+        }
+        for _ in 0..40 {
+            c.count(Route::DirectInternet);
+        }
+        assert_eq!(
+            c.take_text(),
+            "Route: mostly through the relay (the other device's allocation) (60 % of packets), the rest by other paths."
+        );
+        assert_eq!(
+            c.take_text(),
+            "Route: nothing arrived since the last report.",
+            "starts again after each report"
+        );
     }
 }

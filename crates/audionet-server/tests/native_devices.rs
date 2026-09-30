@@ -853,7 +853,20 @@ async fn a_visitor_listens_and_sends_without_becoming_a_device() {
         matches!(e, AppEvent::Session { session_id, state: SessionState::Active, .. } if *session_id == listen)
     })
     .await;
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // The receive diagnostics say which way the audio came: here, on this
+    // machine, directly.
+    let diag = next_event(&mut events, "receive diagnostics", |e| {
+        matches!(e, AppEvent::Diagnostics { session_id, text } if *session_id == listen && text.contains("Route:"))
+    })
+    .await;
+    if let AppEvent::Diagnostics { text, .. } = &diag {
+        println!("{text}");
+        assert!(
+            text.contains("Route: direct, on the local network."),
+            "{text}"
+        );
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
     let (level, hz) = analyse(&visitor_audio.played);
     println!("the visitor hears the PC: {level:.1} dBFS at {hz:.0} Hz");
     assert!(
