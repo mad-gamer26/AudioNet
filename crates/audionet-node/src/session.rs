@@ -475,7 +475,40 @@ fn receive_diagnostics(o: &SpeakOutput) -> String {
                 "{:.1} ms",
                 v as f64 / 1e6
             ))
+    ) + &format!(
+        " Clock difference {:+.0} ppm ({}).",
+        p.drift_ppm,
+        if p.drift_locked {
+            "locked"
+        } else {
+            "still measuring"
+        }
     )
+}
+
+/// Packets per second between reports: a sender that delivers less audio
+/// than real time (native devices send 100 packets a second, browsers 50)
+/// shows here, whatever the network does.
+#[derive(Debug, Default)]
+struct RateMeter {
+    last: Option<(Instant, u64)>,
+}
+
+impl RateMeter {
+    fn take_text(&mut self, datagrams: u64, now: Instant) -> String {
+        let text = match self.last {
+            Some((at, before)) if now > at && datagrams >= before => {
+                let secs = now.duration_since(at).as_secs_f64();
+                format!(
+                    "Arriving: {:.1} packets a second.",
+                    (datagrams - before) as f64 / secs
+                )
+            }
+            _ => "Arriving: measured from the next report.".into(),
+        };
+        self.last = Some((now, datagrams));
+        text
+    }
 }
 
 fn open_speak(
@@ -746,6 +779,7 @@ fn run(
     // Connection diagnostics while ICE is still checking.
     let (mut sent, mut send_errors, mut received) = (0u64, 0u64, 0u64);
     let mut route = RouteCounter::default();
+    let mut rate = RateMeter::default();
     let mut last_send_error = String::new();
     let mut last_report = Instant::now();
     let mut last_diagnostics = Instant::now();
@@ -941,7 +975,15 @@ fn run(
                         last_diagnostics = Instant::now();
                         events(SessionEvent::Diagnostics {
                             session_id: session_id.clone(),
-                            text: format!("{} {}", receive_diagnostics(o), route.take_text()),
+                            text: format!(
+                                "{} {} {}",
+                                receive_diagnostics(o),
+                                rate.take_text(
+                                    o.stage.stats().snapshot().datagrams,
+                                    Instant::now()
+                                ),
+                                route.take_text()
+                            ),
                         });
                     }
                 }
@@ -1287,6 +1329,24 @@ mod tests {
 #[cfg(test)]
 mod route_tests {
     use super::*;
+
+    #[test]
+    fn packets_a_second() {
+        let t0 = Instant::now();
+        let mut m = RateMeter::default();
+        assert_eq!(
+            m.take_text(0, t0),
+            "Arriving: measured from the next report."
+        );
+        assert_eq!(
+            m.take_text(200, t0 + Duration::from_secs(2)),
+            "Arriving: 100.0 packets a second."
+        );
+        assert_eq!(
+            m.take_text(300, t0 + Duration::from_secs(4)),
+            "Arriving: 50.0 packets a second."
+        );
+    }
 
     #[test]
     fn routes_in_words() {
