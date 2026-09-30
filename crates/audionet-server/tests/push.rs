@@ -464,3 +464,41 @@ async fn apns_over_http2() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A phone signing out of its last account there tells the gateway to
+/// forget its handle: afterwards nothing can be sent to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gateway_forgets_a_handle_when_asked() {
+    let (addr, _state, sent) = start().await;
+    let (_, body) = request(
+        &addr,
+        "POST",
+        "/push/v1/register",
+        r#"{"apns_token":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789","sandbox":true}"#,
+        None,
+    )
+    .await;
+    let handle = serde_json::from_str::<serde_json::Value>(&body).unwrap()["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let send = format!(r#"{{"handle":"{handle}","payload":"x","collapse_id":"c"}}"#);
+    assert_eq!(
+        request(&addr, "POST", "/push/v1/send", &send, None).await.0,
+        200
+    );
+    let (status, _) = request(
+        &addr,
+        "POST",
+        "/push/v1/unregister",
+        &format!(r#"{{"handle":"{handle}"}}"#),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        request(&addr, "POST", "/push/v1/send", &send, None).await.0,
+        410
+    );
+    assert_eq!(sent.lock().unwrap().len(), 1, "only the send before");
+}

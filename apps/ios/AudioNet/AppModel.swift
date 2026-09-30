@@ -245,6 +245,7 @@ final class AppModel: ObservableObject {
                 self.sharingAccounts.remove(id)
                 AccountStore.settings.removeObject(forKey: "sharing-\(id)")
                 if let problem = AccountStore.saveAll(self.accounts) { self.announce(problem) }
+                Notifications.shared.signedOut(account, remaining: self.accounts)
                 if self.accounts.isEmpty {
                     self.disconnectAll()
                     AccountStore.clear()

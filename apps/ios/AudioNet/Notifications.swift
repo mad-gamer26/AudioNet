@@ -44,6 +44,41 @@ final class Notifications: ObservableObject {
         if wanted { Task { await syncAll() } }
     }
 
+    /// After signing out (the server removed this iPhone, and with it its
+    /// notifications there): a gateway no remaining account uses forgets
+    /// this iPhone, and with no accounts left the notification key goes too.
+    func signedOut(_ account: Account, remaining: [Account]) {
+        let defaults = AccountStore.settings
+        let server = Self.base(account.serverUrl)
+        let remainingServers = Set(remaining.map { Self.base($0.serverUrl) })
+        guard let gateway = defaults.string(forKey: "pushGateway " + server) else {
+            if remaining.isEmpty { Self.deleteKey() }
+            return
+        }
+        if !remainingServers.contains(server) {
+            defaults.removeObject(forKey: "pushGateway " + server)
+        }
+        let stillUsed = remainingServers.contains { defaults.string(forKey: "pushGateway " + $0) == gateway }
+        if !stillUsed, let stored = defaults.string(forKey: "pushHandle " + gateway) {
+            defaults.removeObject(forKey: "pushHandle " + gateway)
+            let parts = stored.split(separator: " ", maxSplits: 1).map(String.init)
+            if parts.count == 2 {
+                let handle = parts[1]
+                Task {
+                    _ = try? await call("POST", "\(Self.base(gateway))/push/v1/unregister",
+                                        bearer: nil, body: ["handle": handle])
+                }
+            }
+        }
+        if remaining.isEmpty { Self.deleteKey() }
+    }
+
+    private static func base(_ url: String) -> String {
+        var s = url
+        while s.hasSuffix("/") { s.removeLast() }
+        return s
+    }
+
     private func changed() {
         objectWillChange.send()
         Task {
@@ -100,6 +135,8 @@ final class Notifications: ObservableObject {
             note("\(a.accountName): this server does not send notifications.")
             return
         }
+        // Remembered so signing out can tell the gateway to forget us.
+        AccountStore.settings.set(gateway, forKey: "pushGateway " + server)
         let handle = try await handle(gateway: gateway, deviceToken: token)
         _ = try await call("PUT", "\(server)/api/v1/push/pusher", bearer: a.token, body: [
             "gateway": gateway,
@@ -180,6 +217,17 @@ final class Notifications: ObservableObject {
         SecItemDelete(query as CFDictionary)
         SecItemAdd(add as CFDictionary, nil)
         return key
+    }
+
+    /// Removes the notification key (no accounts left).
+    static func deleteKey() {
+        let group = Bundle.main.object(forInfoDictionaryKey: "AudioNetKeychainGroup") as? String ?? ""
+        SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "AudioNet notifications",
+            kSecAttrAccount as String: keyName,
+            kSecAttrAccessGroup as String: group,
+        ] as CFDictionary)
     }
 
     /// Development builds (installed from a Mac) receive through Apple's
