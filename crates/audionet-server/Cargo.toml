@@ -31,6 +31,14 @@ serde_json.workspace = true
 clap = { workspace = true, features = ["env"] }
 futures-util.workspace = true
 lettre.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+ring.workspace = true
+chacha20poly1305.workspace = true
 
 [dev-dependencies]
 tokio-tungstenite.workspace = true
@@ -39,7 +47,8 @@ audionet-node.workspace = true
 audionet-audio.workspace = true
 ureq.workspace = true
 tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
+# A stand-in for Apple's push service over HTTP/2 (tests/push.rs).
+hyper = { workspace = true, features = ["server", "http2"] }
 
 [lints]
 workspace = true

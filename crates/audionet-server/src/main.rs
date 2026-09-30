@@ -199,7 +199,15 @@ async fn serve(config: Config) -> Result<(), String> {
             "no [email] settings: addresses cannot be confirmed and password reset is off"
         );
     }
-    let state = Arc::new(AppState::new(config, db, mailer));
+    let apns = audionet_server::apns::Apns::from_config(&config.push_gateway)?;
+    if apns.is_some() {
+        tracing::info!("push gateway: on");
+    }
+    let mut state = AppState::new(config, db, mailer);
+    state.apns = apns;
+    let state = Arc::new(state);
+    // Notifications about devices, through the configured gateway.
+    audionet_server::push::start(Arc::clone(&state));
     let mut app = router(state);
     if let Some(dir) = downloads {
         app = app.nest_service("/downloads", ServeDir::new(dir));

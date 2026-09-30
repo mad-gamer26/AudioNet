@@ -57,6 +57,60 @@ pub struct Config {
     /// Outgoing email for confirming addresses and resetting passwords.
     #[serde(default)]
     pub email: EmailConfig,
+    /// The push gateway this server sends notifications through (and that
+    /// it tells apps to register with), e.g. `https://audionet.example.com`.
+    /// Unset: no push notifications. The only gateway it ever sends to.
+    #[serde(default)]
+    pub push_gateway_url: Option<String>,
+    /// Running a push gateway here: only on the server whose operator holds
+    /// the app's APNs key.
+    #[serde(default)]
+    pub push_gateway: PushGatewayConfig,
+}
+
+/// A push gateway: relays notifications from AudioNet servers to Apple's
+/// push service with the app's APNs key.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushGatewayConfig {
+    /// The APNs authentication key (a `.p8` file from the Apple developer
+    /// account). Unset: no gateway here.
+    #[serde(default)]
+    pub apns_key_file: Option<PathBuf>,
+    #[serde(default)]
+    pub apns_key_id: Option<String>,
+    #[serde(default)]
+    pub apns_team_id: Option<String>,
+    /// The app's bundle ID, e.g. `com.example.AudioNet`.
+    #[serde(default)]
+    pub apns_topic: Option<String>,
+    /// Test only: send to this address instead of Apple's (plain HTTP/2).
+    #[serde(default)]
+    pub apns_url_override: Option<String>,
+}
+
+impl PushGatewayConfig {
+    pub fn enabled(&self) -> bool {
+        self.apns_key_file.is_some()
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if !self.enabled() {
+            return Ok(());
+        }
+        for (value, name) in [
+            (&self.apns_key_id, "apns_key_id"),
+            (&self.apns_team_id, "apns_team_id"),
+            (&self.apns_topic, "apns_topic"),
+        ] {
+            if value.as_deref().is_none_or(str::is_empty) {
+                return Err(format!(
+                    "push_gateway.apns_key_file is set but push_gateway.{name} is not"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// How the connection to the mail server is protected.
@@ -269,6 +323,14 @@ impl Config {
             );
         }
         self.email.validate()?;
+        self.push_gateway.validate()?;
+        if let Some(url) = &self.push_gateway_url {
+            if origin_of(url).is_none() {
+                return Err(format!(
+                    "push_gateway_url must look like https://host[:port]: {url}"
+                ));
+            }
+        }
         Ok(())
     }
 

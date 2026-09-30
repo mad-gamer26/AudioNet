@@ -80,6 +80,14 @@ rpassword = "7.5"
 # Server email (address confirmation and password reset): SMTP with
 # STARTTLS or TLS and authentication, rustls and the system's certificates.
 lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "pool", "hostname", "builder", "tokio1", "tokio1-rustls", "ring", "rustls-platform-verifier"] }
+# Push notifications (server): HTTP/2 to Apple's push service (hyper's
+# client over the rustls already used; APNs requires HTTP/2), and ES256
+# tokens signed with ring (already in the build through rustls).
+hyper = { version = "1.11", default-features = false, features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
+http-body-util = "0.1.5"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+ring = "0.17"
 # TURN relay client for native sessions (sans-I/O, RFC 8656).
 turn-client-proto = "0.7.2"
 

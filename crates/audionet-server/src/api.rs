@@ -63,6 +63,12 @@ pub struct AppState {
     pub email_limit: HourlyLimit,
     /// Password-reset requests per client address.
     pub reset_request_limit: HourlyLimit,
+    /// Apple's push service, on a push gateway (see `gateway`).
+    pub apns: Option<crate::apns::Apns>,
+    pub push_register_limit: HourlyLimit,
+    pub push_send_limit: HourlyLimit,
+    /// When presence changes are worth a notification (see `push`).
+    pub push_timing: crate::push::PushTiming,
 }
 
 impl AppState {
@@ -76,6 +82,10 @@ impl AppState {
             mailer,
             email_limit: HourlyLimit::default(),
             reset_request_limit: HourlyLimit::default(),
+            apns: None,
+            push_register_limit: HourlyLimit::default(),
+            push_send_limit: HourlyLimit::default(),
+            push_timing: crate::push::PushTiming::default(),
         }
     }
 }
@@ -267,7 +277,8 @@ impl FromRequestParts<Shared> for BrowserOrigin {
 
 /// The client's address, for the sign-up limit: from the header the reverse
 /// proxy sets (`client_address_header`), else the connection's own.
-struct ClientAddress(String);
+#[derive(Debug)]
+pub struct ClientAddress(pub String);
 
 impl FromRequestParts<Shared> for ClientAddress {
     type Rejection = ApiError;
@@ -325,6 +336,13 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/email/verify", post(verify_email))
         .route("/api/v1/password/forgot", post(forgot_password))
         .route("/api/v1/password/reset", post(reset_password))
+        .route(
+            "/api/v1/push/pusher",
+            axum::routing::put(crate::push::set_pusher).delete(crate::push::delete_pusher),
+        )
+        .route("/push/v1/register", post(crate::gateway::register))
+        .route("/push/v1/send", post(crate::gateway::send))
+        .route("/push/v1/unregister", post(crate::gateway::unregister))
         .route("/api/v1/nodes/sign-in", post(sign_in_node))
         .route("/api/v1/nodes", get(list_nodes))
         .route("/api/v1/nodes/{id}", delete(remove_node).patch(rename_node))
@@ -345,6 +363,7 @@ async fn info(State(s): State<Shared>) -> Json<serde_json::Value> {
         "allow_registration": s.config.allow_registration,
         "email_required": true,
         "password_reset": s.mailer.enabled(),
+        "push_gateway": s.config.push_gateway_url,
         "downloads_path": downloads,
     }))
 }

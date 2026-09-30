@@ -64,14 +64,52 @@ fn herr(code: &'static str, message: impl Into<String>) -> HubError {
     }
 }
 
+/// A change in an account's devices, for push notifications. Raised for
+/// every connect, disconnect and sharing report; the push task decides what
+/// is worth a notification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Presence {
+    Online {
+        user_id: i64,
+        node_id: String,
+        name: String,
+    },
+    Offline {
+        user_id: i64,
+        node_id: String,
+        name: String,
+    },
+    /// The device's sharing as it reports it (possibly unchanged).
+    Sharing {
+        user_id: i64,
+        node_id: String,
+        name: String,
+        sharing: bool,
+    },
+}
+
 #[derive(Debug, Default)]
 pub struct Hub {
     inner: Mutex<Inner>,
+    presence: std::sync::OnceLock<mpsc::UnboundedSender<Presence>>,
 }
 
 impl Hub {
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Device presence changes from now on (for push notifications). Only
+    /// the first caller gets them.
+    pub fn watch_presence(&self) -> Option<mpsc::UnboundedReceiver<Presence>> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.presence.set(tx).ok().map(|()| rx)
+    }
+
+    fn tell_presence(&self, p: Presence) {
+        if let Some(tx) = self.presence.get() {
+            let _ = tx.send(p);
+        }
     }
 
     /// Registers a connection. For a node, replaces any older connection of
@@ -105,6 +143,12 @@ impl Hub {
         );
         if let Some(meta) = g.conns.get(conn_id).and_then(|c| c.node.clone()) {
             Self::broadcast_node(&mut g, user_id, &meta);
+            drop(g);
+            self.tell_presence(Presence::Online {
+                user_id,
+                node_id: meta.id,
+                name: meta.name,
+            });
         }
     }
 
@@ -114,6 +158,13 @@ impl Hub {
         let Some(conn) = g.conns.remove(conn_id) else {
             return;
         };
+        if let Some(n) = &conn.node {
+            self.tell_presence(Presence::Offline {
+                user_id: conn.user_id,
+                node_id: n.id.clone(),
+                name: n.name.clone(),
+            });
+        }
         let ended: Vec<(String, String)> = g
             .sessions
             .iter()
@@ -254,6 +305,12 @@ impl Hub {
             .clone()
             .ok_or_else(|| herr("not_a_node", "Only devices share audio."))?;
         let user_id = conn.user_id;
+        self.tell_presence(Presence::Sharing {
+            user_id,
+            node_id: meta.id.clone(),
+            name: meta.name.clone(),
+            sharing,
+        });
         if conn.sharing == sharing {
             return Ok(());
         }

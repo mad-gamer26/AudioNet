@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::auth::TokenHash;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Clone)]
 pub struct Db {
@@ -131,6 +131,29 @@ impl Db {
                     purpose TEXT NOT NULL,
                     email TEXT NOT NULL,
                     expires_at INTEGER NOT NULL
+                );",
+            )?;
+        }
+        if version < 4 {
+            // Version 4: push notifications. `pushers`: a device (an
+            // iPhone) that wants notifications about its account's other
+            // devices, through the push gateway, with the key that encrypts
+            // them for it. `push_handles`: on a push gateway, the Apple
+            // device token behind each handle (stored hashed).
+            conn.execute_batch(
+                "CREATE TABLE pushers (
+                    node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+                    handle TEXT NOT NULL,
+                    key BLOB NOT NULL,
+                    presence INTEGER NOT NULL,
+                    sharing INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE push_handles (
+                    handle_hash BLOB PRIMARY KEY,
+                    apns_token TEXT NOT NULL,
+                    sandbox INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL
                 );",
             )?;
         }
@@ -374,6 +397,83 @@ pub fn email_token_owner(
         |r| r.get(0),
     )
     .optional()
+}
+
+/// A device's wish for notifications (see the `pushers` table).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pusher {
+    pub node_id: String,
+    pub handle: String,
+    pub key: Vec<u8>,
+    pub presence: bool,
+    pub sharing: bool,
+}
+
+pub fn set_pusher(c: &Connection, p: &Pusher) -> rusqlite::Result<()> {
+    c.execute(
+        "INSERT INTO pushers (node_id, handle, key, presence, sharing, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(node_id) DO UPDATE SET handle = ?2, key = ?3, presence = ?4, sharing = ?5",
+        params![p.node_id, p.handle, p.key, p.presence, p.sharing, now_s()],
+    )?;
+    Ok(())
+}
+
+pub fn delete_pusher(c: &Connection, node_id: &str) -> rusqlite::Result<bool> {
+    Ok(c.execute("DELETE FROM pushers WHERE node_id = ?1", params![node_id])? > 0)
+}
+
+/// The pushers of an account's devices other than `except_node`.
+pub fn pushers_for_user(
+    c: &Connection,
+    user_id: i64,
+    except_node: &str,
+) -> rusqlite::Result<Vec<Pusher>> {
+    let mut s = c.prepare(
+        "SELECT p.node_id, p.handle, p.key, p.presence, p.sharing FROM pushers p
+         JOIN nodes n ON n.id = p.node_id WHERE n.user_id = ?1 AND p.node_id != ?2",
+    )?;
+    s.query_map(params![user_id, except_node], |r| {
+        Ok(Pusher {
+            node_id: r.get(0)?,
+            handle: r.get(1)?,
+            key: r.get(2)?,
+            presence: r.get(3)?,
+            sharing: r.get(4)?,
+        })
+    })?
+    .collect()
+}
+
+/// A push gateway's handle: the Apple device token it stands for.
+pub fn set_push_handle(
+    c: &Connection,
+    hash: &TokenHash,
+    apns_token: &str,
+    sandbox: bool,
+) -> rusqlite::Result<()> {
+    c.execute(
+        "INSERT OR REPLACE INTO push_handles (handle_hash, apns_token, sandbox, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![&hash.0[..], apns_token, sandbox, now_s()],
+    )?;
+    Ok(())
+}
+
+pub fn push_handle(c: &Connection, hash: &TokenHash) -> rusqlite::Result<Option<(String, bool)>> {
+    c.query_row(
+        "SELECT apns_token, sandbox FROM push_handles WHERE handle_hash = ?1",
+        params![&hash.0[..]],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+}
+
+pub fn delete_push_handle(c: &Connection, hash: &TokenHash) -> rusqlite::Result<bool> {
+    Ok(c.execute(
+        "DELETE FROM push_handles WHERE handle_hash = ?1",
+        params![&hash.0[..]],
+    )? > 0)
 }
 
 pub fn set_password(c: &Connection, user_id: i64, password_hash: &str) -> rusqlite::Result<()> {
