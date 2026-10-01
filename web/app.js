@@ -30,6 +30,8 @@ const state = {
   nodes: new Map(), // node_id -> summary
   sessions: new Map(), // session_id -> session
   connected: false,
+  // This computer's microphones ({ id, label }), for "Send my microphone".
+  microphones: [],
 };
 
 // ─── announcements ──────────────────────────────────────────────────────────
@@ -148,6 +150,7 @@ function signedIn(me, moveFocus) {
   else loadEmailState();
   if (moveFocus) $("devices-heading").focus();
   connect();
+  refreshMicrophones();
 }
 
 // ─── email address ──────────────────────────────────────────────────────────
@@ -555,7 +558,10 @@ function handleServer(msg) {
     }
     case "session_answer": {
       const s = state.sessions.get(msg.session_id);
-      if (s) s.pc.setRemoteDescription({ type: "answer", sdp: msg.sdp }).catch((e) => {
+      // Sending in stereo: the device decodes stereo, but its answer does
+      // not say so, and browsers send stereo only when the answer does.
+      const sendStereo = s && s.stereo && s.media.kind === "speak";
+      if (s) s.pc.setRemoteDescription({ type: "answer", sdp: sendStereo ? preferStereo(msg.sdp) : msg.sdp }).catch((e) => {
         stopSession(s, `The device's answer could not be used: ${e.message}`, true);
       });
       break;
@@ -669,7 +675,9 @@ function deviceElement(node) {
       <div class="row">
         <p><label for="${id}-dest">Play my microphone on</label>
         <select id="${id}-dest"></select></p>
-        <p><label><input type="checkbox" class="voice" checked> Voice processing (echo cancellation and noise suppression)</label></p>
+        <p><label for="${id}-mic">My microphone</label>
+        <select id="${id}-mic" class="mic"></select></p>
+        <p><label><input type="checkbox" class="voice"> Voice processing (echo cancellation and noise suppression; sends mono instead of stereo)</label></p>
         <p><button type="submit">Send my microphone</button></p>
       </div>
     </form>
@@ -684,8 +692,10 @@ function deviceElement(node) {
     e.preventDefault();
     const sel = el.querySelector(`#${CSS.escape(id)}-dest`);
     const voice = el.querySelector(".voice").checked;
-    if (sel.value) startSpeak(node.node_id, sel.value, sel.selectedOptions[0].textContent, voice);
+    const mic = el.querySelector(".mic");
+    if (sel.value) startSpeak(node.node_id, sel.value, sel.selectedOptions[0].textContent, voice, mic.value, mic.selectedOptions[0]?.textContent || "");
   });
+  el.querySelector(".mic").addEventListener("change", (e) => saveMicrophoneChoice(e.target.value));
   el.querySelector(".remove").addEventListener("click", async () => {
     const n = state.nodes.get(node.node_id);
     if (!confirm(`Remove ${n ? n.name : "this device"} from your account? It will need to sign in again.`)) return;
@@ -741,9 +751,56 @@ function renderDevices() {
     setOptions(el.querySelector(`#${CSS.escape(id)}-source`), sharing(n) ? sources : [],
       !n.online ? "Device is offline" : sharing(n) ? "No sources available" : "Not sharing its audio");
     setOptions(el.querySelector(`#${CSS.escape(id)}-dest`), dests, n.online ? "No outputs available" : "Device is offline");
+    const mic = el.querySelector(".mic");
+    setOptions(mic, microphoneOptions(), "No microphone found");
+    // The microphone chosen last time, once the browser lists it.
+    const saved = savedMicrophone();
+    if (saved && mic.value === "" && state.microphones.some((m) => m.id === saved)) mic.value = saved;
     el.querySelector(".listen button").disabled = !sharing(n) || !state.connected;
     el.querySelector(".speak button").disabled = !n.online || !state.connected;
   }
+}
+
+// ─── microphones ────────────────────────────────────────────────────────────
+
+// The microphone last chosen is kept in this browser and chosen again next
+// time. "" is the browser's default microphone.
+const MIC_KEY = "audionet-microphone";
+
+function savedMicrophone() {
+  try { return localStorage.getItem(MIC_KEY) || ""; } catch (_) { return ""; }
+}
+
+function saveMicrophoneChoice(id) {
+  try { localStorage.setItem(MIC_KEY, id); } catch (_) { /* not kept */ }
+}
+
+// The choices for "My microphone": the default, then each microphone.
+// Browsers show the names only once the microphone has been allowed for
+// this site; until then they are numbered.
+function microphoneOptions() {
+  const saved = savedMicrophone();
+  const known = state.microphones.some((m) => m.id === saved);
+  return [
+    { id: "", label: "Default microphone", isDefault: !known },
+    ...state.microphones.map((m) => ({ id: m.id, label: m.label, isDefault: m.id === saved })),
+  ];
+}
+
+async function refreshMicrophones() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  let devices;
+  try { devices = await navigator.mediaDevices.enumerateDevices(); } catch (_) { return; }
+  // Chrome also lists "default" and "communications" entries that stand for
+  // another microphone: the default option covers them.
+  const inputs = devices.filter((d) => d.kind === "audioinput" && d.deviceId &&
+    d.deviceId !== "default" && d.deviceId !== "communications");
+  state.microphones = inputs.map((d, i) => ({ id: d.deviceId, label: d.label || `Microphone ${i + 1}` }));
+  renderDevices();
+}
+
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+  navigator.mediaDevices.addEventListener("devicechange", refreshMicrophones);
 }
 
 // ─── sessions ───────────────────────────────────────────────────────────────
@@ -752,7 +809,10 @@ function newSessionId() {
   return (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
 }
 
-// Ask for stereo Opus: browsers decode stereo only when their own SDP says so.
+// Stereo Opus in an SDP's Opus format line. In this browser's own offer it
+// asks to receive stereo (browsers decode stereo only when their own SDP
+// says so); in the device's answer it lets this browser send stereo
+// (browsers encode stereo only when the other side's SDP says so).
 function preferStereo(sdp) {
   const m = sdp.match(/a=rtpmap:(\d+) opus\/48000\/2/i);
   if (!m) return sdp;
@@ -825,7 +885,7 @@ function setSessionText(s, text) {
   s.el.querySelector(".state").textContent = text;
 }
 
-async function openSession({ nodeId, media, title, localStream }) {
+async function openSession({ nodeId, media, title, localStream, stereo }) {
   clearError();
   const node = state.nodes.get(nodeId);
   const s = {
@@ -853,6 +913,7 @@ async function openSession({ nodeId, media, title, localStream }) {
   setSessionText(s, "Starting…");
   announce(`Starting: ${s.title}.`);
 
+  s.stereo = media.kind === "listen" || Boolean(stereo);
   if (media.kind === "listen") {
     s.pc.addTransceiver("audio", { direction: "recvonly" });
     s.pc.ontrack = (ev) => {
@@ -864,12 +925,15 @@ async function openSession({ nodeId, media, title, localStream }) {
       audio.play().catch(() => showError("The browser blocked playback. Press the Listen button again."));
     };
   } else {
-    // The microphone through the stream's gain (volume and mute), in stereo.
+    // The microphone through the stream's gain (volume and mute): stereo
+    // without voice processing, mono with it (echo cancellation works on
+    // one channel).
     const ctx = new AudioContext({ latencyHint: "interactive" });
     const source = ctx.createMediaStreamSource(localStream);
     const gain = ctx.createGain();
     const out = ctx.createMediaStreamDestination();
-    out.channelCount = 2;
+    out.channelCount = s.stereo ? 2 : 1;
+    out.channelCountMode = "explicit";
     source.connect(gain).connect(out);
     s.audioContext = ctx;
     s.gain = gain;
@@ -890,7 +954,7 @@ async function openSession({ nodeId, media, title, localStream }) {
 
   try {
     const offer = await s.pc.createOffer();
-    offer.sdp = preferStereo(offer.sdp);
+    if (s.stereo) offer.sdp = preferStereo(offer.sdp);
     await s.pc.setLocalDescription(offer);
     await waitForIceGathering(s.pc, 3000);
     const ok = send({
@@ -910,22 +974,45 @@ function startListen(nodeId, sourceId, label) {
   openSession({ nodeId, media: { kind: "listen", source_id: sourceId }, title: `Listening to ${label}` });
 }
 
-async function startSpeak(nodeId, destinationId, label, voice) {
+// Sends this computer's microphone (`micId`, or the default for "") to a
+// device's output. Voice processing off: stereo, as the microphone records
+// it; on: mono, with echo cancellation, noise suppression and automatic
+// gain.
+async function startSpeak(nodeId, destinationId, label, voice, micId, micLabel) {
+  const audio = {
+    echoCancellation: voice,
+    noiseSuppression: voice,
+    autoGainControl: voice,
+    channelCount: voice ? 1 : { ideal: 2 },
+  };
+  if (micId) audio.deviceId = { exact: micId };
+  // The microphone chosen last time, while the browser does not list it yet
+  // (it lists microphones only once allowed): preferred, not required.
+  else if (savedMicrophone()) audio.deviceId = { ideal: savedMicrophone() };
   let stream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: voice, noiseSuppression: voice, autoGainControl: voice, channelCount: 2 },
-    });
+    stream = await navigator.mediaDevices.getUserMedia({ audio });
   } catch (e) {
-    showError(`The microphone could not be opened: ${e.message}. Check the browser's microphone permission.`);
+    if (micId && (e.name === "OverconstrainedError" || e.name === "NotFoundError")) {
+      showError(`The microphone ${micLabel} is not available. Choose another one under My microphone.`);
+    } else {
+      showError(`The microphone could not be opened: ${e.message}. Check the browser's microphone permission.`);
+    }
     return;
   }
+  // Allowed now: the browser tells the microphones' names.
+  refreshMicrophones();
+  const settings = stream.getAudioTracks()[0]?.getSettings() || {};
+  const channels = voice ? "mono" : settings.channelCount === 1 ? "stereo (this microphone records one channel)" : "stereo";
+  const name = micId ? micLabel : settings.deviceId && state.microphones.find((m) => m.id === settings.deviceId)?.label;
   openSession({
     nodeId,
     media: { kind: "speak", destination_id: destinationId },
     title: `Sending your microphone to ${label}`,
     localStream: stream,
+    stereo: !voice,
   });
+  logEvent(`Microphone: ${name || "default microphone"}, ${channels}, voice processing ${voice ? "on" : "off"}.`);
 }
 
 function stopSession(s, reason, notifyServer) {

@@ -273,6 +273,14 @@ Automated accessibility checks:
   announcements, focus and invalid marking. The Mac and iPhone UI tests
   (`testForgotPasswordNeedsTheServerAddress`) and `desktop_uia.py` check
   the apps' "Forgot password" control.
+* Web microphone: `scripts/test/web_mic_stereo.py` (headless Chrome with a
+  stereo fake microphone, 440 Hz left and 1000 Hz right, sending to a
+  temporary command-line device that plays on a virtual cable nothing else
+  uses; the cable is recorded): voice processing is off by default; off,
+  each channel arrives with its own tone (stereo); on, both channels are
+  identical (mono); "My microphone" is labelled, lists the browser's
+  microphones by name once allowed, opens the chosen one and chooses it
+  again after a reload.
 * Web status log: `scripts/test/web_status_log.py` (the Status log dialog
   in Chrome's accessibility tree: named modal dialog, focus in and back,
   Escape and Close). The Windows tests read the desktop app's status log
