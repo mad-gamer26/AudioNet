@@ -9,6 +9,10 @@
 //!   them (listen to another device here, or send from here to it).
 //! * Everything the app needs to show arrives through [`EventListener`] as
 //!   plain values and plain-language text (for screen readers).
+//! * Apps that are not AudioNet itself (TeamTalk NG) sign in as a visitor
+//!   instead ([`visitor_sign_in`], [`Client::visitor`]): like the web
+//!   client, no device is added to the account. They can listen into an
+//!   [`AudioTap`] and pass the sound on.
 //!
 //! The audio itself (capture, Opus, WebRTC, playout with drift and depth
 //! control) is the same engine as on Windows; on Apple platforms it uses
@@ -31,6 +35,9 @@ use audionet_protocol::{NodeId, Platform, SessionId};
 use tokio::sync::{mpsc, oneshot};
 
 uniffi::setup_scaffolding!();
+
+mod tap;
+pub use tap::AudioTap;
 
 #[cfg(not(windows))]
 use audionet_node::cpal_audio::CpalNodeAudio as PlatformAudio;
@@ -269,6 +276,42 @@ pub fn remove_device(account: Account) -> Result<(), AudioNetError> {
     audionet_node::account::remove_device(&account.into()).map_err(AudioNetError::from)
 }
 
+/// A visitor's sign-in: the server, the account name as the server spells
+/// it, and the session token. `token` is a secret: keep it in the system
+/// keychain; it stands in for the password until it expires or
+/// [`visitor_sign_out`] ends it.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct VisitorLogin {
+    pub server_url: String,
+    pub username: String,
+    pub token: String,
+}
+
+/// Signs in to an account as a visitor: no device is added to it (see
+/// [`Client::visitor`]). Blocking (network): call it off the main thread.
+#[uniffi::export]
+pub fn visitor_sign_in(
+    server_url: String,
+    username: String,
+    password: String,
+) -> Result<VisitorLogin, AudioNetError> {
+    audionet_node::account::visitor_sign_in(&server_url, &username, &password)
+        .map(|(username, token)| VisitorLogin {
+            server_url,
+            username,
+            token,
+        })
+        .map_err(AudioNetError::from)
+}
+
+/// Ends a visitor's sign-in on the server. Blocking (network): call it off
+/// the main thread.
+#[uniffi::export]
+pub fn visitor_sign_out(login: VisitorLogin) -> Result<(), AudioNetError> {
+    audionet_node::account::visitor_sign_out(&login.server_url, &login.token)
+        .map_err(AudioNetError::from)
+}
+
 /// This device's sound sources and outputs.
 #[uniffi::export]
 pub fn local_audio() -> Result<LocalAudio, AudioNetError> {
@@ -364,6 +407,8 @@ pub struct Client {
     /// Whether this device shares its audio in this account (see
     /// `set_sharing`); read on every connection.
     sharing: Arc<std::sync::atomic::AtomicBool>,
+    /// A visitor, not a device (see [`Client::visitor`]).
+    visitor: bool,
 }
 
 impl std::fmt::Debug for Client {
@@ -393,6 +438,33 @@ impl Client {
             running: Mutex::new(None),
             me: Arc::new(Mutex::new(None)),
             sharing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            visitor: false,
+        })
+    }
+
+    /// The engine for a visitor (from [`visitor_sign_in`]): it lists the
+    /// account's devices, listens to them and sends to them, but is not
+    /// one of them; nothing is shared and nothing is sent to it unasked.
+    /// `app_name` names it in the server's logs ("TeamTalk NG").
+    #[uniffi::constructor]
+    pub fn visitor(
+        login: VisitorLogin,
+        app_name: String,
+        listener: Arc<dyn EventListener>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            account: Account {
+                server_url: login.server_url,
+                node_id: String::new(),
+                token: login.token,
+                device_name: app_name,
+                username: login.username,
+            },
+            listener,
+            running: Mutex::new(None),
+            me: Arc::new(Mutex::new(None)),
+            sharing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            visitor: true,
         })
     }
 
@@ -479,15 +551,23 @@ impl Client {
         let active = Arc::new(AtomicUsize::new(0));
         let agent = Agent {
             config: self.account.clone().into(),
-            audio: Arc::new(PlatformAudio),
+            audio: Arc::new(tap::AppAudio),
             platform: this_platform(),
-            software: format!("audionet-app {}", env!("CARGO_PKG_VERSION")),
+            software: if self.visitor {
+                format!(
+                    "audionet-visitor ({}) {}",
+                    self.account.device_name,
+                    env!("CARGO_PKG_VERSION")
+                )
+            } else {
+                format!("audionet-app {}", env!("CARGO_PKG_VERSION"))
+            },
             status,
             thread_setup: None,
             active_sessions: Arc::clone(&active),
             control: Some(control),
             relay_only: false,
-            visitor: false,
+            visitor: self.visitor,
             measurements_in_status: Arc::clone(&MEASUREMENTS),
             sharing: Arc::clone(&self.sharing),
         };
@@ -552,7 +632,8 @@ impl Client {
     }
 
     /// Listens to another device's source on one of this device's
-    /// outputs. Returns the stream's id.
+    /// outputs, or into an [`AudioTap`] (its `destination_id`). Returns
+    /// the stream's id.
     pub fn listen(
         &self,
         node_id: String,

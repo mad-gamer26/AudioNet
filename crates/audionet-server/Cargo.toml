@@ -45,6 +45,8 @@ tokio-tungstenite.workspace = true
 # Native device-to-device test: two real agents with simulated audio.
 audionet-node.workspace = true
 audionet-audio.workspace = true
+# An app (TeamTalk NG) through the Swift interface: visitor and audio tap.
+audionet-ffi.workspace = true
 ureq.workspace = true
 tower = { version = "0.5", features = ["util"] }
 # A stand-in for Apple's push service over HTTP/2 (tests/push.rs).

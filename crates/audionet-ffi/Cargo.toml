@@ -21,6 +21,7 @@ required-features = ["bindgen"]
 bindgen = ["uniffi/cli"]
 
 [dependencies]
+audionet-audio.workspace = true
 audionet-node.workspace = true
 audionet-protocol.workspace = true
 tokio.workspace = true

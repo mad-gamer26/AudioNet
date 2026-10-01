@@ -180,6 +180,28 @@ a phone needs your own Apple development team
 built-in server: set `AUDIONET_DEFAULT_SERVER` in `project.yml` to prefill
 one for your own builds.
 
+## Other apps using the engine
+
+Apps that are not AudioNet can embed the same engine through
+`crates/audionet-ffi` to pass on what they listen to (TeamTalk NG sends it
+into a TeamTalk channel):
+
+- `visitor_sign_in` and `Client::visitor` sign in like the web client: no
+  device is added to the account, and nothing is shared.
+- An `AudioTap` is an output the app reads 16-bit samples from instead of a
+  speaker: listen with `tap.destination_id()` as the output, then call
+  `tap.read(frames)` from the app's own sending thread at its own pace
+  (never from an audio callback). The reads drive the stream's playout, and
+  its drift and depth control follow the app's clock as they would a
+  device's. Without a stream, a read returns silence at once.
+
+`tests/native_devices.rs` (`an_app_listens_into_an_audio_tap`) runs this
+end to end. An app that links another copy of libopus (the TeamTalk SDK
+does) should pre-link the engine into one object that exports only
+`uniffi_audionet_ffi_*` and `ffi_audionet_ffi_*` (`ld -r` with an
+exported-symbols list), so the two copies never resolve each other's
+symbols.
+
 ## Android
 
 There is no Android app yet: a native one on the Rust engine, like the

@@ -963,3 +963,124 @@ async fn a_visitor_listens_and_sends_without_becoming_a_device() {
     .unwrap();
     assert_eq!(status, 401, "the session ended");
 }
+
+/// Receives the Swift interface's events in a test.
+struct FfiEvents(Mutex<std::sync::mpsc::Sender<audionet_ffi::Event>>);
+
+impl audionet_ffi::EventListener for FfiEvents {
+    fn on_event(&self, event: audionet_ffi::Event) {
+        let _ = self.0.lock().unwrap().send(event);
+    }
+}
+
+fn next_ffi_event(
+    rx: &std::sync::mpsc::Receiver<audionet_ffi::Event>,
+    what: &str,
+    mut pred: impl FnMut(&audionet_ffi::Event) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or_else(|| panic!("timed out waiting for {what}"));
+        let e = rx
+            .recv_timeout(left)
+            .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+        if let audionet_ffi::Event::ServerProblem { message } = &e {
+            panic!("the server reported a problem while waiting for {what}: {message}");
+        }
+        if pred(&e) {
+            return;
+        }
+    }
+}
+
+/// What TeamTalk NG does, through the Swift interface (audionet-ffi): sign
+/// in as a visitor, listen to a device into an audio tap, and read the tap
+/// at the app's own pace (a 40 ms block every 40 ms, 48 kHz mono, like a
+/// TeamTalk channel). The reads hear the device's tone; stopping the stream
+/// empties the tap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_app_listens_into_an_audio_tap() {
+    use audionet_ffi::{AudioTap, Client, Event, StreamState};
+
+    let base = start_server().await;
+    let pc_config = sign_in(&base, "Studio PC");
+    let pc_id = pc_config.node_id.clone();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let mut stop = stop_rx.clone();
+    tokio::spawn(
+        agent(pc_config, Arc::new(FakeAudio::default()), None).run(async move {
+            let _ = stop.changed().await;
+        }),
+    );
+
+    let heard = tokio::task::spawn_blocking(move || {
+        let login =
+            audionet_ffi::visitor_sign_in(base, "alice".into(), "correct horse battery".into())
+                .unwrap();
+        assert!(login.token.starts_with("ans_"), "a web session");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let client = Client::visitor(
+            login,
+            "TeamTalk NG".into(),
+            Arc::new(FfiEvents(Mutex::new(tx))),
+        );
+        client.start();
+        next_ffi_event(&rx, "the PC listed", |e| match e {
+            Event::Devices { devices } => devices.iter().any(|d| d.name == "Studio PC" && d.online),
+            Event::DeviceChanged { device } => device.name == "Studio PC" && device.online,
+            _ => false,
+        });
+
+        let tap = AudioTap::new("TeamTalk channel".into(), RATE, 1);
+        let session = client
+            .listen(pc_id, "input:mic".into(), tap.destination_id())
+            .unwrap();
+        next_ffi_event(&rx, "the tap opened", |e| {
+            matches!(e, Event::Stream { session_id, detail, .. }
+                if *session_id == session && detail == "Ready to play on TeamTalk channel (mono, 48000 Hz).")
+        });
+        next_ffi_event(&rx, "the stream active", |e| {
+            matches!(e, Event::Stream { session_id, state: StreamState::Active, .. }
+                if *session_id == session)
+        });
+
+        // Read like TeamTalk NG's sender, for three seconds.
+        let block = RATE / 25;
+        let mut heard = Vec::new();
+        let start = Instant::now();
+        for i in 0..75 {
+            let due = start + Duration::from_millis(40 * i);
+            if let Some(wait) = due.checked_duration_since(Instant::now()) {
+                std::thread::sleep(wait);
+            }
+            let samples = tap.read(block);
+            assert_eq!(samples.len(), block as usize);
+            heard.extend(samples.iter().map(|&s| f32::from(s) / 32_768.0));
+        }
+        assert!(tap.is_playing());
+
+        client.stop_stream(session);
+        let until = Instant::now() + Duration::from_secs(10);
+        while tap.is_playing() {
+            assert!(Instant::now() < until, "the stream stopped playing into the tap");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(tap.read(10).iter().all(|&s| s == 0), "silence without a stream");
+        client.stop();
+        heard
+    })
+    .await
+    .unwrap();
+
+    let heard = Mutex::new(heard);
+    let (level, hz) = analyse(&heard);
+    println!("the app's reads hear the PC: {level:.1} dBFS at {hz:.0} Hz");
+    assert!(
+        level > -20.0 && (hz - TONE_HZ).abs() < 15.0,
+        "{level:.1} dBFS, {hz:.0} Hz"
+    );
+    assert_eq!(silent_runs(&heard), 0, "no gaps in the last second read");
+    let _ = stop_tx.send(true);
+}
