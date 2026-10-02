@@ -177,7 +177,7 @@ microphone sends only digital silence. Use a loopback input in that case.
   (DPAPI-encrypted tokens) and the words the add-on says.
 * Not automated: the add-on inside a running NVDA (its window, settings
   panel, command layer and announcements). That needs a manual session
-  with NVDA.
+  with NVDA; the maintainer's session found it fully working (2026-10-02).
 
 ## 4c. Sending rate on slow-timer PCs
 

@@ -163,7 +163,7 @@ Where the server allows it:
   going online or offline can be. The status log is read-only text that
   starts at the newest event; with "Show measurements" on (AudioNet
   settings, off by default) each stream's measurements follow.
-* Not yet checked in a running NVDA: see docs/testing.md.
+* Tested in a running NVDA by the maintainer: fully working (2026-10-02).
 
 ## Web client specifics
 
@@ -363,16 +363,17 @@ Be precise about what has been checked:
 | --- | --- |
 | Web client semantic structure, labels, focus moves, announcements (automated in real Chrome via Selenium) | Done |
 | CLI output format (golden-text unit tests) | Done |
-| A screen reader with the web client | Done: tested by the maintainer with a screen reader, fully working (2026-10-02) |
+| NVDA (Windows) and VoiceOver (macOS, iOS) with the web client | Done: tested by the maintainer, fully working (2026-10-02) |
 | NVDA / JAWS with `audionet` command-line output | **Not yet tested** |
 | Windows desktop app names, roles and sign-in/start flow (automated through UI Automation, `scripts/test/desktop_uia.py`) | Done |
 | Windows desktop app Settings window (named, focus on the first option, Escape closes it and focus returns, opens from the tray menu while hidden) and system tray: named checkboxes, icon present, close to tray, Enter on the icon, named tray menu items, clean exit, start in tray, focus never left in the hidden window (automated, `scripts/test/desktop_tray.py`); sharing starting by itself after a restart when chosen (`desktop_uia.py`) | Done |
 | Windows desktop app remote: sign in, choose a device and sounds with the keyboard, Listen and Send with the audio checked, stop (automated through UI Automation, `scripts/test/desktop_remote.py`) | Done |
-| A screen reader with the Windows desktop app, including the remote, the tray icon and its notifications | Done: tested by the maintainer with a screen reader, fully working (2026-10-02) |
+| NVDA with the Windows desktop app, including the remote, the tray icon and its notifications | Done: tested by the maintainer, fully working (2026-10-02) |
+| The NVDA add-on in a running NVDA (window, settings panel, command layer, announcements) | Done: tested by the maintainer, fully working (2026-10-02) |
 | iPhone app: Xcode accessibility audit of the sign-in screen and of the signed-in screen with a stream running; empty sign-in; expanding a device, listening, collapsing, stopping (`scripts/test/ios_ui_tests.py`, iOS simulator) | Done |
-| VoiceOver on iOS with the app | Done: tested by the maintainer with a screen reader, fully working (2026-10-02) |
+| VoiceOver on iOS with the app | Done: tested by the maintainer, fully working (2026-10-02) |
 | macOS app: Xcode accessibility audit of the sign-in and signed-in windows, sign-in, listen and stop flows (`apps/macos/AudioNetUITests`, `scripts/test/mac_ui_tests.py`) | Done |
-| VoiceOver on macOS with the app | Done: tested by the maintainer with a screen reader, fully working (2026-10-02) |
+| VoiceOver on macOS with the app | Done: tested by the maintainer, fully working (2026-10-02) |
 
 Automated checks prove structure, not usability. Each row still marked
 **Not yet tested** needs a real screen-reader session, and so does any new
