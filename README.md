@@ -13,8 +13,10 @@ AudioNet has two parts:
   `audionet` program or, on Windows, the AudioNet desktop app.
 * **Clients** listen to and talk to devices: the web client in any modern
   browser, and the native Windows, Mac and iPhone apps (which are devices
-  too). A native Android app is planned; on Android, use the web client
-  in the browser for now.
+  too; the iPhone app is in beta on
+  [TestFlight](https://testflight.apple.com/join/ebstQCWY)). A native
+  Android app is planned; on Android, use the web client in the browser
+  for now.
 * A **coordination server** handles accounts, device sign-in, presence and
   connection setup. It never touches audio: sound travels directly between
   devices, encrypted, and is relayed only when a direct path is impossible.
@@ -33,11 +35,11 @@ Early but working. What exists and is tested today:
 | Server | Accounts, password sign-in for devices, device tokens, presence, WebRTC signaling, TURN credentials; self-hostable |
 | Web client | Sign in, see devices, listen to a device's sound, send your microphone (any of this computer's microphones; stereo, or mono with voice processing) to a device, measurements for troubleshooting (off by default) |
 | Windows desktop app | Sign in with your account; share this computer; listen to your other devices and send audio to them; system tray, signed automatic updates; standard Win32 controls with UI Automation announcements |
-| iPhone app | Native SwiftUI app on the same engine: sign in, share this iPhone's microphone and output, listen to your other devices and send the microphone to them, background audio, mixes with other apps' audio; Xcode accessibility audit and a listen flow pass in the simulator; not yet in the App Store |
+| iPhone app | Native SwiftUI app on the same engine: sign in, share this iPhone's microphone and output, listen to your other devices and send the microphone to them, background audio, mixes with other apps' audio; Xcode accessibility audit and a listen flow pass in the simulator; tested with VoiceOver; beta on [TestFlight](https://testflight.apple.com/join/ebstQCWY), not yet in the App Store |
 | macOS app | Native SwiftUI app on the same engine: sign in, share this Mac, listen to your other devices and send to them, menu bar, start at login; microphones, outputs and system audio (Core Audio process taps); engine tested end to end between a Mac and a Windows PC, system audio included; Xcode accessibility audit passes; signed automatic updates; download from the GitHub releases; Developer ID signed and notarized |
 | NVDA add-on | Listen to your devices and send audio to them from NVDA, as a visitor of your accounts (no device record, like the web client): an AudioNet window, NVDA settings for accounts, an NVDA+Alt+A command layer; the engine runs as a separate program; engine tested end to end on Windows audio; not yet tested inside a running NVDA |
 | Linux devices | `audionet node` runs through a portable audio backend (cpal); untested with real devices |
-| Accessibility | Built for screen readers; automated checks (browser, UI Automation, Xcode audit) pass; no manual screen-reader session yet (see [docs/accessibility.md](docs/accessibility.md)) |
+| Accessibility | Built for screen readers; automated checks (browser, UI Automation, Xcode audit) pass; tested by the maintainer with a screen reader and fully working on Windows, macOS, iOS and the web client (the command line and the NVDA add-on not yet; see [docs/accessibility.md](docs/accessibility.md)) |
 
 Measured results (Windows, details in [docs/windows-audio.md](docs/windows-audio.md)):
 67.6 ms end-to-end on the native path at the default 40 ms buffer target,
