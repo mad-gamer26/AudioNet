@@ -92,10 +92,6 @@ final class AppModel: ObservableObject {
     /// Counts engine starts per account: events from an engine that was
     /// stopped (they can still be on their way) are ignored.
     private var generations: [String: Int] = [:]
-    /// Devices that just went offline, per account, by node id (with their
-    /// name), until the device list asked for then says whether they signed
-    /// out (gone from the list) or are only offline.
-    private var wentOffline: [String: [String: String]] = [:]
     private var micWatch: NSObjectProtocol?
 
     /// Signed in to at least one account.
@@ -316,7 +312,6 @@ final class AppModel: ObservableObject {
         connectedAccounts.remove(id)
         devicesByAccount[id] = nil
         devicesLoaded.remove(id)
-        wentOffline[id] = nil
         let ended = streams.filter { $0.account == id }
         streams.removeAll { $0.account == id }
         for row in ended { diagnostics[row.id] = nil }
@@ -558,28 +553,12 @@ final class AppModel: ObservableObject {
             devicesLoaded.insert(account)
             list.forEach(fillChoices)
             expanded.formIntersection(devices.map(\.nodeId))
-            // Devices that went offline: signed out if the list no longer
-            // has them (the server removed their record), else offline.
-            for (nodeId, name) in wentOffline.removeValue(forKey: account) ?? [:] {
-                if let device = list.first(where: { $0.nodeId == nodeId }) {
-                    if device.online == false { announce("\(device.name) is now offline.") }
-                } else {
-                    choices[nodeId] = nil
-                    announce("\(name) signed out.")
-                }
-            }
         case .deviceChanged(let device):
             var list = devicesByAccount[account] ?? []
             if let i = list.firstIndex(where: { $0.nodeId == device.nodeId }) {
                 let was = list[i]
                 list[i] = device
-                if was.online && device.online == false {
-                    // A device that signs out goes offline and its record
-                    // is removed; only a fresh list shows which it was. It
-                    // is said once that answer is here.
-                    wentOffline[account, default: [:]][device.nodeId] = device.name
-                    clients[account]?.refreshDevices()
-                } else if was.online != device.online {
+                if was.online != device.online {
                     announce("\(device.name) is now \(device.online ? "online" : "offline").")
                 } else if device.online && was.sharing != device.sharing {
                     announce("\(device.name) \(device.sharing ? "started" : "stopped") sharing its audio.")

@@ -15,7 +15,7 @@ settings:
     SWIFT_VERSION: "6.0"
     AUDIONET_DEFAULT_SERVER: ""
     MARKETING_VERSION: "1.2.0"
-    CURRENT_PROJECT_VERSION: "2"
+    CURRENT_PROJECT_VERSION: "1"
 targets:
   AudioNet:
     type: application
