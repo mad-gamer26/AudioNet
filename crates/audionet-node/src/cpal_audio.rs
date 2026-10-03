@@ -11,6 +11,9 @@
 //! (macOS 14.2 or later). macOS asks once for "System Audio Recording"
 //! permission; until it is given the tap delivers silence. Like Windows
 //! loopback, this includes what AudioNet itself plays on that device.
+//! With "mute this Mac's sound while it is streamed" on, the stream's
+//! thread also holds an [`audionet_coreaudio::OutputMute`] on the device
+//! (AudioNet's own muting tap; the system volume and mute are untouched).
 //!
 //! Real-time rules: the cpal data callbacks only write into / read from the
 //! bounded rings and the playout (no allocation, locks or I/O). Each stream
@@ -29,7 +32,7 @@ use audionet_audio::ring::audio_ring;
 use audionet_protocol::signal::{DestinationInfo, SourceInfo, SourceType};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::audio::{FORMAT_CHANGED, NodeAudio, OpenCapture, StreamGuard, StreamUse};
+use crate::audio::{self, FORMAT_CHANGED, NodeAudio, OpenCapture, StreamGuard, StreamUse};
 
 #[derive(Debug, Default)]
 pub struct CpalNodeAudio;
@@ -154,8 +157,12 @@ fn on_stream_error(
 
 /// Runs `build` on a dedicated thread that owns the stream until `stop`.
 /// Returns the build result (sample rate and description) or its error.
+/// `tick` runs on that thread once the stream plays and then every 200 ms
+/// until `stop` (never in an audio callback); it is dropped just before the
+/// stream.
 fn spawn_stream(
     name: &str,
+    mut tick: impl FnMut() + Send + 'static,
     build: impl FnOnce(Arc<Mutex<Option<String>>>) -> Result<(cpal::Stream, u32, String), String>
     + Send
     + 'static,
@@ -175,8 +182,10 @@ fn spawn_stream(
                 }
                 let _ = tx.send(Ok((rate, desc)));
                 while !thread_stop.load(Relaxed) {
+                    tick();
                     std::thread::park_timeout(Duration::from_millis(200));
                 }
+                drop(tick);
                 drop(stream);
             }
             Err(e) => {
@@ -200,6 +209,55 @@ fn spawn_stream(
         }
         Err(_) => Err("the audio thread stopped unexpectedly".into()),
     }
+}
+
+/// For a stream of what the output `device_id` plays: keeps that output
+/// muted (AudioNet's own mute) while [`audio::mute_streamed_output`] is on.
+/// Runs as the stream thread's tick, so turning the setting on or off takes
+/// effect within 200 ms; the mute ends when the stream does.
+#[cfg(target_os = "macos")]
+fn output_mute(device_id: String) -> Box<dyn FnMut() + Send> {
+    use audionet_coreaudio::OutputMute;
+    // A cpal device id is "coreaudio:<Core Audio UID>".
+    let device_uid = device_id
+        .split_once(':')
+        .map_or(device_id.clone(), |(_, uid)| uid.to_owned());
+    let mut mute: Option<OutputMute> = None;
+    // A failure is reported once, until the setting is turned off.
+    let mut failed = false;
+    Box::new(move || {
+        if !audio::mute_streamed_output() {
+            if mute.take().is_some() {
+                tracing::info!("this output plays its own sound again (muting is off)");
+            }
+            failed = false;
+            return;
+        }
+        // AudioNet began playing sound here since the mute was made: make
+        // it again, leaving that sound out (the new one first, so nothing
+        // leaks in between).
+        let renew = mute.as_ref().is_some_and(|m| m.own_sound_changed());
+        if (mute.is_none() && !failed) || renew {
+            match OutputMute::new(&device_uid) {
+                Ok(m) => {
+                    if mute.replace(m).is_none() {
+                        tracing::info!("this output is muted while its sound is streamed");
+                    }
+                }
+                Err(e) => {
+                    if !failed && mute.is_none() {
+                        tracing::warn!("could not mute this output while streaming: {e}");
+                    }
+                    failed = true;
+                }
+            }
+        }
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn output_mute(_device_id: String) -> Box<dyn FnMut() + Send> {
+    Box::new(|| {})
 }
 
 impl NodeAudio for CpalNodeAudio {
@@ -259,7 +317,12 @@ impl NodeAudio for CpalNodeAudio {
         };
         let counted = StreamUse::begin(!loopback);
         let (ring_tx, ring_rx) = mpsc::sync_channel(1);
-        let (guard, rate, description) = spawn_stream("audionet-capture", move |failure| {
+        let tick = if loopback {
+            output_mute(id.clone())
+        } else {
+            Box::new(|| {}) as Box<dyn FnMut() + Send>
+        };
+        let (guard, rate, description) = spawn_stream("audionet-capture", tick, move |failure| {
             let device = find(&id, !loopback)?;
             // Loopback records in the output's own format.
             let config = if loopback {
@@ -342,38 +405,42 @@ impl NodeAudio for CpalNodeAudio {
             .ok_or_else(|| format!("this device cannot play to {destination_id}"))?
             .to_owned();
         let counted = StreamUse::begin(false);
-        let (guard, _rate, description) = spawn_stream("audionet-render", move |failure| {
-            let device = find(&id, false)?;
-            let config = device
-                .default_output_config()
-                .map_err(|e| format!("could not read the output format: {e}"))?;
-            let rate = config.sample_rate();
-            let channels = usize::from(config.channels());
-            // Control path: allocate playout buffers for this device format.
-            source.prepare(rate, channels, rate as usize)?;
-            let format = (rate, config.channels());
-            let probe = device.clone();
-            let stream = device
-                .build_output_stream::<f32, _, _>(
-                    config.config(),
-                    move |data: &mut [f32], _| source.render(data, clock::now_ns()),
-                    move |e| {
-                        on_stream_error(&failure, &e, format, || {
-                            probe
-                                .default_output_config()
-                                .ok()
-                                .map(|c| (c.sample_rate(), c.channels()))
-                        })
-                    },
-                    None,
-                )
-                .map_err(|e| {
-                    format!(
-                        "could not open the output device ({rate} Hz, {channels} channels): {e}"
+        let (guard, _rate, description) = spawn_stream(
+            "audionet-render",
+            || {},
+            move |failure| {
+                let device = find(&id, false)?;
+                let config = device
+                    .default_output_config()
+                    .map_err(|e| format!("could not read the output format: {e}"))?;
+                let rate = config.sample_rate();
+                let channels = usize::from(config.channels());
+                // Control path: allocate playout buffers for this device format.
+                source.prepare(rate, channels, rate as usize)?;
+                let format = (rate, config.channels());
+                let probe = device.clone();
+                let stream = device
+                    .build_output_stream::<f32, _, _>(
+                        config.config(),
+                        move |data: &mut [f32], _| source.render(data, clock::now_ns()),
+                        move |e| {
+                            on_stream_error(&failure, &e, format, || {
+                                probe
+                                    .default_output_config()
+                                    .ok()
+                                    .map(|c| (c.sample_rate(), c.channels()))
+                            })
+                        },
+                        None,
                     )
-                })?;
-            Ok((stream, rate, stream_device_name(&device, false)))
-        })?;
+                    .map_err(|e| {
+                        format!(
+                            "could not open the output device ({rate} Hz, {channels} channels): {e}"
+                        )
+                    })?;
+                Ok((stream, rate, stream_device_name(&device, false)))
+            },
+        )?;
         Ok((
             Box::new(CountedGuard {
                 stream: guard,

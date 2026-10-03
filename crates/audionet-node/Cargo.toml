@@ -33,5 +33,8 @@ audionet-wasapi.workspace = true
 [target.'cfg(not(windows))'.dependencies]
 cpal.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+audionet-coreaudio.workspace = true
+
 [lints]
 workspace = true

@@ -21,7 +21,8 @@ replace it.
 | `crates/audionet-codec` | Opus (libopus). |
 | `crates/audionet-transport` | RTP framing, sequence tracking, PSK encryption. Sans-I/O. |
 | `crates/audionet-engine` | Sender, receiver stage, playout, drift/depth controller, runtime threads, simulator (`tests/sim.rs`). |
-| `crates/audionet-wasapi` | Windows backend. The only crate allowed `unsafe`. |
+| `crates/audionet-wasapi` | Windows backend. Allowed `unsafe` (platform backend). |
+| `crates/audionet-coreaudio` | macOS Core Audio pieces cpal lacks (AudioNet's own output mute while streaming). Allowed `unsafe` (platform backend); uses the objc2 crates cpal already pulls in. |
 | `crates/audionet-node` | Device agent: sign-in, signaling, WebRTC sessions (str0m), TURN relay. |
 | `crates/audionet-server` | Self-hostable coordination server (axum, SQLite). |
 | `crates/audionet-cli` | The `audionet` executable. |

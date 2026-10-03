@@ -238,6 +238,15 @@ pub fn set_show_measurements(on: bool) {
     MEASUREMENTS.store(on, Relaxed);
 }
 
+/// Turns "Mute this Mac's sound while it is streamed" (macOS, off by
+/// default) on or off: while this device streams what one of its outputs
+/// plays, that output stays silent (AudioNet's own mute, not the system
+/// volume or mute). Microphones are never affected.
+#[uniffi::export]
+pub fn set_mute_streamed_output(on: bool) {
+    audionet_node::audio::set_mute_streamed_output(on);
+}
+
 #[uniffi::export]
 pub fn set_audio_use_listener(listener: Option<Arc<dyn AudioUseListener>>) {
     audionet_node::audio::set_audio_use_hook(listener.map(|l| {

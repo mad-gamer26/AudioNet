@@ -7,6 +7,7 @@
 use audionet_audio::render::RenderSource;
 use audionet_audio::ring::RingConsumer;
 use audionet_protocol::signal::{DestinationInfo, SourceInfo};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How a [`StreamGuard::failure`] starts when the device is still there
 /// but its format changed (an iPhone switching to a Bluetooth microphone
@@ -104,6 +105,23 @@ pub fn set_audio_use_hook(hook: Option<AudioUseHook>) {
     if let Ok(mut m) = AUDIO_USE.lock() {
         m.0 = hook;
     }
+}
+
+/// "Mute this Mac's sound while it is streamed" (macOS, off by default):
+/// while a device streams what one of its outputs plays (system audio),
+/// that output itself stays silent, by AudioNet's own means, not the
+/// system's volume or mute. Read by the thread that owns each such capture
+/// stream, so a change applies to running streams within a moment.
+static MUTE_STREAMED_OUTPUT: AtomicBool = AtomicBool::new(false);
+
+/// Turns [`MUTE_STREAMED_OUTPUT`] on or off.
+pub fn set_mute_streamed_output(on: bool) {
+    MUTE_STREAMED_OUTPUT.store(on, Ordering::Relaxed);
+}
+
+/// Whether an output should be muted while its sound is streamed.
+pub fn mute_streamed_output() -> bool {
+    MUTE_STREAMED_OUTPUT.load(Ordering::Relaxed)
 }
 
 /// One open stream, counted from before it opens until dropped (after it

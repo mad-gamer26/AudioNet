@@ -80,6 +80,14 @@ final class AppModel: ObservableObject {
     @AppStorage("showMeasurements", store: AccountStore.settings) var showMeasurements = false {
         didSet { setShowMeasurements(on: showMeasurements) }
     }
+    /// "Mute this Mac's sound while it is streamed" (Settings, off by
+    /// default): while this Mac sends what one of its outputs plays, that
+    /// output (the speakers, say) stays silent until the stream stops. The
+    /// engine does it with its own muting tap; the system volume and mute
+    /// are never changed. Microphones are not affected.
+    @AppStorage("muteStreamedOutput", store: AccountStore.settings) var muteStreamedOutput = false {
+        didSet { setMuteStreamedOutput(on: muteStreamedOutput) }
+    }
     @AppStorage("keepInMenuBar", store: AccountStore.settings) var keepInMenuBar = true
     /// Start with no window and no Dock icon, in the menu bar only.
     @AppStorage("startInMenuBar", store: AccountStore.settings) var startInMenuBar = false
@@ -107,6 +115,7 @@ final class AppModel: ObservableObject {
         Updater.reportStarted()
         AccountStore.prepareTestProfile()
         setShowMeasurements(on: showMeasurements)
+        setMuteStreamedOutput(on: muteStreamedOutput)
         updater.model = self
         updater.afterLaunch()
         updater.start()

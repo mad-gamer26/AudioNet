@@ -1,0 +1,18 @@
+[package]
+name = "audionet-coreaudio"
+description = "AudioNet macOS Core Audio pieces cpal does not offer: muting an output while AudioNet streams what it plays."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The same objc2 crates cpal already uses for Core Audio (no new
+# dependency in the build).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSValue"] }
+
+[lints]
+workspace = true

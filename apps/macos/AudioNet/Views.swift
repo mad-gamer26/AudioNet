@@ -501,6 +501,11 @@ struct SettingsView: View {
                 .onChange(of: model.keepInMenuBar) { if !model.keepInMenuBar { model.startInMenuBar = false } }
             Toggle("Start AudioNet in the menu bar, without its window or Dock icon", isOn: $model.startInMenuBar)
                 .onChange(of: model.startInMenuBar) { if model.startInMenuBar { model.keepInMenuBar = true } }
+            Toggle("Mute this Mac's sound while it is streamed to another device", isOn: $model.muteStreamedOutput)
+                .accessibilityIdentifier("muteStreamedOutput")
+            Text("While another device listens to one of this Mac's outputs, such as its speakers, that output stays silent until the stream stops, including VoiceOver, which you then hear on the other device. AudioNet's own sound and microphones are not affected, and the volume and mute in Control Center are not changed.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
             Toggle("Show measurements under streams and in the status log (for troubleshooting)",
                    isOn: $model.showMeasurements)
                 .accessibilityIdentifier("showMeasurements")
