@@ -295,6 +295,8 @@ version = "1.2.0"
 dependencies = [
  "objc2",
  "objc2-core-audio",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
  "objc2-foundation",
 ]
 

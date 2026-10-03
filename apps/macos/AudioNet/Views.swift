@@ -506,6 +506,11 @@ struct SettingsView: View {
             Text("While another device listens to one of this Mac's outputs, such as its speakers, that output stays silent until the stream stops, including VoiceOver, which you then hear on the other device. AudioNet's own sound and microphones are not affected, and the volume and mute in Control Center are not changed.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            // What the mute is doing now, in words, read again every
+            // second while Settings is open.
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                LabeledContent("Muting now", value: outputMuteStatus())
+            }
             Toggle("Show measurements under streams and in the status log (for troubleshooting)",
                    isOn: $model.showMeasurements)
                 .accessibilityIdentifier("showMeasurements")

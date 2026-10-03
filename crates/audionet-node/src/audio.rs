@@ -124,6 +124,65 @@ pub fn mute_streamed_output() -> bool {
     MUTE_STREAMED_OUTPUT.load(Ordering::Relaxed)
 }
 
+/// What each streamed output's mute is doing, in words (one line per
+/// stream of an output, by [`OutputMuteReport`] id), for
+/// [`output_mute_status`].
+static OUTPUT_MUTES: std::sync::Mutex<Vec<(u64, String)>> = std::sync::Mutex::new(Vec::new());
+static NEXT_OUTPUT_MUTE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// One stream's line in [`output_mute_status`], removed when dropped. Set
+/// from the thread that owns the stream, never an audio callback.
+#[derive(Debug)]
+pub struct OutputMuteReport(u64);
+
+impl OutputMuteReport {
+    pub fn new() -> Self {
+        OutputMuteReport(NEXT_OUTPUT_MUTE.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Sets (or replaces) this stream's line.
+    pub fn set(&self, line: String) {
+        if let Ok(mut lines) = OUTPUT_MUTES.lock() {
+            match lines.iter_mut().find(|(id, _)| *id == self.0) {
+                Some(entry) => entry.1 = line,
+                None => lines.push((self.0, line)),
+            }
+        }
+    }
+}
+
+impl Default for OutputMuteReport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for OutputMuteReport {
+    fn drop(&mut self) {
+        if let Ok(mut lines) = OUTPUT_MUTES.lock() {
+            lines.retain(|(id, _)| *id != self.0);
+        }
+    }
+}
+
+/// What "Mute this Mac's sound while it is streamed" is doing now, in
+/// words: off, waiting for a stream, or each streamed output muted (or why
+/// it could not be).
+pub fn output_mute_status() -> String {
+    if !mute_streamed_output() {
+        return "Off.".into();
+    }
+    let lines = OUTPUT_MUTES
+        .lock()
+        .map(|l| l.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if lines.is_empty() {
+        "On. Nothing this Mac plays is being streamed right now.".into()
+    } else {
+        lines.join(" ")
+    }
+}
+
 /// One open stream, counted from before it opens until dropped (after it
 /// has closed).
 #[derive(Debug)]

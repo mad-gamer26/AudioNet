@@ -222,32 +222,36 @@ fn output_mute(device_id: String) -> Box<dyn FnMut() + Send> {
     let device_uid = device_id
         .split_once(':')
         .map_or(device_id.clone(), |(_, uid)| uid.to_owned());
+    let name = find(&device_id, false)
+        .map(|d| device_name(&d))
+        .unwrap_or_else(|_| device_uid.clone());
+    let report = audio::OutputMuteReport::new();
     let mut mute: Option<OutputMute> = None;
-    // A failure is reported once, until the setting is turned off.
+    // After a failure, tried again only once the setting is turned off and
+    // on (not every 200 ms).
     let mut failed = false;
     Box::new(move || {
         if !audio::mute_streamed_output() {
             if mute.take().is_some() {
-                tracing::info!("this output plays its own sound again (muting is off)");
+                tracing::info!("{name} plays its own sound again (muting is off)");
             }
             failed = false;
             return;
         }
-        // AudioNet began playing sound here since the mute was made: make
-        // it again, leaving that sound out (the new one first, so nothing
-        // leaks in between).
+        // AudioNet began using audio since the mute was made: make it
+        // again, leaving AudioNet's own sound out (the new one first, so
+        // nothing leaks in between).
         let renew = mute.as_ref().is_some_and(|m| m.own_sound_changed());
-        if (mute.is_none() && !failed) || renew {
+        if (mute.is_none() || renew) && !failed {
             match OutputMute::new(&device_uid) {
                 Ok(m) => {
-                    if mute.replace(m).is_none() {
-                        tracing::info!("this output is muted while its sound is streamed");
-                    }
+                    mute = Some(m);
+                    report.set(format!("Muting {name} while it is streamed."));
+                    tracing::info!("{name} is muted while its sound is streamed");
                 }
                 Err(e) => {
-                    if !failed && mute.is_none() {
-                        tracing::warn!("could not mute this output while streaming: {e}");
-                    }
+                    report.set(format!("Could not mute {name}: {e}."));
+                    tracing::warn!("could not mute {name} while streaming: {e}");
                     failed = true;
                 }
             }

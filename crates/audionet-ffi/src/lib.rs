@@ -247,6 +247,14 @@ pub fn set_mute_streamed_output(on: bool) {
     audionet_node::audio::set_mute_streamed_output(on);
 }
 
+/// What "Mute this Mac's sound while it is streamed" is doing now, in
+/// words (for Settings): off, waiting for a stream, each output muted, or
+/// why one could not be.
+#[uniffi::export]
+pub fn output_mute_status() -> String {
+    audionet_node::audio::output_mute_status()
+}
+
 #[uniffi::export]
 pub fn set_audio_use_listener(listener: Option<Arc<dyn AudioUseListener>>) {
     audionet_node::audio::set_audio_use_hook(listener.map(|l| {
