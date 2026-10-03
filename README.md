@@ -52,6 +52,14 @@ with no latency growth.
    official instance, or your own; see *Run your own server*).
 2. On the Windows PC you want to use, open the AudioNet desktop app and
    sign in with the server address, your account name and your password.
+   To install it (or later update or uninstall it), run this in
+   PowerShell; it asks a few questions, installs the latest release from
+   GitHub for your user only, and starts it:
+
+   ```text
+   irm https://audionet.mad-gamer.com/install.ps1 | iex
+   ```
+
    On a computer without a screen, sign in from a terminal instead (it asks
    for the password):
 
