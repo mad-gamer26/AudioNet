@@ -11,14 +11,16 @@
 //! listen to and receives nothing unasked, but listens to devices and sends
 //! to them. The NVDA add-on runs one per account.
 //!
-//! Reconnects with backoff after network problems. Stops for good only if
+//! Reconnects with backoff after network problems (1, 2, 4, 8, 16, then
+//! every 30 seconds; back to 1 second after a connection that lasted, see
+//! [`next_backoff`]). Stops for good only if
 //! the server rejects the credential (the device was removed, or the
 //! visitor's web session ended).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use audionet_protocol::signal::{
     ClientInfo, ClientKind, ClientMessage, DestinationInfo, IceServer, NodeSummary, ServerMessage,
@@ -37,6 +39,11 @@ use crate::session::{self, LocalMedia, Negotiation, SessionEvent, SessionHandle}
 
 const ENDPOINT_REFRESH: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// A connection signed in for at least this long counts as having worked:
+/// the next wait starts again at 1 second. Shorter ones (a server that
+/// accepts devices and drops them at once) keep the growing waits, so
+/// devices do not retry every second.
+const STABLE_CONNECTION: Duration = Duration::from_secs(10);
 
 /// Plain-text status lines for the user (printed by the CLI, shown in
 /// GUIs). Kept short and self-contained for screen readers.
@@ -184,20 +191,37 @@ enum Outcome {
     Shutdown,
 }
 
+/// The wait before reconnecting, given the previous wait (zero before the
+/// first retry) and how long the lost connection had been signed in (None:
+/// it never signed in). Doubles from 1 second up to [`MAX_BACKOFF`], and
+/// starts again at 1 second after a connection that lasted
+/// [`STABLE_CONNECTION`].
+fn next_backoff(previous: Duration, lasted: Option<Duration>) -> Duration {
+    if previous.is_zero() || lasted.is_some_and(|d| d >= STABLE_CONNECTION) {
+        Duration::from_secs(1)
+    } else {
+        (previous * 2).min(MAX_BACKOFF)
+    }
+}
+
 impl Agent {
     /// Runs until `shutdown` resolves or the device credential is rejected.
     pub async fn run(self, shutdown: impl std::future::Future<Output = ()>) -> Result<(), String> {
         tokio::pin!(shutdown);
-        let mut backoff = Duration::from_secs(1);
+        let mut backoff = Duration::ZERO;
         loop {
+            // When this attempt signed in, if it did (set by connect_once).
+            let signed_in = std::sync::Mutex::new(None::<Instant>);
             let outcome = tokio::select! {
-                o = self.connect_once() => o,
+                o = self.connect_once(&signed_in) => o,
                 () = &mut shutdown => Outcome::Shutdown,
             };
             match outcome {
                 Outcome::Shutdown => return Ok(()),
                 Outcome::Fatal(e) => return Err(e),
                 Outcome::Retry(why) => {
+                    let lasted = signed_in.lock().ok().and_then(|t| *t).map(|t| t.elapsed());
+                    backoff = next_backoff(backoff, lasted);
                     self.emit(AppEvent::Disconnected {
                         reason: why.clone(),
                     });
@@ -209,7 +233,6 @@ impl Agent {
                         () = tokio::time::sleep(backoff) => {}
                         () = &mut shutdown => return Ok(()),
                     }
-                    backoff = (backoff * 2).min(MAX_BACKOFF);
                 }
             }
         }
@@ -236,7 +259,7 @@ impl Agent {
         }
     }
 
-    async fn connect_once(&self) -> Outcome {
+    async fn connect_once(&self, signed_in: &std::sync::Mutex<Option<Instant>>) -> Outcome {
         let mut req = match self.config.ws_url().into_client_request() {
             Ok(r) => r,
             Err(e) => return Outcome::Fatal(format!("invalid server URL: {e}")),
@@ -327,6 +350,9 @@ impl Agent {
         let mut offered: std::collections::HashSet<String> = std::collections::HashSet::new();
         if let Some(m) = &last_endpoints {
             let _ = sink.send(send(m)).await;
+        }
+        if let Ok(mut t) = signed_in.lock() {
+            *t = Some(Instant::now());
         }
         self.emit(AppEvent::Connected {
             node_id: my_node_id,
@@ -662,4 +688,38 @@ fn tls_config() -> Result<tokio_tungstenite::Connector, rustls::Error> {
     Ok(tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(
         config,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn secs(s: u64) -> Duration {
+        Duration::from_secs(s)
+    }
+
+    #[test]
+    fn backoff_doubles_to_thirty_seconds() {
+        let mut wait = Duration::ZERO;
+        let mut waits = Vec::new();
+        for _ in 0..8 {
+            wait = next_backoff(wait, None);
+            waits.push(wait.as_secs());
+        }
+        assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30, 30]);
+    }
+
+    #[test]
+    fn backoff_starts_again_after_a_connection_that_lasted() {
+        // Several failures, then a connection that held for an hour.
+        assert_eq!(next_backoff(secs(30), Some(secs(3600))), secs(1));
+        assert_eq!(next_backoff(secs(16), Some(STABLE_CONNECTION)), secs(1));
+    }
+
+    #[test]
+    fn backoff_keeps_growing_after_connections_dropped_at_once() {
+        // Signed in, then dropped within seconds: still a failing server.
+        assert_eq!(next_backoff(secs(4), Some(secs(2))), secs(8));
+        assert_eq!(next_backoff(secs(30), Some(secs(9))), secs(30));
+    }
 }
