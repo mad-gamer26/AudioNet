@@ -44,6 +44,19 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// accepts devices and drops them at once) keep the growing waits, so
 /// devices do not retry every second.
 const STABLE_CONNECTION: Duration = Duration::from_secs(10);
+/// How often a connected device sends the server a small ping (answered
+/// with a pong). Keeps routers from forgetting an idle connection, and
+/// gives a connection that died without a word a chance to fail.
+const KEEPALIVE: Duration = Duration::from_secs(20);
+/// With nothing at all from the server for this long (it pings every 20
+/// seconds, and answers ours), the connection is dead even if the system
+/// still shows it open: a network change can leave it half open, the
+/// server long gone, and nothing would ever arrive. Checked at each
+/// keepalive, so noticed within 45 to 65 seconds.
+const SILENCE_LIMIT: Duration = Duration::from_secs(45);
+/// How long sending the keepalive may take before the connection counts as
+/// dead (a send can wait for room in a connection that no longer moves).
+const KEEPALIVE_SEND_LIMIT: Duration = Duration::from_secs(10);
 
 /// Plain-text status lines for the user (printed by the CLI, shown in
 /// GUIs). Kept short and self-contained for screen readers.
@@ -375,10 +388,18 @@ impl Agent {
         let mut sessions: HashMap<String, SessionHandle> = HashMap::new();
         let mut refresh = tokio::time::interval(ENDPOINT_REFRESH);
         refresh.tick().await;
+        let mut keepalive = tokio::time::interval(KEEPALIVE);
+        keepalive.tick().await;
+        let mut last_heard = Instant::now();
+        let mut ping_nonce: u64 = 0;
 
         let outcome = loop {
             tokio::select! {
-                incoming = stream.next() => match incoming {
+                incoming = stream.next() => {
+                if matches!(incoming, Some(Ok(_))) {
+                    last_heard = Instant::now();
+                }
+                match incoming {
                     Some(Ok(Message::Text(t))) => {
                         let Ok(msg) = serde_json::from_str::<ServerMessage>(t.as_str()) else { continue };
                         match msg {
@@ -474,6 +495,22 @@ impl Agent {
                     Some(Ok(Message::Close(_))) | None => break Outcome::Retry("the server closed the connection".into()),
                     Some(Err(e)) => break Outcome::Retry(e.to_string()),
                     Some(Ok(_)) => {}
+                }
+                },
+                _ = keepalive.tick() => {
+                    if last_heard.elapsed() >= SILENCE_LIMIT {
+                        break Outcome::Retry(format!(
+                            "nothing from the server for {} seconds (the connection stopped working)",
+                            last_heard.elapsed().as_secs()
+                        ));
+                    }
+                    ping_nonce += 1;
+                    let ping = send(&ClientMessage::Ping { nonce: ping_nonce });
+                    match tokio::time::timeout(KEEPALIVE_SEND_LIMIT, sink.send(ping)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) => break Outcome::Retry("the connection closed".into()),
+                        Err(_) => break Outcome::Retry("the connection stopped working (a keepalive could not be sent)".into()),
+                    }
                 },
                 event = event_rx.recv() => {
                     let Some(event) = event else { continue };
