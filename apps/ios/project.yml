@@ -14,7 +14,11 @@ settings:
   base:
     SWIFT_VERSION: "6.0"
     AUDIONET_DEFAULT_SERVER: ""
-    MARKETING_VERSION: "1.2.3"
+    # The iPhone app has its own version, not the workspace's: it stays 1.0
+    # (the App Store version being prepared), and each TestFlight upload
+    # raises the build number instead. The engine inside reports the
+    # workspace version as "Engine version".
+    MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
 targets:
   AudioNet:
