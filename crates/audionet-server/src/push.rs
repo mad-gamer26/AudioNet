@@ -10,8 +10,10 @@
 //! * Sharing: a change the device reports while online (not its report on
 //!   connecting, and not the first one this server hears).
 //!
-//! The text (title: the account name; body: "Studio PC is online.") is
-//! encrypted for the phone with ChaCha20-Poly1305 and the phone's own key;
+//! The text (title: the account name; body: "Studio PC is online.") and
+//! what it is about (the device's id and name, and the event: `online`,
+//! `offline`, `sharing` or `not_sharing`, so the phone can update its
+//! widgets and offer to listen) are encrypted for the phone with ChaCha20-Poly1305 and the phone's own key;
 //! the push gateway and Apple see only ciphertext. The server sends only to
 //! the gateway in its configuration.
 
@@ -63,6 +65,10 @@ struct Notice {
     node_id: String,
     kind: Kind,
     body: String,
+    /// The device's name, and what happened to it: `online`, `offline`,
+    /// `sharing` or `not_sharing`.
+    device: String,
+    event: &'static str,
 }
 
 /// The decisions, apart from the sending (so they can be tested with a
@@ -111,6 +117,8 @@ impl Decider {
                     body: format!("{name} is online."),
                     node_id,
                     kind: Kind::Presence,
+                    device: name,
+                    event: "online",
                 })
             }
             Presence::Offline {
@@ -124,6 +132,8 @@ impl Decider {
                     body: format!("{name} is offline."),
                     node_id: node_id.clone(),
                     kind: Kind::Presence,
+                    device: name,
+                    event: "offline",
                 };
                 self.pending_offline
                     .insert(node_id, (now + self.timing.offline_grace, notice));
@@ -151,6 +161,8 @@ impl Decider {
                     },
                     node_id,
                     kind: Kind::Sharing,
+                    device: name,
+                    event: if sharing { "sharing" } else { "not_sharing" },
                 })
             }
         }
@@ -174,13 +186,28 @@ impl Decider {
     }
 }
 
+/// What a notification is about, sealed with its text.
+#[derive(Clone, Copy, Debug)]
+pub struct About<'a> {
+    pub node_id: &'a str,
+    pub device: &'a str,
+    pub event: &'a str,
+}
+
 /// Encrypts a notification for a phone: base64 of nonce, ciphertext and tag
 /// (the layout CryptoKit's `ChaChaPoly.SealedBox(combined:)` reads).
-pub fn seal(key: &[u8], title: &str, body: &str) -> Option<String> {
+pub fn seal(key: &[u8], title: &str, body: &str, about: About<'_>) -> Option<String> {
     let cipher = ChaCha20Poly1305::new_from_slice(key).ok()?;
     let mut nonce = [0u8; 12];
     rand::fill(&mut nonce);
-    let plain = json!({ "title": title, "body": body }).to_string();
+    let plain = json!({
+        "title": title,
+        "body": body,
+        "node_id": about.node_id,
+        "device": about.device,
+        "event": about.event,
+    })
+    .to_string();
     let sealed = cipher.encrypt(&Nonce::from(nonce), plain.as_bytes()).ok()?;
     let mut out = nonce.to_vec();
     out.extend_from_slice(&sealed);
@@ -236,7 +263,12 @@ async fn deliver(s: &Shared, gateway: &str, n: Notice) {
         if !wanted {
             continue;
         }
-        let Some(payload) = seal(&p.key, &user.username, &n.body) else {
+        let about = About {
+            node_id: &n.node_id,
+            device: &n.device,
+            event: n.event,
+        };
+        let Some(payload) = seal(&p.key, &user.username, &n.body, about) else {
             continue;
         };
         let collapse_id = match n.kind {
@@ -416,11 +448,17 @@ mod tests {
         );
     }
 
+    const MAC_ONLINE: About<'static> = About {
+        node_id: "node_mac",
+        device: "Mac",
+        event: "online",
+    };
+
     #[test]
     fn sealed_for_the_phone() {
         let key = [7u8; 32];
         let sealed = STANDARD
-            .decode(seal(&key, "alice", "Mac is online.").unwrap())
+            .decode(seal(&key, "alice", "Mac is online.", MAC_ONLINE).unwrap())
             .unwrap();
         let (nonce, rest) = sealed.split_at(12);
         let nonce: [u8; 12] = nonce.try_into().unwrap();
@@ -433,8 +471,16 @@ mod tests {
             (v["title"].as_str(), v["body"].as_str()),
             (Some("alice"), Some("Mac is online."))
         );
+        assert_eq!(
+            (
+                v["node_id"].as_str(),
+                v["device"].as_str(),
+                v["event"].as_str()
+            ),
+            (Some("node_mac"), Some("Mac"), Some("online"))
+        );
         assert!(
-            seal(&[1u8; 5], "a", "b").is_none(),
+            seal(&[1u8; 5], "a", "b", MAC_ONLINE).is_none(),
             "a key of the wrong size"
         );
     }

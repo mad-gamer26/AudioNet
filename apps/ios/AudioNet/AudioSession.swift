@@ -57,6 +57,12 @@ enum AudioSession {
         var streams: UInt32 = 0
         var record = false
         var sessionActive = false
+        /// "Lock Screen and AirPods Controls" (Settings, off by default):
+        /// iOS shows only an app that does not mix with others in its
+        /// player, so with it on other apps' audio pauses while AudioNet
+        /// plays.
+        var exclusive = false
+        var watchingInterruptions = false
     }
     private static let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -76,7 +82,45 @@ enum AudioSession {
 
     /// Going online: streams may start from now on.
     static func goOnline() {
-        state.withLock { $0.online = true }
+        let watch = state.withLock { s -> Bool in
+            s.online = true
+            defer { s.watchingInterruptions = true }
+            return !s.watchingInterruptions
+        }
+        if watch { watchInterruptions() }
+    }
+
+    /// Turns "Lock Screen and AirPods Controls" on or off: AudioNet stops
+    /// (or starts again) mixing with other apps' audio, at once if a stream
+    /// is playing.
+    static func setExclusive(_ on: Bool) {
+        state.withLock { s in
+            guard s.exclusive != on else { return }
+            s.exclusive = on
+            configure(s)
+        }
+    }
+
+    /// After an interruption (a phone call; with Lock Screen controls on,
+    /// another app's audio), AudioNet's streams play again once iOS hands
+    /// the audio back.
+    private static func watchInterruptions() {
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: nil, queue: nil) { note in
+            let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt)
+                .flatMap(AVAudioSession.InterruptionType.init(rawValue:))
+            guard type == .ended else { return }
+            state.withLock { s in
+                guard s.online, s.streams > 0 else { return }
+                do {
+                    try session.setActive(true)
+                    s.sessionActive = true
+                    report("The iPhone gave AudioNet its audio back after an interruption.")
+                } catch {
+                    report("The iPhone's audio could not be started again after an interruption: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     /// Going offline: hands the audio back.
@@ -127,7 +171,7 @@ enum AudioSession {
     }
 
     private static func configure(_ s: State) {
-        var options: AVAudioSession.CategoryOptions = [.mixWithOthers]
+        var options: AVAudioSession.CategoryOptions = s.exclusive ? [] : [.mixWithOthers]
         let category: AVAudioSession.Category = s.record ? .playAndRecord : .playback
         if s.record {
             options.formUnion([.defaultToSpeaker, .allowBluetoothA2DP])
@@ -290,5 +334,10 @@ enum AudioSession {
 final class AudioUse: AudioUseListener {
     func audioInUse(streams: UInt32, microphones: UInt32) {
         AudioSession.streamsChanged(streams: streams, microphones: microphones)
+        // Every stream on this iPhone, including those other devices
+        // started (the Live Activity mentions them).
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { Integrations.shared.engineStreams = Int(streams) }
+        }
     }
 }

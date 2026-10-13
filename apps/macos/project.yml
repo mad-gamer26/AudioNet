@@ -38,6 +38,9 @@ targets:
         AudioNetDefaultServer: "$(AUDIONET_DEFAULT_SERVER)"
         AudioNetUpdateURL: "$(AUDIONET_UPDATE_URL)"
         AudioNetUpdatePublicKey: "$(AUDIONET_UPDATE_PUBLIC_KEY)"
+        # Handoff with the iPhone app: a stream being listened to continues
+        # on the other device.
+        NSUserActivityTypes: [org.audionet.listen]
     entitlements:
       path: AudioNet/AudioNet.entitlements
       properties:

@@ -17,6 +17,9 @@ struct StreamRow: Identifiable, Equatable {
     /// The account (this Mac's device id in it) the stream runs in.
     let account: String
     let title: String
+    /// What this Mac listens to, for Handoff (empty when it sends).
+    var nodeId = ""
+    var sourceId = ""
     var state: String
     /// Volume slider position (0 to 1) and mute, on this device: what the
     /// stream plays here, or what it sends from here.
@@ -49,10 +52,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var signingIn = false
     /// Each account's devices (by this Mac's device id there).
     @Published private(set) var devicesByAccount: [String: [Device]] = [:]
+    /// The stream offered through Handoff (see `updateHandoff`).
+    var handoff: NSUserActivity?
     /// Accounts whose device list the server has sent since going online.
     @Published private(set) var devicesLoaded: Set<String> = []
     @Published private(set) var local = LocalAudio(sources: [], outputs: [])
-    @Published private(set) var streams: [StreamRow] = []
+    @Published private(set) var streams: [StreamRow] = [] {
+        didSet { if streams.map(\.id) != oldValue.map(\.id) { updateHandoff() } }
+    }
     @Published private(set) var log: [String] = []
     /// Each stream's measurements (a line of its own: the updates every two
     /// seconds redraw only that line). The list changes only as streams
@@ -414,7 +421,8 @@ final class AppModel: ObservableObject {
             announce("Choose the sound to listen to and where to play it.")
             return
         }
-        start(account: account, title: "Listening to \(s.name) on \(d.name), playing on \(o.name)") {
+        start(account: account, title: "Listening to \(s.name) on \(d.name), playing on \(o.name)",
+              listening: (d.nodeId, s.id)) {
             try c.listen(nodeId: d.nodeId, sourceId: s.id, outputId: o.id)
         }
     }
@@ -511,10 +519,13 @@ final class AppModel: ObservableObject {
         return true
     }
 
-    private func start(account: String, title: String, _ begin: () throws -> String) {
+    private func start(account: String, title: String, listening: (nodeId: String, sourceId: String)? = nil,
+                       _ begin: () throws -> String) {
         do {
             let id = try begin()
-            streams.append(StreamRow(id: id, account: account, title: title, state: "starting"))
+            streams.append(StreamRow(id: id, account: account, title: title,
+                                     nodeId: listening?.nodeId ?? "", sourceId: listening?.sourceId ?? "",
+                                     state: "starting"))
             announce("Starting: \(title).")
         } catch {
             announce("Could not start: \(describe(error))")
@@ -617,4 +628,66 @@ func forgotHint(_ error: Error) -> String {
 func describe(_ error: Error) -> String {
     if case let AudioNetError.Failed(message) = error { return message }
     return error.localizedDescription
+}
+
+// MARK: Handoff
+
+/// Handoff of a stream being listened to, shared with the iPhone app: what
+/// this Mac listens to is offered to the iPhone (and the other way round).
+let handoffType = "org.audionet.listen"
+
+extension AppModel {
+    /// Offers the first stream listened to through Handoff, or stops
+    /// offering when there is none. Called as streams change.
+    func updateHandoff() {
+        guard let row = streams.first(where: { !$0.nodeId.isEmpty }),
+              let account = accounts.first(where: { $0.nodeId == row.account }) else {
+            handoff?.invalidate()
+            handoff = nil
+            return
+        }
+        let info: [String: String] = [
+            "server": account.serverUrl, "username": account.username,
+            "node_id": row.nodeId, "source_id": row.sourceId,
+        ]
+        if let current = handoff, (current.userInfo as? [String: String]) == info { return }
+        handoff?.invalidate()
+        let activity = NSUserActivity(activityType: handoffType)
+        let name = devices.first { $0.nodeId == row.nodeId }?.name ?? "a device"
+        activity.title = "Listening to \(name)"
+        activity.isEligibleForHandoff = true
+        activity.userInfo = info
+        activity.becomeCurrent()
+        handoff = activity
+    }
+
+    /// Listens here to what the iPhone was listening to.
+    func continueListening(_ activity: NSUserActivity) {
+        guard let info = activity.userInfo,
+              let server = info["server"] as? String,
+              let nodeId = info["node_id"] as? String else { return }
+        let wanted = Account(serverUrl: server, nodeId: "", token: "", deviceName: "",
+                             username: info["username"] as? String ?? "")
+        guard accounts.contains(where: { $0.sameAccount(as: wanted) }) else {
+            announce("This Mac is not signed in to the account the iPhone was listening in.")
+            return
+        }
+        let sourceId = info["source_id"] as? String
+        Task {
+            // AudioNet may have just started: wait (up to 15 seconds) for the
+            // device to be listed.
+            for _ in 0..<60 where !devices.contains(where: { $0.nodeId == nodeId }) {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            guard let d = devices.first(where: { $0.nodeId == nodeId }) else {
+                announce("The device the iPhone was listening to is not in your accounts now.")
+                return
+            }
+            fillChoices(d)
+            if let sourceId, d.sources.contains(where: { $0.id == sourceId }) {
+                choices[nodeId, default: DeviceChoices()].listenSource = sourceId
+            }
+            listen(d)
+        }
+    }
 }

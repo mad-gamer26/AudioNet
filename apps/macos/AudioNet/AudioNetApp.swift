@@ -53,6 +53,19 @@ extension Scene {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: AppModel?
+
+    /// Handoff: what the iPhone was listening to continues on this Mac.
+    func application(_ application: NSApplication, willContinueUserActivityWithType userActivityType: String) -> Bool {
+        userActivityType == handoffType
+    }
+
+    func application(_ application: NSApplication, continue userActivity: NSUserActivity,
+                     restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void) -> Bool {
+        guard userActivity.activityType == handoffType, let model else { return false }
+        openMain?()
+        model.continueListening(userActivity)
+        return true
+    }
     /// Opens the main window (SwiftUI's openWindow, handed over by the menu
     /// bar icon, which exists from launch even when the window does not).
     var openMain: (() -> Void)?
@@ -145,7 +158,11 @@ struct MenuBarLabel: View {
         let sharing = !model.sharingAccounts.isEmpty
         Label("AudioNet", systemImage: sharing ? "waveform.circle.fill" : "waveform.circle")
             .accessibilityLabel(sharing ? "AudioNet, sharing" : "AudioNet, not sharing")
-            .onAppear { delegate.openMain = { openWindow(id: "main") } }
+            .onAppear {
+                delegate.openMain = { openWindow(id: "main") }
+                // The menu bar item exists from launch, even with no window.
+                delegate.model = model
+            }
     }
 }
 

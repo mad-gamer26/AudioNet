@@ -252,8 +252,24 @@ struct NotificationError: LocalizedError {
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-        UNUserNotificationCenter.current().delegate = self
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        // "Studio PC is online." (or started sharing) offers Listen; the
+        // notification extension chooses the category.
+        let listen = UNNotificationAction(identifier: "listen", title: "Listen", options: [.foreground])
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: "audionet.listenable", actions: [listen], intentIdentifiers: []),
+        ])
         return true
+    }
+
+    /// A notification was opened (shows its device) or its Listen chosen.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            didReceive response: UNNotificationResponse) async {
+        guard let nodeId = response.notification.request.content.userInfo["node_id"] as? String,
+              let link = URL(string: "audionet://\(response.actionIdentifier == "listen" ? "listen" : "device")/\(nodeId)")
+        else { return }
+        await MainActor.run { AppModel.shared.openLink(link) }
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {

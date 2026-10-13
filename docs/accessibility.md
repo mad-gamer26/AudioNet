@@ -333,6 +333,38 @@ has a text equivalent in the log's rows). The accent color is darker (light mode
 lighter (dark mode) than the system blue, which falls short of 4.5:1 on
 grouped backgrounds.
 
+### Outside the app (iOS)
+
+Everything AudioNet shows outside its own screen is text first; icons only
+repeat it:
+
+* **Live Activity** (Lock Screen, Dynamic Island): "Listening to Studio
+  PC" or "Sending to ..." or "3 streams", then the state in words
+  ("Connected", "Reconnecting", "muted", streams other devices started, or
+  why it ended), the elapsed time, and Mute (Unmute) and Stop buttons. The
+  compact Dynamic Island's name reads the full headline. A stream that is
+  lost (not stopped on purpose) updates the card with the reason and an
+  alert, and it stays a few minutes.
+* **Widgets** (Home Screen, StandBy, Lock Screen): "3 of 4 devices
+  online", a row per device ("Studio PC: online, not sharing") and a
+  Listen button named "Listen to Studio PC"; "As of 3:12 PM" when
+  AudioNet has had no news for half an hour.
+* **Control Center** (iOS 18): Stop AudioNet Streams, Mute AudioNet
+  (Muted / Not Muted), and Listen to a chosen device (its state in words).
+* **Siri and Shortcuts**: listen to a device, send the microphone (opens
+  the app), stop, mute, unmute, and "Is Studio PC online?", which answers
+  aloud. Every result and failure is a sentence.
+* **Audio Output** row: the iPhone's AirPlay and Bluetooth picker, named
+  "Choose Audio Output" (the system button says only "AirPlay").
+* **Notifications**: grouped by account; Listen on "online" and "started
+  sharing" for a device that can be listened to.
+* **Lock Screen and AirPods Controls** (Settings, off by default): the
+  Lock Screen player names the stream; play and pause unmute and mute.
+
+None of these has been checked with VoiceOver on a real iPhone yet: above
+all the Dynamic Island, the Lock Screen card and the widgets' buttons need
+that.
+
 The UI tests (`apps/ios/AudioNetUITests`, run by
 `scripts/test/ios_ui_tests.py`) accept these audit findings, each only
 with a measurement or a stated position:
