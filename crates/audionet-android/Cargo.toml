@@ -1,0 +1,17 @@
+[package]
+name = "audionet-android"
+description = "AudioNet's Android platform pieces: hands the app's Java context to the audio library (cpal, AAudio) and to the TLS certificate verifier at startup."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Versions cpal and rustls-platform-verifier already use (no new crates).
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.22"
+ndk-context = "0.1"
+rustls-platform-verifier.workspace = true
+
+[lints]
+workspace = true

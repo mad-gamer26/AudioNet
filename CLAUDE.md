@@ -23,16 +23,18 @@ replace it.
 | `crates/audionet-engine` | Sender, receiver stage, playout, drift/depth controller, runtime threads, simulator (`tests/sim.rs`). |
 | `crates/audionet-wasapi` | Windows backend. Allowed `unsafe` (platform backend). |
 | `crates/audionet-coreaudio` | macOS Core Audio pieces cpal lacks (AudioNet's own output mute while streaming). Allowed `unsafe` (platform backend); uses the objc2 crates cpal already pulls in. |
+| `crates/audionet-android` | Android pieces: hands the app's Java context to cpal (AAudio) and the TLS certificate verifier (`AudioNetAndroid.attach`). Allowed `unsafe` (platform backend). |
 | `crates/audionet-node` | Device agent: sign-in, signaling, WebRTC sessions (str0m), TURN relay. |
 | `crates/audionet-server` | Self-hostable coordination server (axum, SQLite). |
 | `crates/audionet-cli` | The `audionet` executable. |
-| `crates/audionet-ffi` | UniFFI bindings of the engine for Swift apps. |
+| `crates/audionet-ffi` | UniFFI bindings of the engine for the Swift (Apple) and Kotlin (Android) apps. |
 | `crates/audionet-c` | C interface of the engine (`include/audionet.h`): visitor sign-in, devices, listen and send, audio taps and app sources. Used by the NVGT plugin. |
 | `crates/audionet-visitor` | Engine program of the NVDA add-on (visitor, JSON lines). |
 | `nvda-addon/` | NVDA add-on (Python); `build.py` makes the `.nvda-addon`. |
 | `nvgt/` | NVGT plugin (`audionet.dll`, C++ over `audionet-c`), script include, audio_form demo; `build-plugin.ps1`. |
 | `apps/macos` | Native macOS app (SwiftUI, XcodeGen). |
 | `apps/ios` | Native iPhone app (SwiftUI, XcodeGen). |
+| `apps/android` | Native Android app (Kotlin, Jetpack Compose, Gradle); `build-core.ps1` builds the engine and Kotlin bindings. |
 | `apps/shared` | Swift shared by both Apple apps. |
 | `web/` | Browser client (no build step). |
 | `deploy/` | Self-hosting templates; `deploy/official/` only for the official instance. |

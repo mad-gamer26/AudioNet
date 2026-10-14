@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A waveform: five rounded bars, white on the AudioNet blue. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF" android:pathData="M34,46h6a2,2 0 0,1 2,2v12a2,2 0 0,1 -2,2h-6a2,2 0 0,1 -2,-2v-12a2,2 0 0,1 2,-2z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M44,38h6a2,2 0 0,1 2,2v28a2,2 0 0,1 -2,2h-6a2,2 0 0,1 -2,-2v-28a2,2 0 0,1 2,-2z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M54,30h6a2,2 0 0,1 2,2v44a2,2 0 0,1 -2,2h-6a2,2 0 0,1 -2,-2v-44a2,2 0 0,1 2,-2z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M64,38h6a2,2 0 0,1 2,2v28a2,2 0 0,1 -2,2h-6a2,2 0 0,1 -2,-2v-28a2,2 0 0,1 2,-2z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M74,46h6a2,2 0 0,1 2,2v12a2,2 0 0,1 -2,2h-6a2,2 0 0,1 -2,-2v-12a2,2 0 0,1 2,-2z" />
+</vector>

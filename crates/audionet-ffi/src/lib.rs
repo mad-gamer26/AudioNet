@@ -38,6 +38,10 @@ use tokio::sync::{mpsc, oneshot};
 uniffi::setup_scaffolding!();
 
 mod tap;
+
+// Linked in for its JNI function (AudioNetAndroid.attach).
+#[cfg(target_os = "android")]
+use audionet_android as _;
 pub use tap::{AppSource, AudioTap};
 
 #[cfg(not(windows))]
@@ -48,6 +52,8 @@ use audionet_node::windows_audio::WasapiNodeAudio as PlatformAudio;
 fn this_platform() -> Platform {
     if cfg!(target_os = "ios") {
         Platform::Ios
+    } else if cfg!(target_os = "android") {
+        Platform::Android
     } else if cfg!(target_os = "macos") {
         Platform::MacOs
     } else if cfg!(windows) {

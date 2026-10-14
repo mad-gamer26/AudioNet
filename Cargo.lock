@@ -251,6 +251,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "audionet-android"
+version = "1.2.3"
+dependencies = [
+ "jni",
+ "ndk-context",
+ "rustls-platform-verifier",
+]
+
+[[package]]
 name = "audionet-audio"
 version = "1.2.3"
 dependencies = [
@@ -345,6 +354,7 @@ dependencies = [
 name = "audionet-ffi"
 version = "1.2.3"
 dependencies = [
+ "audionet-android",
  "audionet-audio",
  "audionet-node",
  "audionet-protocol",

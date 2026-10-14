@@ -478,7 +478,7 @@ impl RouteCounter {
 fn receive_diagnostics(o: &SpeakOutput) -> String {
     let r = o.stage.stats().snapshot();
     let p = o.playout.snapshot();
-    format!(
+    let text = format!(
         "Receiving: {} packets, {:.2} % lost, {} late, {} concealed; buffer {:.1} ms (lowest {} since last report), target {:.0} ms; underruns {}, re-bufferings {}, latency drains {}, jitter {:.1} ms, largest gap between packets {}.",
         r.datagrams,
         r.loss_percent,
@@ -510,7 +510,15 @@ fn receive_diagnostics(o: &SpeakOutput) -> String {
         } else {
             "still measuring"
         }
-    )
+    );
+    let glitches = o.guard.device_glitches();
+    if glitches == 0 {
+        text
+    } else {
+        format!(
+            "{text} Device glitches (underruns or overruns the audio system recovered from): {glitches}."
+        )
+    }
 }
 
 /// What a sending session delivered between reports: packets a second,
@@ -572,6 +580,12 @@ impl SendMeter {
                 t.glitches.saturating_sub(self.totals.glitches),
             ));
             self.totals = t;
+        }
+        if totals.is_none() {
+            let glitches = capture.guard.device_glitches();
+            if glitches > 0 {
+                text.push_str(&format!(", {glitches} device glitches so far"));
+            }
         }
         text.push_str(&format!(
             "; dropped {:.0} ms for falling behind, {:.0} ms for a full buffer.",

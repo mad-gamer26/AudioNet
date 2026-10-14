@@ -5,6 +5,7 @@ members = [
     "crates/audionet-audio",
     "crates/audionet-wasapi",
     "crates/audionet-coreaudio",
+    "crates/audionet-android",
     "crates/audionet-codec",
     "crates/audionet-transport",
     "crates/audionet-engine",
@@ -30,6 +31,7 @@ audionet-protocol = { path = "crates/audionet-protocol" }
 audionet-audio = { path = "crates/audionet-audio" }
 audionet-wasapi = { path = "crates/audionet-wasapi" }
 audionet-coreaudio = { path = "crates/audionet-coreaudio" }
+audionet-android = { path = "crates/audionet-android" }
 audionet-codec = { path = "crates/audionet-codec" }
 audionet-transport = { path = "crates/audionet-transport" }
 audionet-engine = { path = "crates/audionet-engine" }

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AudioNet</string>
+    <string name="channel_online">AudioNet online</string>
+    <string name="channel_online_description">Shown while AudioNet keeps this phone online in your accounts and plays or sends its streams.</string>
+</resources>

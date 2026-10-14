@@ -27,5 +27,10 @@ audionet-protocol.workspace = true
 tokio.workspace = true
 uniffi.workspace = true
 
+# The JNI hand-over of the app's context (AudioNetAndroid.attach), linked
+# into the same library.
+[target.'cfg(target_os = "android")'.dependencies]
+audionet-android.workspace = true
+
 [lints]
 workspace = true

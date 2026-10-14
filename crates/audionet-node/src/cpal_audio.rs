@@ -21,7 +21,7 @@
 //! platform; the thread builds the stream, keeps it alive, and exits when
 //! its guard is dropped.
 
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -32,7 +32,9 @@ use audionet_audio::ring::audio_ring;
 use audionet_protocol::signal::{DestinationInfo, SourceInfo, SourceType};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::audio::{self, FORMAT_CHANGED, NodeAudio, OpenCapture, StreamGuard, StreamUse};
+#[cfg(target_os = "macos")]
+use crate::audio;
+use crate::audio::{FORMAT_CHANGED, NodeAudio, OpenCapture, StreamGuard, StreamUse};
 
 #[derive(Debug, Default)]
 pub struct CpalNodeAudio;
@@ -40,12 +42,18 @@ pub struct CpalNodeAudio;
 struct ThreadGuard {
     stop: Arc<AtomicBool>,
     failure: Arc<Mutex<Option<String>>>,
+    /// Underruns and overruns the platform reported and recovered from.
+    glitches: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl StreamGuard for ThreadGuard {
     fn failure(&mut self) -> Option<String> {
         self.failure.lock().ok().and_then(|mut f| f.take())
+    }
+
+    fn device_glitches(&self) -> u64 {
+        self.glitches.load(Relaxed)
     }
 }
 
@@ -59,6 +67,10 @@ struct CountedGuard {
 impl StreamGuard for CountedGuard {
     fn failure(&mut self) -> Option<String> {
         self.stream.failure()
+    }
+
+    fn device_glitches(&self) -> u64 {
+        self.stream.device_glitches()
     }
 }
 
@@ -122,14 +134,30 @@ fn find(id: &str, input: bool) -> Result<cpal::Device, String> {
 /// as "Audio route changed". Only a changed sample rate or channel count
 /// needs a new stream: the ring, resampler and codec were set up for the
 /// old format. Reopening for every reroute cost seconds of audio at the
-/// start of each iPhone microphone stream. Called on the notification
-/// thread, never an audio callback.
+/// start of each iPhone microphone stream.
+///
+/// An underrun or overrun (Android's AAudio reports each one) is a glitch
+/// the platform already recovered from: it is counted in `glitches` and the
+/// stream goes on. Treating it as a failure reopened the device after every
+/// glitch ("waiting up to 30 seconds for the device to come back"). That
+/// report can come from the audio callback itself, so it only touches the
+/// atomic. Denied real-time priority is not a failure either. Everything
+/// else arrives on a notification thread.
 fn on_stream_error(
     failure: &Mutex<Option<String>>,
+    glitches: &AtomicU64,
     e: &cpal::Error,
     format: (u32, u16),
     current: impl Fn() -> Option<(u32, u16)>,
 ) {
+    match e.kind() {
+        cpal::ErrorKind::Xrun => {
+            glitches.fetch_add(1, Relaxed);
+            return;
+        }
+        cpal::ErrorKind::RealtimeDenied => return,
+        _ => {}
+    }
     let mut why = e.to_string();
     if cfg!(target_os = "ios") {
         match e.kind() {
@@ -163,18 +191,23 @@ fn on_stream_error(
 fn spawn_stream(
     name: &str,
     mut tick: impl FnMut() + Send + 'static,
-    build: impl FnOnce(Arc<Mutex<Option<String>>>) -> Result<(cpal::Stream, u32, String), String>
+    build: impl FnOnce(
+        Arc<Mutex<Option<String>>>,
+        Arc<AtomicU64>,
+    ) -> Result<(cpal::Stream, u32, String), String>
     + Send
     + 'static,
 ) -> Result<(ThreadGuard, u32, String), String> {
     let stop = Arc::new(AtomicBool::new(false));
     let failure = Arc::new(Mutex::new(None));
+    let glitches = Arc::new(AtomicU64::new(0));
     let (tx, rx) = mpsc::sync_channel(1);
     let thread_stop = Arc::clone(&stop);
     let thread_failure = Arc::clone(&failure);
+    let thread_glitches = Arc::clone(&glitches);
     let thread = std::thread::Builder::new()
         .name(name.into())
-        .spawn(move || match build(thread_failure) {
+        .spawn(move || match build(thread_failure, thread_glitches) {
             Ok((stream, rate, desc)) => {
                 if let Err(e) = stream.play() {
                     let _ = tx.send(Err(format!("could not start the audio stream: {e}")));
@@ -198,6 +231,7 @@ fn spawn_stream(
             ThreadGuard {
                 stop,
                 failure,
+                glitches,
                 thread: Some(thread),
             },
             rate,
@@ -326,22 +360,25 @@ impl NodeAudio for CpalNodeAudio {
         } else {
             Box::new(|| {}) as Box<dyn FnMut() + Send>
         };
-        let (guard, rate, description) = spawn_stream("audionet-capture", tick, move |failure| {
-            let device = find(&id, !loopback)?;
-            // Loopback records in the output's own format.
-            let config = if loopback {
-                device.default_output_config()
-            } else {
-                device.default_input_config()
-            }
-            .map_err(|e| format!("could not read the input format: {e}"))?;
-            let rate = config.sample_rate();
-            let channels = usize::from(config.channels());
-            let format = (rate, config.channels());
-            let probe = device.clone();
-            let (mut producer, consumer) = audio_ring((rate as usize) / 2, channels);
-            let _ = ring_tx.send(consumer);
-            let stream = device
+        let (guard, rate, description) = spawn_stream(
+            "audionet-capture",
+            tick,
+            move |failure, glitches| {
+                let device = find(&id, !loopback)?;
+                // Loopback records in the output's own format.
+                let config = if loopback {
+                    device.default_output_config()
+                } else {
+                    device.default_input_config()
+                }
+                .map_err(|e| format!("could not read the input format: {e}"))?;
+                let rate = config.sample_rate();
+                let channels = usize::from(config.channels());
+                let format = (rate, config.channels());
+                let probe = device.clone();
+                let (mut producer, consumer) = audio_ring((rate as usize) / 2, channels);
+                let _ = ring_tx.send(consumer);
+                let stream = device
                 .build_input_stream::<f32, _, _>(
                     config.config(),
                     move |data: &[f32], _| {
@@ -349,7 +386,7 @@ impl NodeAudio for CpalNodeAudio {
                         let _ = producer.write(&data[..whole]);
                     },
                     move |e| {
-                        on_stream_error(&failure, &e, format, || {
+                        on_stream_error(&failure, &glitches, &e, format, || {
                             let c = if loopback {
                                 probe.default_output_config()
                             } else {
@@ -367,24 +404,25 @@ impl NodeAudio for CpalNodeAudio {
                         format!("could not open the input device: {e}")
                     }
                 })?;
-            let name = stream_device_name(&device, !loopback);
-            // The format in words: whether a microphone records in stereo
-            // is something to check, not assume.
-            let layout = match channels {
-                1 => "mono".to_owned(),
-                2 => "stereo".to_owned(),
-                n => format!("{n} channels"),
-            };
-            Ok((
-                stream,
-                rate,
-                if loopback {
-                    format!("sound playing on {name} ({layout}, {rate} Hz)")
-                } else {
-                    format!("{name} ({layout}, {rate} Hz)")
-                },
-            ))
-        })?;
+                let name = stream_device_name(&device, !loopback);
+                // The format in words: whether a microphone records in stereo
+                // is something to check, not assume.
+                let layout = match channels {
+                    1 => "mono".to_owned(),
+                    2 => "stereo".to_owned(),
+                    n => format!("{n} channels"),
+                };
+                Ok((
+                    stream,
+                    rate,
+                    if loopback {
+                        format!("sound playing on {name} ({layout}, {rate} Hz)")
+                    } else {
+                        format!("{name} ({layout}, {rate} Hz)")
+                    },
+                ))
+            },
+        )?;
         let consumer = ring_rx
             .recv()
             .map_err(|_| "the capture stream did not start".to_owned())?;
@@ -412,7 +450,7 @@ impl NodeAudio for CpalNodeAudio {
         let (guard, _rate, description) = spawn_stream(
             "audionet-render",
             || {},
-            move |failure| {
+            move |failure, glitches| {
                 let device = find(&id, false)?;
                 let config = device
                     .default_output_config()
@@ -428,7 +466,7 @@ impl NodeAudio for CpalNodeAudio {
                         config.config(),
                         move |data: &mut [f32], _| source.render(data, clock::now_ns()),
                         move |e| {
-                            on_stream_error(&failure, &e, format, || {
+                            on_stream_error(&failure, &glitches, &e, format, || {
                                 probe
                                     .default_output_config()
                                     .ok()

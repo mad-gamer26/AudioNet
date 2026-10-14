@@ -27,6 +27,13 @@ pub trait StreamGuard: Send {
     fn capture_totals(&self) -> Option<CaptureTotals> {
         None
     }
+
+    /// Glitches the platform's audio reported in this stream and recovered
+    /// from by itself (an underrun or overrun on Android): counted, never
+    /// a failure. Read from a non-real-time thread (atomics).
+    fn device_glitches(&self) -> u64 {
+        0
+    }
 }
 
 /// Running totals of a capture stream, in frames at its sample rate.
