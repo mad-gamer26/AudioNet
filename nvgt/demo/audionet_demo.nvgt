@@ -3,9 +3,10 @@
 // Sign in to your AudioNet account (as a visitor: nothing is added to the
 // account), pick a device and one of its sounds, and listen to it through
 // NVGT's sound system: place it around you in 3D (or let it circle you),
-// turn binaural (HRTF) sound on, change its pitch, and add reverb, a
-// low-pass or high-pass filter and an echo, each with its own settings.
-// Several streams can play at once, each with its own place and effects.
+// with NVGT's binaural 3D audio (Steam Audio HRTF) or its basic panning,
+// in a shared reverberant room, and with a low-pass or high-pass filter
+// and an echo, each with its own settings. Several streams can play at
+// once, each with its own place and effects, all in the same room.
 // You can also send this computer's microphone, or a test tone, to a
 // device's output.
 //
@@ -27,6 +28,41 @@ audionet_client an;
 demo_stream@[] streams;
 string[] log_lines;
 
+// The room every stream's reverb is in: one reverb, unmoved, that each
+// stream sends into (more as it is further away). The send is taken before
+// panning, so a stream moves around inside the room instead of taking the
+// reverb with it.
+audio_freeverb_node@ room_verb;
+reverb3d@ room;
+double room_size = 60, room_amount = 50;
+
+reverb3d@ the_room() {
+	if (@room == null) {
+		@room_verb = audio_freeverb_node();
+		room_verb.dry = 0;
+		@room = reverb3d(room_verb);
+		apply_room();
+	}
+	return room;
+}
+
+void apply_room() {
+	if (@room_verb == null) return;
+	room_verb.room_size = float(room_size / 100.0);
+	room_verb.wet = float(room_amount / 100.0);
+}
+
+// Binaural sound is NVGT's Steam Audio HRTF, started the first time a
+// stream wants it.
+bool binaural_ready = false;
+
+bool start_binaural() {
+	if (binaural_ready) return true;
+	binaural_ready = set_sound_global_hrtf(true);
+	if (!binaural_ready) speak("Binaural sound could not start: NVGT's Steam Audio did not initialize. Using basic 3D panning.");
+	return binaural_ready;
+}
+
 // One stream and what the demo has done to it.
 class demo_stream {
 	audionet_stream s;
@@ -39,18 +75,13 @@ class demo_stream {
 	bool orbit = false;
 	double angle = 0;
 	bool hrtf = true;
-	// Percent of normal speed.
-	double pitch = 100;
-	double base_pitch = 1;
 	bool reverb = false;
-	double room = 60, wet = 35;
 	bool low_pass = false;
 	double low_cutoff = 1200;
 	bool high_pass = false;
 	double high_cutoff = 800;
 	bool echo = false;
 	double echo_ms = 300, echo_decay = 45;
-	audio_freeverb_node@ reverb_node;
 	audio_low_pass_filter@ low_node;
 	audio_high_pass_filter@ high_node;
 	audio_delay_node@ echo_node;
@@ -70,12 +101,14 @@ class demo_stream {
 		an.set_volume(s.session_id, float(volume / 100.0), muted);
 		if (!s.listening) return;
 		s.snd.set_position_3d(float(x), float(y), float(z));
-		s.snd.hrtf = hrtf;
-		s.snd.pitch = float(base_pitch * pitch / 100.0);
+		// NVGT's 3D audio: the Steam Audio HRTF panner and attenuator, or
+		// the basic ones.
+		s.snd.hrtf = hrtf and start_binaural();
 		apply_effects();
 	}
 
-	// Rebuilds the effects chain: low-pass, high-pass, echo, reverb.
+	// The stream's own effects (low-pass, high-pass, echo), then whether it
+	// sends into the shared room.
 	void apply_effects() {
 		audio_node_chain@ chain = s.snd.effects_chain;
 		chain.clear();
@@ -99,13 +132,7 @@ class demo_stream {
 			echo_node.decay = float(echo_decay / 100.0);
 			chain.add_node(echo_node);
 		}
-		if (reverb) {
-			if (@reverb_node == null) @reverb_node = audio_freeverb_node();
-			reverb_node.room_size = float(room / 100.0);
-			reverb_node.wet = float(wet / 100.0);
-			reverb_node.dry = 1.0;
-			chain.add_node(reverb_node);
-		}
+		s.snd.set_reverb3d_at(reverb ? the_room() : null, reverb3d_prepan);
 	}
 	uint echo_node_frames = 0;
 
@@ -217,7 +244,7 @@ bool sign_in_screen() {
 
 audio_form f;
 int c_devices, c_sounds, c_listen, c_outputs, c_send_mic, c_send_tone, c_streams;
-int c_volume, c_mute, c_x, c_y, c_z, c_orbit, c_hrtf, c_pitch;
+int c_volume, c_mute, c_x, c_y, c_z, c_orbit, c_hrtf;
 int c_reverb, c_room, c_wet, c_low, c_low_cutoff, c_high, c_high_cutoff, c_echo, c_echo_ms, c_echo_decay;
 int c_stop, c_log, c_sign_out, c_quit;
 int last_device = -2, last_stream = -2;
@@ -237,11 +264,10 @@ void build_main() {
 	c_y = f.create_slider("Behind (negative) or in front (positive)", 4, -20, 20, "", 1);
 	c_z = f.create_slider("Below (negative) or above (positive)", 0, -10, 10, "", 1);
 	c_orbit = f.create_checkbox("Circle around me");
-	c_hrtf = f.create_checkbox("Binaural sound (HRTF), best with headphones", true);
-	c_pitch = f.create_slider("Pitch, percent", 100, 50, 200, "", 5);
-	c_reverb = f.create_checkbox("Reverb");
-	c_room = f.create_slider("Reverb room size, percent", 60, 0, 100, "", 5);
-	c_wet = f.create_slider("Reverb amount, percent", 35, 0, 100, "", 5);
+	c_hrtf = f.create_checkbox("Binaural 3D sound (Steam Audio HRTF), best with headphones; off: basic 3D panning", true);
+	c_reverb = f.create_checkbox("In the reverberant room");
+	c_room = f.create_slider("Room size, percent (the room every stream shares)", room_size, 0, 100, "", 5);
+	c_wet = f.create_slider("Room reverb amount, percent (shared)", room_amount, 0, 100, "", 5);
 	c_low = f.create_checkbox("Low-pass filter (muffled, as if through a wall)");
 	c_low_cutoff = f.create_slider("Low-pass cutoff, hertz", 1200, 200, 20000, "", 100);
 	c_high = f.create_checkbox("High-pass filter (thin, as if on a phone)");
@@ -309,10 +335,7 @@ void show_stream_settings() {
 	f.set_slider(c_z, d.z);
 	f.set_checkbox_mark(c_orbit, d.orbit);
 	f.set_checkbox_mark(c_hrtf, d.hrtf);
-	f.set_slider(c_pitch, d.pitch);
 	f.set_checkbox_mark(c_reverb, d.reverb);
-	f.set_slider(c_room, d.room);
-	f.set_slider(c_wet, d.wet);
 	f.set_checkbox_mark(c_low, d.low_pass);
 	f.set_slider(c_low_cutoff, d.low_cutoff);
 	f.set_checkbox_mark(c_high, d.high_pass);
@@ -322,8 +345,15 @@ void show_stream_settings() {
 	f.set_slider(c_echo_decay, d.echo_decay);
 }
 
-// Takes what the controls say into the selected stream, if it changed.
+// Takes what the controls say into the room and the selected stream, if
+// they changed.
 void take_stream_settings() {
+	double r = f.get_slider(c_room), a = f.get_slider(c_wet);
+	if (r != room_size or a != room_amount) {
+		room_size = r;
+		room_amount = a;
+		apply_room();
+	}
 	demo_stream@ d = selected_stream();
 	if (@d == null) return;
 	bool changed = false;
@@ -337,10 +367,7 @@ void take_stream_settings() {
 	v = f.get_slider(c_z); if (v != d.z) { d.z = v; changed = true; }
 	b = f.is_checked(c_orbit); if (b != d.orbit) { d.orbit = b; changed = true; if (!b) show_stream_settings(); }
 	b = f.is_checked(c_hrtf); if (b != d.hrtf) { d.hrtf = b; changed = true; }
-	v = f.get_slider(c_pitch); if (v != d.pitch) { d.pitch = v; changed = true; }
 	b = f.is_checked(c_reverb); if (b != d.reverb) { d.reverb = b; effects = true; }
-	v = f.get_slider(c_room); if (v != d.room) { d.room = v; effects = true; }
-	v = f.get_slider(c_wet); if (v != d.wet) { d.wet = v; effects = true; }
 	b = f.is_checked(c_low); if (b != d.low_pass) { d.low_pass = b; effects = true; }
 	v = f.get_slider(c_low_cutoff); if (v != d.low_cutoff) { d.low_cutoff = v; effects = true; }
 	b = f.is_checked(c_high); if (b != d.high_pass) { d.high_pass = b; effects = true; }
@@ -377,7 +404,6 @@ void listen_now() {
 		speak(an.error);
 		return;
 	}
-	st.base_pitch = st.s.snd.pitch;
 	st.apply();
 	streams.insert_last(st);
 	note("Listening: " + st.s.title + ".");

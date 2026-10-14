@@ -78,6 +78,12 @@ void main() {
   `read()`, a generated tone). Writes never wait: a block that does not fit
   is dropped.
 * NVGT's listener faces +Y with +Z up: +X is to the right.
+* For binaural sound, call `set_sound_global_hrtf(true)` once (it starts
+  Steam Audio), then `snd.hrtf = true` per sound: setting `hrtf` alone does
+  not start it.
+* For reverb that stays put while sounds move, put the sounds in one
+  `reverb3d` with `snd.set_reverb3d_at(room, reverb3d_prepan)` instead of a
+  reverb in each sound's effects chain (which moves with the sound).
 
 ## The demonstration
 
@@ -96,9 +102,17 @@ void main() {
      - Volume and Mute (AudioNet's own).
      - Placement: left or right, behind or in front, below or above, and
        "Circle around me" (once round every 8 seconds).
-     - Binaural sound (HRTF) and Pitch.
-     - Reverb (room size, amount), a Low-pass filter (cutoff), a High-pass
-       filter (cutoff) and an Echo (delay, decay).
+     - Binaural 3D sound: NVGT's own 3D audio with Steam Audio's HRTF
+       (started with `set_sound_global_hrtf(true)` the first time it is
+       wanted), or NVGT's basic 3D panning when turned off.
+     - "In the reverberant room": one shared room (NVGT's `reverb3d`, a
+       fully wet freeverb) that every stream can be in. Each stream sends
+       into it more the further away it is, and the send is taken before
+       panning (`reverb3d_prepan`), so a stream moves around inside the
+       room instead of taking the reverb with it. Room size and reverb
+       amount are the room's, shared by every stream.
+     - A Low-pass filter (cutoff), a High-pass filter (cutoff) and an Echo
+       (delay, decay), each stream's own.
    * **Stop This Stream**, the **Status log**, **Sign Out** and **Quit**.
 
 Everything that happens is spoken and kept in the status log.
