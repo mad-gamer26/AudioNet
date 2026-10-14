@@ -61,9 +61,12 @@ computer; the command-line agent as a device):
 
 * Sign in, permission prompts, the device list, expanding a device,
   choosing a sound, Listen, Stop, the notification text, sign out.
-* A stream from the computer's device: connected, about 100 packets a
-  second, no loss, the playout buffer at its target with no underruns,
-  directly on the local network.
+* A stream from the computer's device, three runs: connected for the whole
+  30 seconds, about 100 packets a second, no loss, nothing late or
+  concealed, the playout buffer near its 60 ms target with no underruns,
+  the clock difference locked (+20 to +96 ppm), directly on the local
+  network. Then Stop, and Sign Out (the phone removed from the account,
+  back to the sign-in screen).
 * The app keeps its sign-in across a restart.
 
 Not yet: a real phone, sending the microphone (the emulator's microphone
@@ -71,7 +74,7 @@ may be the computer's), speaking with TalkBack, push notifications (they
 would need Firebase), and the iPhone app's Live Activity, widget and Siri
 equivalents.
 
-The emulator's audio reports frequent device glitches (AAudio underruns,
-counted under "Device glitches" in the measurements) while AudioNet's own
-playout never runs dry; a real phone will show whether that count is near
-zero before any buffer is changed.
+Device glitches (AAudio underruns, counted under "Device glitches" in the
+measurements) varied on the emulator: 221 in 40 seconds in one session, none
+in three later runs, while AudioNet's own playout never ran dry in any. A
+real phone will show the real count before any buffer is changed.

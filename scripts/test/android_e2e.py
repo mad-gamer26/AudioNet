@@ -21,7 +21,7 @@ first: use a test emulator), and
 """
 import os, re, subprocess, sys, tempfile, time, urllib.request
 
-from android_ui import adb, find, nodes, paused_accessibility, scroll_to, tap, texts, type_into
+from android_ui import adb, find, nodes, paused_accessibility, scroll_to, scroll_to_top, tap, texts, type_into
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -94,13 +94,20 @@ try:
         adb("shell", "input", "tap", str(stop["x"]), str(stop["y"]))
         time.sleep(3)
         stopped = any("You stopped it" in t for t in texts())
+        signed_out = False
         # Sign out, so the next run starts from the sign-in screen again.
+        scroll_to_top()
         tap("Settings", exact=True)
         tap("Sign Out of tester", exact=False)
-        tap("Sign Out", exact=True)
-        time.sleep(4)
+        # The dialog's confirm button: the last "Sign Out" on screen (the
+        # dialog's title says the same).
+        confirm = [n for n in nodes() if n["text"] == "Sign Out"][-1]
+        adb("shell", "input", "tap", str(confirm["x"]), str(confirm["y"]))
+        time.sleep(5)
+        signed_out = any("Signed out of tester" in t for t in texts()) and bool(find("Server address", timeout=10))
+        print("Signed out:", signed_out)
     packets = int(m[1]) if (m := re.search(r"Receiving: (\d+) packets", measured)) else 0
-    ok = stream.endswith(": connected") and packets > 1000 and stopped
+    ok = stream.endswith(": connected") and packets > 1000 and stopped and signed_out
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 finally:

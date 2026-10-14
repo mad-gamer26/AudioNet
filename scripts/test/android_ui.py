@@ -102,6 +102,13 @@ def scroll_to(label, tries=8):
     raise SystemExit(f"not found after scrolling: {label!r}\nscreen: {texts()}")
 
 
+def scroll_to_top(swipes=8):
+    """Scrolls the screen back to its top."""
+    for _ in range(swipes):
+        adb("shell", "input", "swipe", "540", "700", "540", "1800", "200")
+    time.sleep(0.8)
+
+
 @contextlib.contextmanager
 def paused_accessibility():
     """Accessibility services (TalkBack) off while automating, then back exactly as they were."""
