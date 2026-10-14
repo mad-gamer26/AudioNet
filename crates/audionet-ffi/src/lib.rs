@@ -12,7 +12,8 @@
 //! * Apps that are not AudioNet itself (TeamTalk NG) sign in as a visitor
 //!   instead ([`visitor_sign_in`], [`Client::visitor`]): like the web
 //!   client, no device is added to the account. They can listen into an
-//!   [`AudioTap`] and pass the sound on.
+//!   [`AudioTap`] and pass the sound on, and send what they write into an
+//!   [`AppSource`].
 //!
 //! The audio itself (capture, Opus, WebRTC, playout with drift and depth
 //! control) is the same engine as on Windows; on Apple platforms it uses
@@ -37,7 +38,7 @@ use tokio::sync::{mpsc, oneshot};
 uniffi::setup_scaffolding!();
 
 mod tap;
-pub use tap::AudioTap;
+pub use tap::{AppSource, AudioTap};
 
 #[cfg(not(windows))]
 use audionet_node::cpal_audio::CpalNodeAudio as PlatformAudio;

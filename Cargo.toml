@@ -13,6 +13,7 @@ members = [
     "crates/audionet-node",
     "crates/audionet-desktop",
     "crates/audionet-ffi",
+    "crates/audionet-c",
     "crates/audionet-visitor",
 ]
 

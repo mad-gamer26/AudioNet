@@ -17,3 +17,9 @@ __pycache__/
 # Test settings naming your own machines (see scripts/test/testenv.py)
 scripts/test/local.env
 __pycache__/
+apps/ios/Widgets/Info.plist
+apps/ios/Widgets/AudioNetWidgets.entitlements
+# NVGT plugin build output, and what NVGT writes next to scripts
+nvgt/release/
+nvgt/**/*.zip
+nvgt/demo/audionet_demo_settings.json

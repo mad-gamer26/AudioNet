@@ -1,0 +1,508 @@
+// AudioNet in NVGT: a demonstration.
+//
+// Sign in to your AudioNet account (as a visitor: nothing is added to the
+// account), pick a device and one of its sounds, and listen to it through
+// NVGT's sound system: place it around you in 3D (or let it circle you),
+// turn binaural (HRTF) sound on, change its pitch, and add reverb, a
+// low-pass or high-pass filter and an echo, each with its own settings.
+// Several streams can play at once, each with its own place and effects.
+// You can also send this computer's microphone, or a test tone, to a
+// device's output.
+//
+// Everything is an audio_form: Tab and Shift+Tab move between controls,
+// arrows change lists and sliders, Space toggles checkboxes, Enter presses
+// buttons. Everything that happens is spoken and kept in the status log.
+//
+// Needs the audionet plugin (nvgt/build-plugin.ps1 -Install) and
+// nvgt/include/audionet.nvgt (next to this script, or in NVGT's include
+// folder).
+
+#include "form.nvgt"
+#include "speech.nvgt"
+#include "../include/audionet.nvgt"
+
+const string SETTINGS_FILE = "audionet_demo_settings.json";
+
+audionet_client an;
+demo_stream@[] streams;
+string[] log_lines;
+
+// One stream and what the demo has done to it.
+class demo_stream {
+	audionet_stream s;
+	string state = "starting";
+	// AudioNet's own volume (0 to 100) and mute.
+	double volume = 100;
+	bool muted = false;
+	// Place: X right, Y in front, Z above (you are at 0, 0, 0 facing +Y).
+	double x = 0, y = 4, z = 0;
+	bool orbit = false;
+	double angle = 0;
+	bool hrtf = true;
+	// Percent of normal speed.
+	double pitch = 100;
+	double base_pitch = 1;
+	bool reverb = false;
+	double room = 60, wet = 35;
+	bool low_pass = false;
+	double low_cutoff = 1200;
+	bool high_pass = false;
+	double high_cutoff = 800;
+	bool echo = false;
+	double echo_ms = 300, echo_decay = 45;
+	audio_freeverb_node@ reverb_node;
+	audio_low_pass_filter@ low_node;
+	audio_high_pass_filter@ high_node;
+	audio_delay_node@ echo_node;
+	// Sending: what feeds it.
+	microphone@ mic;
+	bool tone = false;
+	double tone_phase = 0;
+	timer tone_clock;
+	uint64 tone_frames = 0;
+
+	string describe() {
+		return s.title + ": " + state + (muted ? ", muted" : "");
+	}
+
+	// Puts every setting into effect.
+	void apply() {
+		an.set_volume(s.session_id, float(volume / 100.0), muted);
+		if (!s.listening) return;
+		s.snd.set_position_3d(float(x), float(y), float(z));
+		s.snd.hrtf = hrtf;
+		s.snd.pitch = float(base_pitch * pitch / 100.0);
+		apply_effects();
+	}
+
+	// Rebuilds the effects chain: low-pass, high-pass, echo, reverb.
+	void apply_effects() {
+		audio_node_chain@ chain = s.snd.effects_chain;
+		chain.clear();
+		if (low_pass) {
+			if (@low_node == null) @low_node = audio_low_pass_filter(low_cutoff, 2);
+			low_node.cutoff_frequency = low_cutoff;
+			chain.add_node(low_node);
+		}
+		if (high_pass) {
+			if (@high_node == null) @high_node = audio_high_pass_filter(high_cutoff, 2);
+			high_node.cutoff_frequency = high_cutoff;
+			chain.add_node(high_node);
+		}
+		if (echo) {
+			uint frames = uint(sound_default_engine.sample_rate * echo_ms / 1000.0);
+			// The delay's length is fixed when it is made.
+			if (@echo_node == null or echo_node_frames != frames) {
+				@echo_node = audio_delay_node(frames, float(echo_decay / 100.0));
+				echo_node_frames = frames;
+			}
+			echo_node.decay = float(echo_decay / 100.0);
+			chain.add_node(echo_node);
+		}
+		if (reverb) {
+			if (@reverb_node == null) @reverb_node = audio_freeverb_node();
+			reverb_node.room_size = float(room / 100.0);
+			reverb_node.wet = float(wet / 100.0);
+			reverb_node.dry = 1.0;
+			chain.add_node(reverb_node);
+		}
+	}
+	uint echo_node_frames = 0;
+
+	// Every time round the loop.
+	void update(double elapsed_ms) {
+		s.update();
+		if (s.listening and orbit) {
+			// Once round every 8 seconds, keeping its distance.
+			double radius = sqrt(x * x + y * y);
+			if (radius < 1) radius = 4;
+			angle += elapsed_ms / 8000.0 * 2 * 3.14159265;
+			x = radius * sin(angle);
+			y = radius * cos(angle);
+			s.snd.set_position_3d(float(x), float(y), float(z));
+		}
+		if (@mic != null) {
+			uint have = mic.available_read;
+			if (have > 0) s.write(mic.read(have));
+		}
+		if (tone) {
+			// A 440 Hz tone, paced by the clock: as much as is due.
+			uint64 due = uint64(tone_clock.elapsed * 48);
+			if (due > tone_frames) {
+				uint frames = uint(due - tone_frames);
+				if (frames > 4800) frames = 4800;
+				float[] samples(frames);
+				for (uint i = 0; i < frames; i++) {
+					samples[i] = float(0.2 * sin(tone_phase));
+					tone_phase += 2 * 3.14159265 * 440 / 48000.0;
+				}
+				s.write(samples);
+				tone_frames += frames;
+			}
+		}
+	}
+
+	void stop() {
+		s.stop();
+		@mic = null;
+		tone = false;
+	}
+}
+
+void note(const string&in text, bool say = true) {
+	if (text == "") return;
+	log_lines.insert_last(text);
+	if (log_lines.length() > 300) log_lines.remove_at(0);
+	if (say) speak(text, false);
+}
+
+// MARK: Remembered settings (the server and account name, never the password)
+
+string saved_server = "", saved_account = "";
+
+void load_settings() {
+	file f;
+	if (!f.open(SETTINGS_FILE, "rb")) return;
+	json_object@ o = parse_json(f.read());
+	f.close();
+	saved_server = audionet_json_string(o, "server");
+	saved_account = audionet_json_string(o, "account");
+}
+
+void save_settings(const string&in server, const string&in account) {
+	json_object o;
+	o["server"] = server;
+	o["account"] = account;
+	file f;
+	if (f.open(SETTINGS_FILE, "wb")) {
+		f.write(o.stringify());
+		f.close();
+	}
+}
+
+// MARK: Signing in
+
+bool sign_in_screen() {
+	load_settings();
+	audio_form f;
+	f.create_window("AudioNet Demo: Sign In");
+	int server = f.create_input_box("Server address (https://...)", saved_server);
+	int account = f.create_input_box("Account name", saved_account);
+	int password = f.create_input_box("Password", "", "*");
+	int sign = f.create_button("Sign In", true);
+	int quit = f.create_button("Quit", false, true);
+	f.focus(saved_server == "" ? server : saved_account == "" ? account : password);
+	while (true) {
+		wait(5);
+		f.monitor();
+		if (f.is_pressed(quit)) return false;
+		if (f.is_pressed(sign)) {
+			string s = f.get_text(server).trim_whitespace(), a = f.get_text(account).trim_whitespace();
+			if (s == "" or a == "" or f.get_text(password) == "") {
+				speak("Enter the server address, your account name and your password.");
+				continue;
+			}
+			speak("Signing in.");
+			if (an.sign_in(s, a, f.get_text(password), "AudioNet NVGT Demo")) {
+				save_settings(s, a);
+				return true;
+			}
+			speak(an.error);
+		}
+	}
+	return false;
+}
+
+// MARK: The main screen
+
+audio_form f;
+int c_devices, c_sounds, c_listen, c_outputs, c_send_mic, c_send_tone, c_streams;
+int c_volume, c_mute, c_x, c_y, c_z, c_orbit, c_hrtf, c_pitch;
+int c_reverb, c_room, c_wet, c_low, c_low_cutoff, c_high, c_high_cutoff, c_echo, c_echo_ms, c_echo_decay;
+int c_stop, c_log, c_sign_out, c_quit;
+int last_device = -2, last_stream = -2;
+
+void build_main() {
+	f.create_window("AudioNet Demo", false, false);
+	c_devices = f.create_list("Devices");
+	c_sounds = f.create_list("Sounds on this device");
+	c_listen = f.create_button("Listen");
+	c_outputs = f.create_list("Outputs on this device");
+	c_send_mic = f.create_button("Send My Microphone");
+	c_send_tone = f.create_button("Send a Test Tone");
+	c_streams = f.create_list("Streams");
+	c_volume = f.create_slider("Volume", 100, 0, 100, "", 5);
+	c_mute = f.create_checkbox("Mute");
+	c_x = f.create_slider("Left (negative) or right (positive)", 0, -20, 20, "", 1);
+	c_y = f.create_slider("Behind (negative) or in front (positive)", 4, -20, 20, "", 1);
+	c_z = f.create_slider("Below (negative) or above (positive)", 0, -10, 10, "", 1);
+	c_orbit = f.create_checkbox("Circle around me");
+	c_hrtf = f.create_checkbox("Binaural sound (HRTF), best with headphones", true);
+	c_pitch = f.create_slider("Pitch, percent", 100, 50, 200, "", 5);
+	c_reverb = f.create_checkbox("Reverb");
+	c_room = f.create_slider("Reverb room size, percent", 60, 0, 100, "", 5);
+	c_wet = f.create_slider("Reverb amount, percent", 35, 0, 100, "", 5);
+	c_low = f.create_checkbox("Low-pass filter (muffled, as if through a wall)");
+	c_low_cutoff = f.create_slider("Low-pass cutoff, hertz", 1200, 200, 20000, "", 100);
+	c_high = f.create_checkbox("High-pass filter (thin, as if on a phone)");
+	c_high_cutoff = f.create_slider("High-pass cutoff, hertz", 800, 20, 5000, "", 20);
+	c_echo = f.create_checkbox("Echo");
+	c_echo_ms = f.create_slider("Echo delay, milliseconds", 300, 50, 1000, "", 25);
+	c_echo_decay = f.create_slider("Echo decay, percent", 45, 0, 90, "", 5);
+	c_stop = f.create_button("Stop This Stream");
+	c_log = f.create_list("Status log");
+	c_sign_out = f.create_button("Sign Out");
+	c_quit = f.create_button("Quit", false, true);
+	f.focus(c_devices);
+}
+
+audionet_device@ selected_device() {
+	int i = f.get_list_position(c_devices);
+	if (i < 0 or i >= int(an.devices.length())) return null;
+	return an.devices[i];
+}
+
+demo_stream@ selected_stream() {
+	int i = f.get_list_position(c_streams);
+	if (i < 0 or i >= int(streams.length())) return null;
+	return streams[i];
+}
+
+void fill_devices() {
+	int keep = f.get_list_position(c_devices);
+	f.clear_list(c_devices);
+	for (uint i = 0; i < an.devices.length(); i++) f.add_list_item(c_devices, an.devices[i].describe(), -1, false, false);
+	if (an.devices.length() > 0) f.set_list_position(c_devices, keep < 0 ? 0 : keep >= int(an.devices.length()) ? int(an.devices.length()) - 1 : keep);
+	last_device = -2;
+}
+
+void fill_device_details() {
+	f.clear_list(c_sounds);
+	f.clear_list(c_outputs);
+	audionet_device@ d = selected_device();
+	if (@d == null) return;
+	for (uint i = 0; i < d.sources.length(); i++) f.add_list_item(c_sounds, d.sources[i].describe(), -1, false, false);
+	for (uint i = 0; i < d.outputs.length(); i++) f.add_list_item(c_outputs, d.outputs[i].describe(), -1, false, false);
+	// Start on the device's default sound and output.
+	for (uint i = 0; i < d.sources.length(); i++) if (d.sources[i].is_default) { f.set_list_position(c_sounds, i); break; }
+	for (uint i = 0; i < d.outputs.length(); i++) if (d.outputs[i].is_default) { f.set_list_position(c_outputs, i); break; }
+	if (d.sources.length() > 0 and f.get_list_position(c_sounds) < 0) f.set_list_position(c_sounds, 0);
+	if (d.outputs.length() > 0 and f.get_list_position(c_outputs) < 0) f.set_list_position(c_outputs, 0);
+}
+
+void fill_streams() {
+	int keep = f.get_list_position(c_streams);
+	f.clear_list(c_streams);
+	for (uint i = 0; i < streams.length(); i++) f.add_list_item(c_streams, streams[i].describe(), -1, false, false);
+	if (streams.length() > 0) f.set_list_position(c_streams, keep < 0 ? int(streams.length()) - 1 : keep >= int(streams.length()) ? int(streams.length()) - 1 : keep);
+	last_stream = -2;
+}
+
+// Shows the selected stream's settings in the controls.
+void show_stream_settings() {
+	demo_stream@ d = selected_stream();
+	if (@d == null) return;
+	f.set_slider(c_volume, d.volume);
+	f.set_checkbox_mark(c_mute, d.muted);
+	f.set_slider(c_x, d.x);
+	f.set_slider(c_y, d.y);
+	f.set_slider(c_z, d.z);
+	f.set_checkbox_mark(c_orbit, d.orbit);
+	f.set_checkbox_mark(c_hrtf, d.hrtf);
+	f.set_slider(c_pitch, d.pitch);
+	f.set_checkbox_mark(c_reverb, d.reverb);
+	f.set_slider(c_room, d.room);
+	f.set_slider(c_wet, d.wet);
+	f.set_checkbox_mark(c_low, d.low_pass);
+	f.set_slider(c_low_cutoff, d.low_cutoff);
+	f.set_checkbox_mark(c_high, d.high_pass);
+	f.set_slider(c_high_cutoff, d.high_cutoff);
+	f.set_checkbox_mark(c_echo, d.echo);
+	f.set_slider(c_echo_ms, d.echo_ms);
+	f.set_slider(c_echo_decay, d.echo_decay);
+}
+
+// Takes what the controls say into the selected stream, if it changed.
+void take_stream_settings() {
+	demo_stream@ d = selected_stream();
+	if (@d == null) return;
+	bool changed = false;
+	bool effects = false;
+	double v;
+	bool b;
+	v = f.get_slider(c_volume); if (v != d.volume) { d.volume = v; changed = true; }
+	b = f.is_checked(c_mute); if (b != d.muted) { d.muted = b; changed = true; }
+	v = f.get_slider(c_x); if (v != d.x and !d.orbit) { d.x = v; changed = true; }
+	v = f.get_slider(c_y); if (v != d.y and !d.orbit) { d.y = v; changed = true; }
+	v = f.get_slider(c_z); if (v != d.z) { d.z = v; changed = true; }
+	b = f.is_checked(c_orbit); if (b != d.orbit) { d.orbit = b; changed = true; if (!b) show_stream_settings(); }
+	b = f.is_checked(c_hrtf); if (b != d.hrtf) { d.hrtf = b; changed = true; }
+	v = f.get_slider(c_pitch); if (v != d.pitch) { d.pitch = v; changed = true; }
+	b = f.is_checked(c_reverb); if (b != d.reverb) { d.reverb = b; effects = true; }
+	v = f.get_slider(c_room); if (v != d.room) { d.room = v; effects = true; }
+	v = f.get_slider(c_wet); if (v != d.wet) { d.wet = v; effects = true; }
+	b = f.is_checked(c_low); if (b != d.low_pass) { d.low_pass = b; effects = true; }
+	v = f.get_slider(c_low_cutoff); if (v != d.low_cutoff) { d.low_cutoff = v; effects = true; }
+	b = f.is_checked(c_high); if (b != d.high_pass) { d.high_pass = b; effects = true; }
+	v = f.get_slider(c_high_cutoff); if (v != d.high_cutoff) { d.high_cutoff = v; effects = true; }
+	b = f.is_checked(c_echo); if (b != d.echo) { d.echo = b; effects = true; }
+	v = f.get_slider(c_echo_ms); if (v != d.echo_ms) { d.echo_ms = v; effects = true; }
+	v = f.get_slider(c_echo_decay); if (v != d.echo_decay) { d.echo_decay = v; effects = true; }
+	if (changed) d.apply();
+	else if (effects and d.s.listening) d.apply_effects();
+	if (changed or effects) {
+		if (!d.s.listening and (effects or d.orbit)) speak("Effects and placement apply to sounds you listen to here, not to what you send.");
+		f.edit_list_item(c_streams, d.describe(), f.get_list_position(c_streams));
+	}
+}
+
+void listen_now() {
+	audionet_device@ d = selected_device();
+	int i = f.get_list_position(c_sounds);
+	if (@d == null or i < 0 or i >= int(d.sources.length())) {
+		speak("Choose a device and one of its sounds first.");
+		return;
+	}
+	if (!d.online or !d.sharing) {
+		speak(d.name + (d.online ? " is not sharing its audio." : " is offline."));
+		return;
+	}
+	demo_stream st;
+	// Each new stream starts a little further round, so several do not
+	// play from the same place.
+	double around = streams.length() * 1.2;
+	st.x = 4 * sin(around);
+	st.y = 4 * cos(around);
+	if (!st.s.start_listening(an, d, d.sources[i])) {
+		speak(an.error);
+		return;
+	}
+	st.base_pitch = st.s.snd.pitch;
+	st.apply();
+	streams.insert_last(st);
+	note("Listening: " + st.s.title + ".");
+	fill_streams();
+	f.set_list_position(c_streams, int(streams.length()) - 1);
+}
+
+void send_now(bool microphone_input) {
+	audionet_device@ d = selected_device();
+	int i = f.get_list_position(c_outputs);
+	if (@d == null or i < 0 or i >= int(d.outputs.length())) {
+		speak("Choose a device and one of its outputs first.");
+		return;
+	}
+	if (!d.online) {
+		speak(d.name + " is offline.");
+		return;
+	}
+	demo_stream st;
+	bool ok;
+	if (microphone_input) {
+		@st.mic = microphone();
+		ok = st.s.start_sending(an, d, d.outputs[i], "Microphone in NVGT", st.mic.sample_rate, st.mic.channels);
+	} else {
+		st.tone = true;
+		st.tone_clock.restart();
+		ok = st.s.start_sending(an, d, d.outputs[i], "Test tone in NVGT", 48000, 1);
+	}
+	if (!ok) {
+		speak(an.error);
+		st.stop();
+		return;
+	}
+	streams.insert_last(st);
+	note("Sending: " + st.s.title + ".");
+	fill_streams();
+	f.set_list_position(c_streams, int(streams.length()) - 1);
+}
+
+void stop_selected() {
+	demo_stream@ d = selected_stream();
+	if (@d == null) {
+		speak("No stream is selected.");
+		return;
+	}
+	d.stop();
+	note("Stopped: " + d.s.title + ".");
+	streams.remove_at(f.get_list_position(c_streams));
+	fill_streams();
+	if (streams.length() > 0) show_stream_settings();
+}
+
+// AudioNet's events: spoken, logged, and reflected in the lists.
+void handle_events() {
+	for (int n = 0; n < 50; n++) {
+		audionet_event@ e = an.poll();
+		if (@e == null) return;
+		if (e.type == "diagnostics") continue;
+		if (e.type == "devices" or e.type == "device") fill_devices();
+		bool say = e.type != "status";
+		if (e.type == "stream" or e.type == "stream_ended") {
+			for (uint i = 0; i < streams.length(); i++) {
+				if (streams[i].s.session_id != e.session_id) continue;
+				if (e.type == "stream_ended") {
+					streams[i].state = "ended";
+					note(streams[i].s.title + ": " + e.text);
+					streams[i].stop();
+					streams.remove_at(i);
+					fill_streams();
+					say = false;
+				} else {
+					string was = streams[i].state;
+					streams[i].state = e.state == "active" ? "connected" : e.state;
+					if (was != streams[i].state) f.edit_list_item(c_streams, streams[i].describe(), i);
+					say = e.state == "active" and was != "connected";
+					if (say) e.text = streams[i].s.title + ": connected.";
+				}
+			}
+		}
+		note(e.text, say);
+		f.add_list_item(c_log, e.text, -1, false, false);
+	}
+}
+
+void main() {
+	sound_set_listener_position(0, 0, 0);
+	if (!sign_in_screen()) return;
+	build_main();
+	note("Signed in as a visitor to " + an.username + ". Your devices are listed first. Choose one, then a sound, then Listen.");
+	timer clock;
+	while (true) {
+		wait(5);
+		double elapsed = clock.elapsed;
+		clock.restart();
+		handle_events();
+		for (uint i = 0; i < streams.length(); i++) streams[i].update(elapsed);
+		f.monitor();
+		int dev = f.get_list_position(c_devices);
+		if (dev != last_device) {
+			last_device = dev;
+			fill_device_details();
+		}
+		int st = f.get_list_position(c_streams);
+		if (st != last_stream) {
+			last_stream = st;
+			show_stream_settings();
+		} else {
+			take_stream_settings();
+		}
+		if (f.is_pressed(c_listen)) listen_now();
+		if (f.is_pressed(c_send_mic)) send_now(true);
+		if (f.is_pressed(c_send_tone)) send_now(false);
+		if (f.is_pressed(c_stop)) stop_selected();
+		if (f.is_pressed(c_sign_out) or f.is_pressed(c_quit)) {
+			bool quit = f.is_pressed(c_quit);
+			for (uint i = 0; i < streams.length(); i++) streams[i].stop();
+			streams.resize(0);
+			an.close();
+			if (quit) return;
+			speak("Signed out.");
+			f.reset();
+			last_device = -2;
+			last_stream = -2;
+			if (!sign_in_screen()) return;
+			build_main();
+		}
+	}
+}

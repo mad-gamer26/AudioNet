@@ -1,0 +1,389 @@
+// AudioNet for NVGT: script classes over the audionet plugin.
+//
+//   #include "audionet.nvgt"
+//   audionet_client an;
+//   if (!an.sign_in("https://audionet.example.com", "name", "password")) alert("AudioNet", an.error);
+//   while (true) { wait(5); audionet_event@ e = an.poll(); ... }
+//
+// The program signs in to an AudioNet account as a visitor (no device is
+// added to the account, as with the web client and the NVDA add-on), sees
+// the account's devices, listens to them and sends to them.
+//
+// audionet_stream plays what a device shares through an NVGT sound, so it
+// can be placed in 3D, given effects and mixed like any other sound; it
+// sends the program's own audio (a microphone, a generated tone, a game's
+// sound) to a device's output. Call update() on every stream each time
+// round the game loop: listening, it tops up the sound's buffer to a short
+// depth (NVGT's playback sets the pace, AudioNet's drift control follows);
+// sending, it hands over the audio written since.
+//
+// Every state is text: events carry plain-language sentences to speak.
+
+#pragma plugin audionet
+
+// One of a device's sounds (a microphone, or what an output plays).
+class audionet_sound_info {
+	string id;
+	string name;
+	bool is_input;
+	bool is_default;
+	// "Speakers (Realtek), what it plays, default".
+	string describe() {
+		return name + (is_input ? ", input" : ", what it plays") + (is_default ? ", default" : "");
+	}
+}
+
+// Somewhere a device plays sound.
+class audionet_output_info {
+	string id;
+	string name;
+	bool is_default;
+	string describe() {
+		return name + (is_default ? ", default" : "");
+	}
+}
+
+// One of the account's devices.
+class audionet_device {
+	string node_id;
+	string name;
+	string platform;
+	bool online;
+	bool sharing;
+	audionet_sound_info@[] sources;
+	audionet_output_info@[] outputs;
+	// "Studio PC: online, sharing".
+	string describe() {
+		return name + ": " + (!online ? "offline" : sharing ? "online, sharing" : "online, not sharing");
+	}
+}
+
+// Something that happened, from audionet_client.poll().
+class audionet_event {
+	// "connected", "disconnected", "status", "devices", "device", "stream",
+	// "stream_ended", "diagnostics", "server_problem", "stopped".
+	string type;
+	// What happened, in words (for speaking and the log).
+	string text;
+	string session_id;
+	// For "stream": "starting", "active", "ended" or "failed".
+	string state;
+	audionet_device@ device;
+}
+
+string audionet_json_string(json_object@ o, const string&in key) {
+	if (@o == null or !o.exists(key) or o.is_null(key)) return "";
+	string s = o[key];
+	return s;
+}
+
+bool audionet_json_bool(json_object@ o, const string&in key) {
+	if (@o == null or !o.exists(key) or o.is_null(key)) return false;
+	bool b = o[key];
+	return b;
+}
+
+audionet_device@ audionet_parse_device(json_object@ o) {
+	audionet_device d;
+	d.node_id = audionet_json_string(o, "node_id");
+	d.name = audionet_json_string(o, "name");
+	d.platform = audionet_json_string(o, "platform");
+	d.online = audionet_json_bool(o, "online");
+	d.sharing = audionet_json_bool(o, "sharing");
+	json_array@ sources = o.get_array("sources");
+	for (uint i = 0; @sources != null and i < sources.length(); i++) {
+		json_object@ s = sources.get_object(i);
+		audionet_sound_info info;
+		info.id = audionet_json_string(s, "id");
+		info.name = audionet_json_string(s, "name");
+		info.is_input = audionet_json_bool(s, "is_input");
+		info.is_default = audionet_json_bool(s, "is_default");
+		d.sources.insert_last(info);
+	}
+	json_array@ outputs = o.get_array("outputs");
+	for (uint i = 0; @outputs != null and i < outputs.length(); i++) {
+		json_object@ s = outputs.get_object(i);
+		audionet_output_info info;
+		info.id = audionet_json_string(s, "id");
+		info.name = audionet_json_string(s, "name");
+		info.is_default = audionet_json_bool(s, "is_default");
+		d.outputs.insert_last(info);
+	}
+	return d;
+}
+
+// A connection to an AudioNet account, as a visitor.
+class audionet_client {
+	uint handle = 0;
+	string server;
+	string username;
+	// Why the last call failed, in words.
+	string error;
+	bool connected = false;
+	// The account's devices, kept current from events.
+	audionet_device@[] devices;
+	private string token;
+
+	~audionet_client() {
+		close();
+	}
+
+	// Signs in with the account's password (used once, never kept) and
+	// connects. Waits for the network. False with `error` saying why.
+	bool sign_in(const string&in server_url, const string&in account, const string&in password, const string&in app_name = "AudioNet for NVGT") {
+		close();
+		token = audionet_visitor_sign_in(server_url, account, password);
+		if (token == "") {
+			error = audionet_last_error();
+			return false;
+		}
+		server = server_url;
+		username = account;
+		handle = audionet_client_create(server, username, token, app_name);
+		if (handle == 0) {
+			error = audionet_last_error();
+			audionet_visitor_sign_out(server, token);
+			token = "";
+			return false;
+		}
+		return true;
+	}
+
+	// Disconnects and ends the session on the server (every stream stops).
+	void close() {
+		if (handle != 0) audionet_client_destroy(handle);
+		handle = 0;
+		connected = false;
+		devices.resize(0);
+		if (token != "") audionet_visitor_sign_out(server, token);
+		token = "";
+	}
+
+	bool get_active() property {
+		return handle != 0;
+	}
+
+	audionet_device@ find_device(const string&in node_id) {
+		for (uint i = 0; i < devices.length(); i++) {
+			if (devices[i].node_id == node_id) return devices[i];
+		}
+		return null;
+	}
+
+	// The next event, or null. Call it every time round the loop.
+	audionet_event@ poll() {
+		if (handle == 0) return null;
+		string text = audionet_client_poll(handle);
+		if (text == "") return null;
+		json_object@ o = parse_json(text);
+		if (@o == null) return null;
+		audionet_event e;
+		e.type = audionet_json_string(o, "type");
+		e.session_id = audionet_json_string(o, "session_id");
+		e.state = audionet_json_string(o, "state");
+		if (e.type == "connected") {
+			connected = true;
+			e.text = "Connected to " + username + "'s devices.";
+		} else if (e.type == "disconnected") {
+			connected = false;
+			e.text = "Disconnected: " + audionet_json_string(o, "reason") + ". Reconnecting.";
+		} else if (e.type == "status") {
+			e.text = audionet_json_string(o, "text");
+		} else if (e.type == "devices") {
+			devices.resize(0);
+			json_array@ list = o.get_array("devices");
+			for (uint i = 0; @list != null and i < list.length(); i++) devices.insert_last(audionet_parse_device(list.get_object(i)));
+			e.text = devices.length() == 1 ? "1 device." : devices.length() + " devices.";
+		} else if (e.type == "device") {
+			@e.device = audionet_parse_device(o.get_object("device"));
+			bool found = false;
+			for (uint i = 0; i < devices.length(); i++) {
+				if (devices[i].node_id == e.device.node_id) {
+					@devices[i] = e.device;
+					found = true;
+				}
+			}
+			if (!found) devices.insert_last(e.device);
+			e.text = e.device.describe();
+		} else if (e.type == "stream") {
+			e.text = audionet_json_string(o, "detail");
+		} else if (e.type == "stream_ended") {
+			e.text = "Stopped: " + audionet_json_string(o, "reason");
+		} else if (e.type == "diagnostics") {
+			e.text = audionet_json_string(o, "text");
+		} else if (e.type == "server_problem") {
+			e.text = audionet_json_string(o, "message");
+		} else if (e.type == "stopped") {
+			connected = false;
+			string why = audionet_json_string(o, "error");
+			e.text = why == "" ? "AudioNet stopped." : "AudioNet stopped: " + why;
+		}
+		return e;
+	}
+
+	void refresh() {
+		if (handle != 0) audionet_client_refresh(handle);
+	}
+
+	// Starts listening to a device's sound on `output_id` (one of this
+	// computer's outputs, or a tap). The session id, or "" with `error`.
+	string listen(const string&in node_id, const string&in source_id, const string&in output_id) {
+		string session = audionet_client_listen(handle, node_id, source_id, output_id);
+		if (session == "") error = audionet_last_error();
+		return session;
+	}
+
+	// Sends `source_id` (one of this computer's sources, or an app source)
+	// to a device's output.
+	string send(const string&in node_id, const string&in source_id, const string&in output_id) {
+		string session = audionet_client_send(handle, node_id, source_id, output_id);
+		if (session == "") error = audionet_last_error();
+		return session;
+	}
+
+	void stop(const string&in session_id) {
+		if (handle != 0) audionet_client_stop(handle, session_id);
+	}
+
+	// A stream's volume (0 to 1) and mute, applied by AudioNet itself.
+	void set_volume(const string&in session_id, float volume, bool muted) {
+		if (handle != 0) audionet_client_set_volume(handle, session_id, volume, muted);
+	}
+}
+
+// AudioNet audio in the program: a device's sound playing through an NVGT
+// sound (listen), or the program's audio going to a device (send).
+class audionet_stream {
+	audionet_client@ client;
+	string session_id;
+	// What it is, in words: "Studio PC: Speakers (Realtek)".
+	string title;
+	string node_id;
+	bool listening;
+	// Listening: the NVGT sound it plays through (position it, add effects
+	// to its effects_chain, give it a mixer).
+	sound snd;
+	// How far ahead the sound's buffer is kept, in milliseconds. Shorter
+	// is quicker; longer rides out a slow loop.
+	int depth_ms = 80;
+	uint sample_rate = 48000;
+	uint channels = 2;
+	private uint tap = 0;
+	private uint source = 0;
+	private audio_ring_buffer@ ring;
+	private float[] buffer;
+
+	~audionet_stream() {
+		stop();
+	}
+
+	// Listens to `source_id` of a device through `snd`. The sound starts
+	// playing (silence until the stream connects).
+	bool start_listening(audionet_client@ c, audionet_device@ d, audionet_sound_info@ s) {
+		stop();
+		@client = c;
+		listening = true;
+		node_id = d.node_id;
+		title = d.name + ": " + s.name;
+		// The ring buffer plays at the sound engine's rate and channels:
+		// AudioNet delivers exactly that (it resamples).
+		sample_rate = sound_default_engine.sample_rate;
+		channels = sound_default_engine.channels;
+		tap = audionet_tap_create("NVGT", sample_rate, channels);
+		// Half a second of room; it is kept depth_ms full.
+		@ring = audio_ring_buffer(channels, sample_rate / 2);
+		if (!snd.open(ring)) {
+			client.error = "NVGT could not open a sound for the stream.";
+			stop();
+			return false;
+		}
+		snd.play_looped();
+		session_id = client.listen(node_id, s.id, audionet_tap_id(tap));
+		if (session_id == "") {
+			stop();
+			return false;
+		}
+		return true;
+	}
+
+	// Sends the program's audio (what write() is given) to a device's
+	// output. `name` says what it is ("Microphone in NVGT").
+	bool start_sending(audionet_client@ c, audionet_device@ d, audionet_output_info@ o, const string&in name, uint rate, uint chans) {
+		stop();
+		@client = c;
+		listening = false;
+		node_id = d.node_id;
+		sample_rate = rate;
+		channels = chans;
+		title = name + " to " + d.name + ": " + o.name;
+		source = audionet_source_create(name, rate, chans);
+		session_id = client.send(node_id, audionet_source_id(source), o.id);
+		if (session_id == "") {
+			stop();
+			return false;
+		}
+		return true;
+	}
+
+	// Sending: hands audio over (interleaved, `channels` per frame).
+	// Returns the frames taken (0 until the stream connects).
+	uint write(const float[]@ samples) {
+		if (source == 0 or @samples == null) return 0;
+		return audionet_source_write(source, samples, channels);
+	}
+
+	// Listening: a stream is connected and playing here.
+	bool get_playing() property {
+		return tap != 0 and audionet_tap_playing(tap);
+	}
+
+	// Sending: the stream is connected and taking audio.
+	bool get_sending() property {
+		return source != 0 and audionet_source_sending(source);
+	}
+
+	// Listening: milliseconds of audio waiting in the sound's buffer.
+	uint get_buffered_ms() property {
+		if (@ring == null or sample_rate == 0) return 0;
+		return ring.available_read * 1000 / sample_rate;
+	}
+
+	// Listening: the loudness of the audio read last (root mean square, 0
+	// for silence, about 0.7 for a full-scale tone).
+	float level = 0;
+
+	// Call every time round the loop: tops the sound's buffer up to
+	// depth_ms (listening).
+	void update() {
+		if (tap == 0 or @ring == null) return;
+		uint target = sample_rate * depth_ms / 1000;
+		uint have = ring.available_read;
+		if (have >= target) return;
+		uint frames = target - have;
+		uint room = ring.available_write;
+		if (frames > room) frames = room;
+		if (frames == 0) return;
+		audionet_tap_read(tap, buffer, frames, channels);
+		double sum = 0;
+		for (uint i = 0; i < buffer.length(); i++) sum += buffer[i] * buffer[i];
+		level = buffer.length() > 0 ? float(sqrt(sum / buffer.length())) : 0;
+		ring.write(buffer);
+	}
+
+	void stop() {
+		if (session_id != "" and @client != null) client.stop(session_id);
+		session_id = "";
+		if (tap != 0) {
+			snd.close();
+			audionet_tap_destroy(tap);
+		}
+		tap = 0;
+		@ring = null;
+		if (source != 0) audionet_source_destroy(source);
+		source = 0;
+	}
+
+	bool get_active() property {
+		return session_id != "";
+	}
+}

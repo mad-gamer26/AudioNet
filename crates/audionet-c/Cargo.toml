@@ -1,0 +1,21 @@
+[package]
+name = "audionet-c"
+description = "AudioNet's engine for C and C++ programs (the NVGT plugin): sign in as a visitor, list devices, listen and send, and exchange audio with the program."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "audionet_c"
+# staticlib: linked into the NVGT plugin (one DLL to ship); cdylib for
+# other C programs.
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+audionet-ffi.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

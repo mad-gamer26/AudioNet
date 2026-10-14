@@ -27,8 +27,10 @@ replace it.
 | `crates/audionet-server` | Self-hostable coordination server (axum, SQLite). |
 | `crates/audionet-cli` | The `audionet` executable. |
 | `crates/audionet-ffi` | UniFFI bindings of the engine for Swift apps. |
+| `crates/audionet-c` | C interface of the engine (`include/audionet.h`): visitor sign-in, devices, listen and send, audio taps and app sources. Used by the NVGT plugin. |
 | `crates/audionet-visitor` | Engine program of the NVDA add-on (visitor, JSON lines). |
 | `nvda-addon/` | NVDA add-on (Python); `build.py` makes the `.nvda-addon`. |
+| `nvgt/` | NVGT plugin (`audionet.dll`, C++ over `audionet-c`), script include, audio_form demo; `build-plugin.ps1`. |
 | `apps/macos` | Native macOS app (SwiftUI, XcodeGen). |
 | `apps/ios` | Native iPhone app (SwiftUI, XcodeGen). |
 | `apps/shared` | Swift shared by both Apple apps. |
@@ -141,7 +143,10 @@ add a second, older rustls).
 
 - Only platform backend crates may contain `unsafe`. All other crates use
   `#![forbid(unsafe_code)]`, except `audionet-ffi`, whose only `unsafe` is
-  the FFI glue UniFFI generates (none written by hand).
+  the FFI glue UniFFI generates (none written by hand), and `audionet-c`,
+  whose only `unsafe` is the four helpers that turn C pointers into strings
+  and slices (`cstr`, `write_out`, `slice`, `slice_mut`); its functions take
+  numbered handles, never pointers to Rust objects.
 - Every `unsafe` block has a `// SAFETY:` comment (enforced by
   `clippy::undocumented_unsafe_blocks` under `-D warnings`).
 - Keep unsafe code in small functions; parse OS data structures in safe

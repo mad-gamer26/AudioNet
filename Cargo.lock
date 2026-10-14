@@ -261,6 +261,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "audionet-c"
+version = "1.2.3"
+dependencies = [
+ "audionet-ffi",
+ "serde_json",
+]
+
+[[package]]
 name = "audionet-cli"
 version = "1.2.3"
 dependencies = [

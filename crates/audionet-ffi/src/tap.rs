@@ -10,8 +10,16 @@
 //! follow it like any device's. A read with nothing to play returns
 //! silence at once, never waiting.
 //!
+//! [`AppSource`] is the other way round: a source the app writes samples
+//! into (a game's own sound, a microphone it records itself), for sending
+//! to a device. Sending "from a source" is sending with the source's id
+//! ([`AppSource::source_id`]). Writes never wait: what does not fit the
+//! stream's buffer (half a second) is dropped and counted, like any
+//! capture's overflow, and nothing is kept while no stream sends it.
+//!
 //! [`AppAudio`] is the [`NodeAudio`] the engine uses: taps for `app:` ids,
-//! the platform's devices for everything else.
+//! app sources for `app-source:` ids, the platform's devices for everything
+//! else.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -19,12 +27,14 @@ use std::sync::{Arc, Mutex, Weak};
 
 use audionet_audio::clock;
 use audionet_audio::render::RenderSource;
+use audionet_audio::ring::{RingProducer, WriteOutcome, audio_ring};
 use audionet_node::audio::{NodeAudio, OpenCapture, StreamGuard};
 use audionet_protocol::signal::{DestinationInfo, SourceInfo};
 
 use crate::PlatformAudio;
 
 const PREFIX: &str = "app:";
+const SOURCE_PREFIX: &str = "app-source:";
 
 /// The largest read, in frames per channel (one second at 48 kHz).
 const MAX_READ: u32 = 48_000;
@@ -128,6 +138,23 @@ impl AudioTap {
     }
 }
 
+impl AudioTap {
+    /// Fills `out` (interleaved, a whole number of frames) with the next
+    /// frames as floats, without allocating. Silence while no stream plays
+    /// here. Returns the frames written. Never waits.
+    pub fn read_f32(&self, out: &mut [f32]) -> usize {
+        let channels = self.shared.channels as usize;
+        let frames = (out.len() / channels).min(MAX_READ as usize);
+        let out = &mut out[..frames * channels];
+        let mut slot = lock(&self.shared.slot);
+        match slot.source.as_mut() {
+            Some(source) => source.render(out, clock::now_ns()),
+            None => out.fill(0.0),
+        }
+        frames
+    }
+}
+
 impl Drop for AudioTap {
     fn drop(&mut self) {
         lock(&TAPS).remove(&self.id);
@@ -137,6 +164,148 @@ impl Drop for AudioTap {
 fn to_i16(s: f32) -> i16 {
     // `as` saturates; NaN becomes 0.
     (s * 32_767.0).round() as i16
+}
+
+// MARK: Sources the app writes into
+
+/// The stream sending from a source: where the app's samples go.
+#[derive(Default)]
+struct SourceSlot {
+    producer: Option<RingProducer>,
+    stream: u64,
+    /// Blocks dropped because they did not fit.
+    dropped: u64,
+}
+
+struct SourceShared {
+    name: String,
+    sample_rate: u32,
+    channels: u32,
+    slot: Mutex<SourceSlot>,
+}
+
+/// App sources that exist, by source id.
+static SOURCES: std::sync::LazyLock<Mutex<HashMap<String, Weak<SourceShared>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// A source the app writes audio into (see the module documentation).
+#[derive(uniffi::Object)]
+pub struct AppSource {
+    id: String,
+    shared: Arc<SourceShared>,
+}
+
+impl std::fmt::Debug for AppSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppSource")
+            .field("id", &self.id)
+            .field("name", &self.shared.name)
+            .finish_non_exhaustive()
+    }
+}
+
+#[uniffi::export]
+impl AppSource {
+    /// A source taking `sample_rate` Hz with `channels` channels (1 or 2).
+    /// `name` says what it is, in words ("Game sound"); the stream's status
+    /// uses it.
+    #[uniffi::constructor]
+    pub fn new(name: String, sample_rate: u32, channels: u32) -> Arc<Self> {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let id = format!("{SOURCE_PREFIX}{}", NEXT.fetch_add(1, Relaxed));
+        let shared = Arc::new(SourceShared {
+            name,
+            sample_rate: sample_rate.clamp(8_000, 192_000),
+            channels: channels.clamp(1, 2),
+            slot: Mutex::new(SourceSlot::default()),
+        });
+        let mut sources = lock(&SOURCES);
+        sources.retain(|_, s| s.strong_count() > 0);
+        sources.insert(id.clone(), Arc::downgrade(&shared));
+        Arc::new(Self { id, shared })
+    }
+
+    /// The source id to send with (`Client::send`).
+    pub fn source_id(&self) -> String {
+        self.id.clone()
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.shared.sample_rate
+    }
+
+    pub fn channels(&self) -> u32 {
+        self.shared.channels
+    }
+
+    /// Whether a stream is sending this source.
+    pub fn is_sending(&self) -> bool {
+        lock(&self.shared.slot).producer.is_some()
+    }
+
+    /// Blocks dropped so far because the stream's buffer was full (the app
+    /// wrote faster than real time, or the stream stalled).
+    pub fn dropped_blocks(&self) -> u64 {
+        lock(&self.shared.slot).dropped
+    }
+
+    /// Writes interleaved samples (a whole number of frames). Returns the
+    /// frames taken: 0 while no stream sends this source, or when the block
+    /// does not fit (it is dropped). Never waits.
+    pub fn write(&self, samples: Vec<f32>) -> u32 {
+        self.write_f32(&samples) as u32
+    }
+}
+
+impl AppSource {
+    /// [`AppSource::write`] without the copy, for C callers.
+    pub fn write_f32(&self, samples: &[f32]) -> usize {
+        let channels = self.shared.channels as usize;
+        let whole = samples.len() - samples.len() % channels;
+        let mut slot = lock(&self.shared.slot);
+        let SourceSlot {
+            producer, dropped, ..
+        } = &mut *slot;
+        let Some(producer) = producer.as_mut() else {
+            return 0;
+        };
+        match producer.write(&samples[..whole]) {
+            WriteOutcome::Written => whole / channels,
+            WriteOutcome::DroppedOverflow => {
+                *dropped += 1;
+                0
+            }
+        }
+    }
+}
+
+impl Drop for AppSource {
+    fn drop(&mut self) {
+        lock(&SOURCES).remove(&self.id);
+    }
+}
+
+/// Lets go of its stream's buffer when the stream closes.
+struct SourceGuard {
+    shared: Weak<SourceShared>,
+    stream: u64,
+}
+
+impl StreamGuard for SourceGuard {
+    fn failure(&mut self) -> Option<String> {
+        None
+    }
+}
+
+impl Drop for SourceGuard {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.upgrade() {
+            let mut slot = lock(&shared.slot);
+            if slot.stream == self.stream {
+                slot.producer = None;
+            }
+        }
+    }
 }
 
 /// Removes its stream from the tap when the stream closes.
@@ -173,7 +342,43 @@ impl NodeAudio for AppAudio {
     }
 
     fn open_source(&self, source_id: &str) -> Result<OpenCapture, String> {
-        PlatformAudio.open_source(source_id)
+        if !source_id.starts_with(SOURCE_PREFIX) {
+            return PlatformAudio.open_source(source_id);
+        }
+        static STREAMS: AtomicU64 = AtomicU64::new(1);
+        let shared = lock(&SOURCES)
+            .get(source_id)
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| "the app stopped giving this sound".to_owned())?;
+        // Control path: half a second of buffer, allocated here.
+        let (producer, consumer) =
+            audio_ring(shared.sample_rate as usize / 2, shared.channels as usize);
+        let stream = STREAMS.fetch_add(1, Relaxed);
+        {
+            let mut slot = lock(&shared.slot);
+            // A newer stream replaces an older one.
+            slot.producer = Some(producer);
+            slot.stream = stream;
+        }
+        let description = format!(
+            "{} ({}, {} Hz)",
+            shared.name,
+            if shared.channels == 1 {
+                "mono"
+            } else {
+                "stereo"
+            },
+            shared.sample_rate
+        );
+        Ok(OpenCapture {
+            consumer,
+            sample_rate: shared.sample_rate,
+            guard: Box::new(SourceGuard {
+                shared: Arc::downgrade(&shared),
+                stream,
+            }),
+            description,
+        })
     }
 
     fn open_destination(
@@ -299,6 +504,50 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(err, "the app stopped taking this sound");
+    }
+
+    #[test]
+    fn an_app_source_feeds_its_stream_and_drops_what_does_not_fit() {
+        let source = AppSource::new("Game sound".into(), 48_000, 2);
+        assert!(!source.is_sending());
+        // Nothing kept while no stream sends it.
+        assert_eq!(source.write(vec![0.5; 960]), 0);
+
+        let mut open = AppAudio.open_source(&source.source_id()).unwrap();
+        assert_eq!(open.description, "Game sound (stereo, 48000 Hz)");
+        assert_eq!(open.sample_rate, 48_000);
+        assert!(source.is_sending());
+        assert_eq!(source.write(vec![0.25; 960]), 480);
+        let mut out = vec![0.0; 960];
+        assert_eq!(open.consumer.read(&mut out), 480);
+        assert!(out.iter().all(|&s| s == 0.25));
+
+        // Half a second fits; a block beyond that is dropped, not waited on.
+        assert_eq!(source.write(vec![0.0; 48_000]), 24_000);
+        assert_eq!(source.write(vec![0.0; 960]), 0);
+        assert_eq!(source.dropped_blocks(), 1);
+
+        drop(open.guard);
+        assert!(!source.is_sending());
+    }
+
+    #[test]
+    fn a_dropped_source_cannot_be_sent() {
+        let source = AppSource::new("Game sound".into(), 48_000, 1);
+        let id = source.source_id();
+        drop(source);
+        let err = AppAudio.open_source(&id).err().unwrap();
+        assert_eq!(err, "the app stopped giving this sound");
+    }
+
+    #[test]
+    fn a_tap_reads_floats_without_allocating() {
+        let tap = AudioTap::new("Game".into(), 48_000, 2);
+        let mut out = vec![1.0; 9];
+        // Whole frames only; silence without a stream.
+        assert_eq!(tap.read_f32(&mut out), 4);
+        assert!(out[..8].iter().all(|&s| s == 0.0));
+        assert_eq!(out[8], 1.0);
     }
 
     #[test]

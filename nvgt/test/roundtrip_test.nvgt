@@ -1,0 +1,82 @@
+// Round trip through AudioNet, inside NVGT: a 440 Hz tone is sent from
+// NVGT to a test device's virtual cable output (Line 1), the device's
+// loopback of that output is listened to back into NVGT, and what arrives
+// is measured. Test server and account only. Prints results and exits.
+#include "../include/audionet.nvgt"
+
+void main() {
+	audionet_client an;
+	if (!an.sign_in("http://127.0.0.1:18741", "tester", "roundtrip-test-pass", "NVGT round-trip test")) {
+		println("sign-in failed: " + an.error);
+		exit(1);
+	}
+	println("signed in; plugin engine " + audionet_version());
+	audionet_device@ dev = null;
+	timer t;
+	while (t.elapsed < 15000 and @dev == null) {
+		wait(20);
+		audionet_event@ e = an.poll();
+		if (@e != null) println("event " + e.type + ": " + e.text);
+		for (uint i = 0; i < an.devices.length(); i++) if (an.devices[i].name == "Round-trip test device" and an.devices[i].online) @dev = an.devices[i];
+	}
+	if (@dev == null) { println("test device not found"); exit(1); }
+	audionet_output_info@ target_output = null;
+	audionet_sound_info@ back = null;
+	for (uint i = 0; i < dev.outputs.length(); i++) if (dev.outputs[i].name.find("Line 1") >= 0) @target_output = dev.outputs[i];
+	for (uint i = 0; i < dev.sources.length(); i++) if (!dev.sources[i].is_input and dev.sources[i].name.find("Line 1") >= 0) @back = dev.sources[i];
+	if (@target_output == null or @back == null) { println("Line 1 output or its loopback not found"); exit(1); }
+	println("sending to: " + target_output.describe() + "; listening to: " + back.describe());
+
+	audionet_stream sender;
+	if (!sender.start_sending(an, dev, target_output, "NVGT test tone", 48000, 1)) { println("send failed: " + an.error); exit(1); }
+	audionet_stream listener;
+	if (!listener.start_listening(an, dev, back)) { println("listen failed: " + an.error); exit(1); }
+	// Silent here: only the measurement matters.
+	float v = listener.snd.volume;
+	listener.snd.volume = v <= 0 ? -100 : 0;
+	println("engine " + sound_default_engine.sample_rate + " Hz, " + sound_default_engine.channels + " channels; sound volume was " + v);
+
+	double phase = 0;
+	uint64 sent = 0;
+	timer clock, loop;
+	uint min_ms = 100000, max_ms = 0, loops = 0, slow_loops = 0;
+	float max_level = 0;
+	double level_sum = 0;
+	uint level_n = 0;
+	while (clock.elapsed < 20000) {
+		wait(5);
+		if (loop.elapsed > 40) slow_loops++;
+		loop.restart();
+		loops++;
+		audionet_event@ e = an.poll();
+		while (@e != null) {
+			if (e.type != "diagnostics") println(clock.elapsed + " ms event " + e.type + ": " + e.text);
+			@e = an.poll();
+		}
+		uint64 due = uint64(clock.elapsed * 48);
+		if (due > sent) {
+			uint n = uint(due - sent);
+			if (n > 4800) n = 4800;
+			float[] s(n);
+			for (uint i = 0; i < n; i++) { s[i] = float(0.3 * sin(phase)); phase += 2 * 3.14159265 * 440 / 48000.0; }
+			sender.write(s);
+			sent += n;
+		}
+		listener.update();
+		if (clock.elapsed > 8000) {
+			uint b = listener.buffered_ms;
+			if (b < min_ms) min_ms = b;
+			if (b > max_ms) max_ms = b;
+			if (listener.level > max_level) max_level = listener.level;
+			level_sum += listener.level;
+			level_n++;
+		}
+	}
+	println("sender sending: " + sender.sending + "; listener playing: " + listener.playing);
+	println("after warm-up: buffered " + min_ms + " to " + max_ms + " ms (target " + listener.depth_ms + "); level mean " + (level_n > 0 ? level_sum / level_n : 0) + ", max " + max_level);
+	println("loops " + loops + ", slower than 40 ms: " + slow_loops);
+	sender.stop();
+	listener.stop();
+	an.close();
+	println("done");
+}
