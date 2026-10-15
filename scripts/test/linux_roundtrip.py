@@ -14,7 +14,8 @@ server and account run on localhost. Then:
   pitch, and the stream's measurements.
 
 Passes when the stream connects, the recording is the tone (frequency
-within 2 Hz, level within 1.5 dB) and nothing was lost or concealed.
+within 2 Hz, level within 1.5 dB), nothing was lost or concealed, and the
+number of PulseAudio clients does not grow while the device runs.
 
 Run on Linux, from the repository:
     cargo build --release -p audionet-server -p audionet-cli -p audionet-visitor
@@ -163,6 +164,11 @@ try:
     wait(lambda m: m.get("event") == "session" and m.get("session_id") == session
          and str(m.get("state")).lower() == "active", "active session")
     print("Listening: connected")
+
+    def clients():
+        out = subprocess.run(["pactl", "list", "short", "clients"], env=env, text=True, capture_output=True).stdout
+        return len(out.splitlines())
+    clients_at_start = clients()
     time.sleep(8)
     if os.environ.get("AN_PULSE_DETAILS"):
         # How the private PulseAudio set up AudioNet's streams.
@@ -190,9 +196,15 @@ try:
             diag.append(m["text"])
     measured = diag[-1] if diag else ""
     print("Measurements:", measured or "(none)")
+    # The device looks at its audio every 5 seconds: that must not open a
+    # new connection to the sound server each time (it once filled
+    # PulseAudio's limit of 64 in six minutes).
+    time.sleep(12)
+    clients_at_end = clients()
+    print(f"PulseAudio clients: {clients_at_start} while listening, {clients_at_end} 30 seconds later")
     ask("stop", session_id=session)
     lost = "0.00 % lost" in measured and " 0 concealed" in measured
-    ok = abs(freq - FREQ) <= 2 and abs(level + 12) <= 1.5 and lost
+    ok = abs(freq - FREQ) <= 2 and abs(level + 12) <= 1.5 and lost and clients_at_end <= clients_at_start
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 finally:

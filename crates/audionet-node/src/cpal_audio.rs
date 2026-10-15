@@ -100,6 +100,38 @@ impl Drop for ThreadGuard {
     }
 }
 
+/// The audio host, one for the whole process.
+///
+/// cpal's PulseAudio host is a connection to the sound server whose thread
+/// never ends, even when the host is dropped: a new host for each look at
+/// the devices (every 5 seconds) leaked a connection each time. Measured on
+/// Linux: 65 open connections and 69 threads after six minutes, and
+/// PulseAudio, at its limit of 64 clients, then refused every program's
+/// new connection ("Too many connections"), AudioNet's included.
+static HOST: Mutex<Option<Arc<cpal::Host>>> = Mutex::new(None);
+
+fn host() -> Arc<cpal::Host> {
+    let mut host = HOST.lock().unwrap_or_else(|e| e.into_inner());
+    Arc::clone(host.get_or_insert_with(|| Arc::new(cpal::default_host())))
+}
+
+/// Forgets the audio host; the next [`host`] connects again. Streams open
+/// now keep the connection they were built on.
+fn reset_host() {
+    HOST.lock().unwrap_or_else(|e| e.into_inner()).take();
+}
+
+/// Linux: whether AudioNet fell back to ALSA (no sound server when it
+/// started) and a PulseAudio (or PipeWire) server is there now.
+fn sound_server_appeared(host: &cpal::Host) -> bool {
+    #[cfg(target_os = "linux")]
+    if host.id() != cpal::HostId::PulseAudio {
+        return cpal::available_hosts().contains(&cpal::HostId::PulseAudio);
+    }
+    let _ = host;
+    false
+}
+
 fn device_name(d: &cpal::Device) -> String {
     d.description()
         .map(|desc| desc.name().to_owned())
@@ -163,7 +195,7 @@ fn stream_device_name(d: &cpal::Device, input: bool) -> String {
 }
 
 fn find(id: &str, input: bool) -> Result<cpal::Device, String> {
-    let host = cpal::default_host();
+    let host = host();
     let parsed: cpal::DeviceId = id
         .parse()
         .map_err(|e| format!("unknown device {id}: {e}"))?;
@@ -387,7 +419,7 @@ pub fn microphones() -> Vec<Microphone> {
     if !cfg!(target_os = "android") {
         return Vec::new();
     }
-    let Ok(devices) = cpal::default_host().devices() else {
+    let Ok(devices) = host().devices() else {
         return Vec::new();
     };
     let mut found: Vec<Microphone> = devices
@@ -482,7 +514,7 @@ fn android_microphone(default: cpal::Device) -> (cpal::Device, u64) {
     let chosen = CHOSEN_MICROPHONE.lock().ok().and_then(|c| c.clone());
     let device = chosen
         .and_then(|id| id.parse::<cpal::DeviceId>().ok())
-        .and_then(|id| cpal::default_host().device_by_id(&id))
+        .and_then(|id| host().device_by_id(&id))
         .filter(|d| d.supports_input())
         .unwrap_or(default);
     (device, generation)
@@ -490,7 +522,14 @@ fn android_microphone(default: cpal::Device) -> (cpal::Device, u64) {
 
 impl NodeAudio for CpalNodeAudio {
     fn endpoints(&self) -> Result<(Vec<SourceInfo>, Vec<DestinationInfo>), String> {
-        let host = cpal::default_host();
+        let mut host = host();
+        // A sound server that restarted (or started after AudioNet) needs a
+        // new connection: the old one only fails.
+        if host.devices().is_err() || sound_server_appeared(&host) {
+            drop(host);
+            reset_host();
+            host = self::host();
+        }
         let default_in = host.default_input_device().and_then(|d| d.id().ok());
         let default_out = host.default_output_device().and_then(|d| d.id().ok());
         let mut sources = Vec::new();
