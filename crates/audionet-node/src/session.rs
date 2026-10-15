@@ -672,8 +672,11 @@ struct DeviceLoss {
 
 impl DeviceLoss {
     fn new(why: String, now: Instant) -> Self {
-        // A format change leaves the device there: reopen at once.
-        let retry = if why.contains(crate::audio::FORMAT_CHANGED) {
+        // A format change, or another microphone chosen, leaves a device
+        // there: reopen at once.
+        let retry = if why.contains(crate::audio::FORMAT_CHANGED)
+            || why.contains(crate::audio::MICROPHONE_CHANGED)
+        {
             Duration::ZERO
         } else {
             DEVICE_RETRY
@@ -706,6 +709,9 @@ impl DeviceLoss {
 fn waiting_text(why: &str) -> String {
     if why.contains(crate::audio::FORMAT_CHANGED) {
         return format!("{why} Reopening it in the new format.");
+    }
+    if why.contains(crate::audio::MICROPHONE_CHANGED) {
+        return "Switching to the chosen microphone.".into();
     }
     format!(
         "{why} Waiting up to {} seconds for the device to come back.",
@@ -1007,10 +1013,14 @@ fn run(
                                 } else {
                                     SessionState::Starting
                                 },
-                                format!(
-                                    "The audio device is back. Capturing {}.",
-                                    reopened.capture.description
-                                ),
+                                if loss.why.contains(crate::audio::MICROPHONE_CHANGED) {
+                                    format!("Capturing {}.", reopened.capture.description)
+                                } else {
+                                    format!(
+                                        "The audio device is back. Capturing {}.",
+                                        reopened.capture.description
+                                    )
+                                },
                             );
                             *input = Ok(reopened);
                         }
@@ -1470,6 +1480,21 @@ mod tests {
             loss.should_retry(t0 + Duration::from_millis(500)),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn another_microphone_is_switched_to_at_once() {
+        let t0 = Instant::now();
+        let why = format!(
+            "Audio capture stopped: {}.",
+            crate::audio::MICROPHONE_CHANGED
+        );
+        assert_eq!(
+            super::waiting_text(&why),
+            "Switching to the chosen microphone."
+        );
+        let mut loss = DeviceLoss::new(why, t0);
+        assert_eq!(loss.should_retry(t0), Ok(true));
     }
 
     #[test]

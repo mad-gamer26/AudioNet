@@ -336,6 +336,47 @@ pub fn visitor_sign_out(login: VisitorLogin) -> Result<(), AudioNetError> {
         .map_err(AudioNetError::from)
 }
 
+/// One of this phone's microphones (Android), to choose which one its
+/// "Microphone" source records from.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Microphone {
+    pub id: String,
+    /// What it is: "Built-in microphone (bottom)", "Bluetooth headset
+    /// microphone: AirPods Pro".
+    pub name: String,
+}
+
+/// Android's microphones an app can record from. Empty elsewhere (the
+/// iPhone app lists its microphones through iOS itself).
+#[uniffi::export]
+pub fn microphones() -> Vec<Microphone> {
+    #[cfg(not(windows))]
+    {
+        audionet_node::cpal_audio::microphones()
+            .into_iter()
+            .map(|m| Microphone {
+                id: m.id,
+                name: m.name,
+            })
+            .collect()
+    }
+    #[cfg(windows)]
+    {
+        Vec::new()
+    }
+}
+
+/// Chooses which microphone this phone's "Microphone" source records from
+/// (an id from [`microphones`]), or Android's own choice with `None`. A
+/// stream recording now switches to it at once. Android only.
+#[uniffi::export]
+pub fn choose_microphone(id: Option<String>) {
+    #[cfg(not(windows))]
+    audionet_node::cpal_audio::choose_microphone(id);
+    #[cfg(windows)]
+    let _ = id;
+}
+
 /// This device's sound sources and outputs.
 #[uniffi::export]
 pub fn local_audio() -> Result<LocalAudio, AudioNetError> {

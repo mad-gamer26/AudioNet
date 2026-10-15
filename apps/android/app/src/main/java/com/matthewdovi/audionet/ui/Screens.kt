@@ -249,10 +249,10 @@ fun MainScreen(model: AppModel, modifier: Modifier, open: (Screen) -> Unit) {
                 SwitchRow(label, model.isSharing(a.nodeId), enabled = !model.signingOut.contains(a.nodeId)) { model.setSharing(a.nodeId, it) }
             }
         }
-        if (model.microphones.size > 1) {
+        if (model.microphones.isNotEmpty()) {
             item {
                 ChoiceGroup("Microphone", listOf<String?>(null) + model.microphones.map { it.id },
-                    selected = { it == model.microphone },
+                    selected = { it == model.chosenMicrophone },
                     label = { id -> model.microphones.firstOrNull { it.id == id }?.name ?: "Phone default" },
                     onSelect = { model.chooseMicrophone(it) })
             }

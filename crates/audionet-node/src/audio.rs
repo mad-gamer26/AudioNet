@@ -15,6 +15,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// for a device that went away.
 pub const FORMAT_CHANGED: &str = "the audio format changed";
 
+/// A capture stream's failure when the person chose another microphone
+/// (Android): reopened at once on the new one, like a format change.
+pub const MICROPHONE_CHANGED: &str = "the chosen microphone changed";
+
 /// Keeps an open capture or render stream alive and reports failures.
 pub trait StreamGuard: Send {
     /// If the stream has stopped (device removed, format changed...),

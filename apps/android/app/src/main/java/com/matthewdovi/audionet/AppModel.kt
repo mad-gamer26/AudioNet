@@ -3,6 +3,9 @@ package com.matthewdovi.audionet
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -91,8 +94,18 @@ class AppModel(private val context: Context) {
     var showMeasurements by mutableStateOf(store.settings.getBoolean("showMeasurements", false))
         private set
 
-    /** The microphone chosen to send (a local source id), or null for the default. */
-    var microphone by mutableStateOf(store.settings.getString("microphone", null))
+    /**
+     * The microphone this phone records from (an id from the engine's list),
+     * or null for Android's choice. It applies to everything the phone's
+     * "Microphone" source sends, and switches a stream running now. Saved
+     * choices from 1.2.4 were source ids ("input:..."): the device id is the
+     * same after the prefix.
+     */
+    var microphone by mutableStateOf(store.settings.getString("microphone", null)?.removePrefix("input:"))
+        private set
+
+    /** The phone's microphones, by what they are ("Built-in microphone (bottom)"). */
+    var microphones by mutableStateOf(listOf<uniffi.audionet_ffi.Microphone>())
         private set
 
     private val clients = mutableMapOf<String, Client>()
@@ -115,6 +128,12 @@ class AppModel(private val context: Context) {
 
     init {
         uniffi.audionet_ffi.setShowMeasurements(showMeasurements)
+        uniffi.audionet_ffi.chooseMicrophone(microphone)
+        // A headset plugged in or removed changes the microphones.
+        context.getSystemService(AudioManager::class.java)?.registerAudioDeviceCallback(object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>) = refreshLocalAudio()
+            override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) = refreshLocalAudio()
+        }, main)
         if (!store.hasStoredAccount) {
             note("To add this phone, sign in with your AudioNet account name and password.")
         } else {
@@ -288,8 +307,10 @@ class AppModel(private val context: Context) {
     fun refreshLocalAudio() {
         background.execute {
             val audio = runCatching { uniffi.audionet_ffi.localAudio() }.getOrElse { LocalAudio(emptyList(), emptyList()) }
+            val mics = runCatching { uniffi.audionet_ffi.microphones() }.getOrElse { emptyList() }
             main.post {
                 local = audio
+                microphones = mics
                 devices.forEach { fillChoices(it) }
             }
         }
@@ -298,13 +319,14 @@ class AppModel(private val context: Context) {
     val microphoneAllowed: Boolean
         get() = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    /** The phone's microphones (inputs), as the engine lists them. */
-    val microphones get() = local.sources.filter { it.isInput }
+    /** The microphone shown as chosen: null (Phone default) while the chosen one is not connected. */
+    val chosenMicrophone: String? get() = microphone?.takeIf { id -> microphones.any { it.id == id } }
 
     fun chooseMicrophone(id: String?) {
         microphone = id
         store.settings.edit().putString("microphone", id).apply()
-        val name = microphones.firstOrNull { it.id == id }?.name ?: "the phone's default microphone"
+        uniffi.audionet_ffi.chooseMicrophone(id)
+        val name = microphones.firstOrNull { it.id == id }?.name ?: "Phone default"
         announce("Microphone: $name.")
     }
 
@@ -348,8 +370,8 @@ class AppModel(private val context: Context) {
         if (!microphoneAllowed) return announce("Microphone access is off for AudioNet. Allow it when asked, or in Settings, Apps, AudioNet, Permissions.")
         fillChoices(d)
         val ch = choices[d.nodeId] ?: DeviceChoices()
-        val mic = microphones.firstOrNull { it.id == microphone } ?: microphones.firstOrNull { it.isDefault } ?: microphones.firstOrNull()
-            ?: return announce("This phone's microphone is not available.")
+        // The one "Microphone" source: it records from the chosen microphone.
+        val mic = local.sources.firstOrNull { it.isInput } ?: return announce("This phone's microphone is not available.")
         val o = d.outputs.firstOrNull { it.id == ch.sendOutput } ?: return announce("Choose where it should play.")
         start(account, "Sending this phone's microphone to ${o.name} on ${d.name}", d, listening = false) { client.send(d.nodeId, mic.id, o.id) }
     }

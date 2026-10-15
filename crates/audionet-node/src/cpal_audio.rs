@@ -38,7 +38,9 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 #[cfg(target_os = "macos")]
 use crate::audio;
-use crate::audio::{FORMAT_CHANGED, NodeAudio, OpenCapture, StreamGuard, StreamUse};
+use crate::audio::{
+    FORMAT_CHANGED, MICROPHONE_CHANGED, NodeAudio, OpenCapture, StreamGuard, StreamUse,
+};
 
 #[derive(Debug, Default)]
 pub struct CpalNodeAudio;
@@ -49,10 +51,20 @@ struct ThreadGuard {
     /// Underruns and overruns the platform reported and recovered from.
     glitches: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
+    /// Android's "Microphone" capture: the generation of the chosen
+    /// microphone it records from (it switches when the choice changes).
+    microphone: Option<Arc<AtomicU64>>,
 }
 
 impl StreamGuard for ThreadGuard {
     fn failure(&mut self) -> Option<String> {
+        if self
+            .microphone
+            .as_ref()
+            .is_some_and(|g| g.load(Relaxed) != MICROPHONE_GENERATION.load(Relaxed))
+        {
+            return Some(MICROPHONE_CHANGED.into());
+        }
         self.failure.lock().ok().and_then(|mut f| f.take())
     }
 
@@ -104,6 +116,13 @@ fn stream_device_name(d: &cpal::Device, input: bool) -> String {
     match (cfg!(target_os = "ios"), input) {
         (true, true) => IOS_NAMES.0.to_owned(),
         (true, false) => IOS_NAMES.1.to_owned(),
+        _ if cfg!(target_os = "android") => {
+            if input {
+                android_name(d).unwrap_or_else(|| crate::android_names::MICROPHONE.into())
+            } else {
+                crate::android_names::OUTPUT.into()
+            }
+        }
         _ => device_name(d),
     }
 }
@@ -245,6 +264,7 @@ fn spawn_stream(
                 failure,
                 glitches,
                 thread: Some(thread),
+                microphone: None,
             },
             rate,
             desc,
@@ -310,107 +330,127 @@ fn output_mute(_device_id: String) -> Box<dyn FnMut() + Send> {
     Box::new(|| {})
 }
 
-/// Android's sources and destinations: the system's choice first (the
-/// default), then each device an app can use, named by what it is.
-fn android_endpoints(
-    host: &cpal::Host,
-    devices: impl Iterator<Item = cpal::Device>,
-) -> (Vec<SourceInfo>, Vec<DestinationInfo>) {
+/// Android: the microphone the one "Microphone" source records from (a
+/// cpal device id), as chosen in the app; `None` is Android's own choice.
+static CHOSEN_MICROPHONE: Mutex<Option<String>> = Mutex::new(None);
+/// Counts changes of [`CHOSEN_MICROPHONE`]: a capture opened before the
+/// latest change switches to the new choice.
+static MICROPHONE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// One microphone the phone can record from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Microphone {
+    /// cpal's device id, for [`choose_microphone`].
+    pub id: String,
+    pub name: String,
+}
+
+/// Android's microphones an app can record from, named by what they are
+/// ("Built-in microphone (bottom)", "Bluetooth headset microphone:
+/// AirPods Pro"). Empty on other platforms.
+pub fn microphones() -> Vec<Microphone> {
+    if !cfg!(target_os = "android") {
+        return Vec::new();
+    }
+    let Ok(devices) = cpal::default_host().devices() else {
+        return Vec::new();
+    };
+    let mut found: Vec<Microphone> = devices
+        .filter(|d| d.supports_input())
+        .filter_map(|d| {
+            let id = d.id().ok()?.to_string();
+            let name = android_name(&d)?;
+            Some(Microphone { id, name })
+        })
+        .collect();
+    let mut names: Vec<String> = found.iter().map(|m| m.name.clone()).collect();
+    crate::android_names::number_repeats(&mut names);
+    for (m, n) in found.iter_mut().zip(names) {
+        m.name = n;
+    }
+    found
+}
+
+/// Chooses the microphone the phone's "Microphone" source records from
+/// (an id from [`microphones`]), or Android's choice with `None`. A
+/// capture running now switches to it at once. Called from the app, never
+/// an audio callback.
+pub fn choose_microphone(id: Option<String>) {
+    if let Ok(mut chosen) = CHOSEN_MICROPHONE.lock() {
+        if *chosen == id {
+            return;
+        }
+        *chosen = id;
+    }
+    MICROPHONE_GENERATION.fetch_add(1, Relaxed);
+}
+
+/// The name of an Android input device, or `None` for one no app can use
+/// (call audio, the system's capture, tuners).
+fn android_name(d: &cpal::Device) -> Option<String> {
     use crate::android_names::{self, Kind, Link};
     use cpal::{DeviceType, InterfaceType};
-    let mut sources = Vec::new();
-    let mut destinations = Vec::new();
-    if let Some(id) = host.default_input_device().and_then(|d| d.id().ok()) {
-        sources.push(SourceInfo {
+    let desc = d.description().ok()?;
+    let kind = match desc.device_type() {
+        DeviceType::Microphone => Kind::Microphone,
+        DeviceType::Headset => Kind::Headset,
+        _ => Kind::Other,
+    };
+    let link = match (desc.device_type(), desc.interface_type()) {
+        (DeviceType::Tuner | DeviceType::Virtual, _) => Link::Other,
+        (_, InterfaceType::BuiltIn) => Link::BuiltIn,
+        (_, InterfaceType::Usb) => Link::Usb,
+        (_, InterfaceType::Bluetooth) => Link::Bluetooth,
+        (_, InterfaceType::Line) => Link::Line,
+        _ => Link::Other,
+    };
+    // cpal names it "Product (Kind)": the product alone.
+    let full = desc.name();
+    let suffix = format!(" ({})", desc.device_type());
+    let product = full.strip_suffix(suffix.as_str()).unwrap_or(full);
+    android_names::name(kind, link, product, desc.address())
+}
+
+/// Android's sources and destinations: one microphone and one output,
+/// which Android routes (cpal's default devices), like the iPhone.
+fn android_endpoints(host: &cpal::Host) -> (Vec<SourceInfo>, Vec<DestinationInfo>) {
+    use crate::android_names::{MICROPHONE, OUTPUT};
+    let sources = host
+        .default_input_device()
+        .and_then(|d| d.id().ok())
+        .map(|id| SourceInfo {
             id: format!("input:{id}"),
-            name: android_names::DEFAULT_INPUT.into(),
+            name: MICROPHONE.into(),
             source_type: SourceType::Input,
             is_default: true,
-        });
-    }
-    if let Some(id) = host.default_output_device().and_then(|d| d.id().ok()) {
-        destinations.push(DestinationInfo {
+        })
+        .into_iter()
+        .collect();
+    let destinations = host
+        .default_output_device()
+        .and_then(|d| d.id().ok())
+        .map(|id| DestinationInfo {
             id: format!("output:{id}"),
-            name: android_names::DEFAULT_OUTPUT.into(),
+            name: OUTPUT.into(),
             is_default: true,
-        });
-    }
-    let (mut inputs, mut outputs) = (Vec::new(), Vec::new());
-    for d in devices {
-        let (Ok(id), Ok(desc)) = (d.id(), d.description()) else {
-            continue;
-        };
-        let kind = match desc.device_type() {
-            DeviceType::Microphone => Kind::Microphone,
-            DeviceType::Speaker => Kind::Speaker,
-            DeviceType::Headphones => Kind::Headphones,
-            DeviceType::Headset => Kind::Headset,
-            DeviceType::Earpiece => Kind::Earpiece,
-            DeviceType::HearingAid => Kind::HearingAid,
-            DeviceType::Dock => Kind::Dock,
-            _ => Kind::Other,
-        };
-        let link = match desc.interface_type() {
-            InterfaceType::BuiltIn => Link::BuiltIn,
-            InterfaceType::Usb => Link::Usb,
-            InterfaceType::Bluetooth => Link::Bluetooth,
-            InterfaceType::Hdmi => Link::Hdmi,
-            InterfaceType::Line => Link::Line,
-            InterfaceType::Virtual | InterfaceType::Network => Link::Virtual,
-            _ => Link::Other,
-        };
-        // A tuner is never a microphone or an output.
-        let kind = if desc.device_type() == DeviceType::Tuner {
-            Kind::Other
-        } else {
-            kind
-        };
-        let link = if desc.device_type() == DeviceType::Tuner {
-            Link::Other
-        } else {
-            link
-        };
-        // cpal names it "Product (Kind)": the product alone.
-        let full = desc.name();
-        let suffix = format!(" ({})", desc.device_type());
-        let product = full.strip_suffix(suffix.as_str()).unwrap_or(full);
-        if d.supports_input()
-            && let Some(name) = android_names::name(true, kind, link, product, desc.address())
-        {
-            inputs.push((format!("input:{id}"), name));
-        }
-        if d.supports_output()
-            && let Some(name) = android_names::name(false, kind, link, product, desc.address())
-        {
-            outputs.push((format!("output:{id}"), name));
-        }
-    }
-    let mut names: Vec<String> = inputs.iter().map(|(_, n)| n.clone()).collect();
-    android_names::number_repeats(&mut names);
-    sources.extend(
-        inputs
-            .into_iter()
-            .zip(names)
-            .map(|((id, _), name)| SourceInfo {
-                id,
-                name,
-                source_type: SourceType::Input,
-                is_default: false,
-            }),
-    );
-    let mut names: Vec<String> = outputs.iter().map(|(_, n)| n.clone()).collect();
-    android_names::number_repeats(&mut names);
-    destinations.extend(
-        outputs
-            .into_iter()
-            .zip(names)
-            .map(|((id, _), name)| DestinationInfo {
-                id,
-                name,
-                is_default: false,
-            }),
-    );
+        })
+        .into_iter()
+        .collect();
     (sources, destinations)
+}
+
+/// Android: the device the "Microphone" source records from now (the
+/// chosen one while it is connected, else Android's choice), and the
+/// generation of that choice.
+fn android_microphone(default: cpal::Device) -> (cpal::Device, u64) {
+    let generation = MICROPHONE_GENERATION.load(Relaxed);
+    let chosen = CHOSEN_MICROPHONE.lock().ok().and_then(|c| c.clone());
+    let device = chosen
+        .and_then(|id| id.parse::<cpal::DeviceId>().ok())
+        .and_then(|id| cpal::default_host().device_by_id(&id))
+        .filter(|d| d.supports_input())
+        .unwrap_or(default);
+    (device, generation)
 }
 
 impl NodeAudio for CpalNodeAudio {
@@ -424,7 +464,7 @@ impl NodeAudio for CpalNodeAudio {
             .devices()
             .map_err(|e| format!("could not list audio devices: {e}"))?;
         if cfg!(target_os = "android") {
-            return Ok(android_endpoints(&host, devices));
+            return Ok(android_endpoints(&host));
         }
         for d in devices {
             let Ok(id) = d.id() else { continue };
@@ -472,6 +512,11 @@ impl NodeAudio for CpalNodeAudio {
             return Err(format!("this device cannot capture {source_id}"));
         };
         let counted = StreamUse::begin(!loopback);
+        // Android's "Microphone" records from the chosen microphone; the
+        // generation of that choice is set when the stream opens.
+        let follows = cfg!(target_os = "android") && !loopback;
+        let generation = Arc::new(AtomicU64::new(0));
+        let generation_seen = Arc::clone(&generation);
         let (ring_tx, ring_rx) = mpsc::sync_channel(1);
         let tick = if loopback {
             output_mute(id.clone())
@@ -482,7 +527,12 @@ impl NodeAudio for CpalNodeAudio {
             "audionet-capture",
             tick,
             move |failure, glitches| {
-                let device = find(&id, !loopback)?;
+                let mut device = find(&id, !loopback)?;
+                if follows {
+                    let (chosen, g) = android_microphone(device);
+                    device = chosen;
+                    generation_seen.store(g, Relaxed);
+                }
                 // Loopback records in the output's own format.
                 let config = if loopback {
                     device.default_output_config()
@@ -541,6 +591,8 @@ impl NodeAudio for CpalNodeAudio {
                 ))
             },
         )?;
+        let mut guard = guard;
+        guard.microphone = follows.then_some(generation);
         let consumer = ring_rx
             .recv()
             .map_err(|_| "the capture stream did not start".to_owned())?;

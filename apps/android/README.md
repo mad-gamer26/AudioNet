@@ -14,6 +14,13 @@ What it does today, like the iPhone app:
 * The account's devices, each a row that expands ("Studio PC: online,
   collapsed"): choose a sound and Listen, choose an output and Send My
   Microphone.
+* Microphone: "Phone default" (Android's choice, a headset's microphone
+  while one is connected) or one of the phone's microphones by name
+  ("Built-in microphone (bottom)", "Bluetooth headset microphone:
+  AirPods Pro"), like the iPhone app's. It applies to everything the
+  phone sends, and a stream recording now switches to it at once. Other
+  devices see one "Microphone" and one output, "Speaker, headphones or
+  Bluetooth", which Android routes.
 * Streams started here: state in words, Mute, Volume, Stop; measurements
   when "Show Measurements" is on (Settings).
 * A status log (Copy), Settings (accounts, Add Account, Show Measurements,
