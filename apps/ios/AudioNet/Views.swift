@@ -1,4 +1,3 @@
-import AVKit
 import SwiftUI
 import UIKit
 
@@ -169,7 +168,6 @@ struct MainView: View {
                         .accessibilityIdentifier("sharing")
                 }
                 MicrophoneRow(store: model.microphones)
-                AudioOutputRow()
                 // Rows, not navigation-bar buttons: bar buttons do not grow
                 // with Dynamic Type.
                 StatusLogLink()
@@ -373,50 +371,6 @@ struct MicrophoneList: View {
     }
 }
 
-/// Where AudioNet plays (the speaker, AirPods, a HomePod), and the iPhone's
-/// own picker to choose another (AirPlay and Bluetooth).
-struct AudioOutputRow: View {
-    @State private var output = AudioSession.currentOutput
-
-    var body: some View {
-        HStack {
-            Text("Audio Output: \(output)")
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer()
-            RoutePicker()
-                .frame(width: 44, height: 44)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
-            .receive(on: RunLoop.main)) { _ in
-            output = AudioSession.currentOutput
-        }
-    }
-}
-
-/// The iPhone's AirPlay and Bluetooth output picker, named for VoiceOver.
-struct RoutePicker: UIViewRepresentable {
-    func makeUIView(context: Context) -> NamedRoutePickerView {
-        let view = NamedRoutePickerView()
-        view.prioritizesVideoDevices = false
-        view.tintColor = UIColor(accessibleTint)
-        return view
-    }
-
-    func updateUIView(_ uiView: NamedRoutePickerView, context: Context) {}
-}
-
-/// AVRoutePickerView's button says only "AirPlay"; this one says what it
-/// does.
-final class NamedRoutePickerView: AVRoutePickerView {
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        for case let button as UIButton in subviews {
-            button.accessibilityLabel = "Choose Audio Output"
-            button.accessibilityHint = "Opens the list of speakers and headphones, including AirPlay and Bluetooth."
-        }
-    }
-}
-
 /// Opens the status log.
 struct StatusLogLink: View {
     var body: some View {
@@ -456,8 +410,6 @@ struct SettingsView: View {
     @EnvironmentObject var notifications: Notifications
     /// The account Sign Out was chosen for (asked first).
     @State private var signingOut: Account?
-    @State private var lockScreenControls = Integrations.shared.nowPlaying.enabled
-    @State private var offlineBreaksFocus = SharedState.load().timeSensitiveOffline
 
     var body: some View {
         Form {
@@ -484,28 +436,11 @@ struct SettingsView: View {
                 Toggle("Devices Starting or Stopping Sharing", isOn: $notifications.sharing)
                     .accessibilityIdentifier("notifySharing")
                 Text("About the other devices in your accounts, titled with the account name. They do not appear while AudioNet is open.")
-                Toggle("Offline Alerts Break Through Focus", isOn: $offlineBreaksFocus)
-                    .onChange(of: offlineBreaksFocus) { _, on in
-                        SharedState.update { $0.timeSensitiveOffline = on }
-                    }
-                    .accessibilityIdentifier("offlineBreaksFocus")
-                Text("A device going offline is a Time Sensitive notification: it gets through a Focus that allows Time Sensitive notifications. A Focus can also deliver AudioNet's notifications quietly: Settings, Focus, choose a Focus, Add Filter, AudioNet.")
                 if let problem = notifications.problem {
                     Text(problem)
                 }
             } header: {
                 heading("Notifications")
-            }
-            Section {
-                Toggle("Lock Screen and AirPods Controls", isOn: $lockScreenControls)
-                    .onChange(of: lockScreenControls) { _, on in
-                        Integrations.shared.nowPlaying.enabled = on
-                    }
-                    .accessibilityIdentifier("lockScreenControls")
-                Text("While a stream plays, AudioNet appears in the Lock Screen and Control Center player, and play and pause (also on AirPods) unmute and mute it. Other apps' audio, such as music or podcasts, pauses while AudioNet plays.")
-                Text("What is streaming also shows on the Lock Screen and in the Dynamic Island, with Mute and Stop, whether this is on or off. To turn that off: Settings, Apps, AudioNet, Live Activities.")
-            } header: {
-                heading("Lock Screen")
             }
             Section {
                 Toggle("Show Measurements", isOn: $model.showMeasurements)

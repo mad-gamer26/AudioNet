@@ -19,14 +19,13 @@ settings:
     # raises the build number instead. The engine inside reports the
     # workspace version as "Engine version".
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "3"
+    CURRENT_PROJECT_VERSION: "4"
 targets:
   AudioNet:
     type: application
     platform: iOS
     sources:
       - AudioNet
-      - Shared
       - path: ../shared
       - path: Generated/audionet_ffi.swift
     info:
@@ -42,17 +41,6 @@ targets:
         NSLocalNetworkUsageDescription: "AudioNet connects directly to your other devices on this network, for the best sound and least delay."
         AudioNetDefaultServer: "$(AUDIONET_DEFAULT_SERVER)"
         AudioNetKeychainGroup: "$(AppIdentifierPrefix)com.matthewdovi.AudioNet.shared"
-        # The Live Activity: what is streaming, on the Lock Screen and in the
-        # Dynamic Island, with Mute and Stop.
-        NSSupportsLiveActivities: true
-        # audionet://device/ID opens a device; audionet://listen/ID listens
-        # to it (widgets, Shortcuts, NFC tags).
-        CFBundleURLTypes:
-          - CFBundleURLName: org.audionet.link
-            CFBundleURLSchemes: [audionet]
-        # Handoff with the Mac app: a stream being listened to continues on
-        # the other device.
-        NSUserActivityTypes: [org.audionet.listen]
         # Only standard, published encryption (ChaCha20-Poly1305, DTLS/SRTP
         # for WebRTC, TLS), which is exempt: builds skip Apple's
         # export-compliance question.
@@ -66,8 +54,6 @@ targets:
       properties:
         aps-environment: development
         keychain-access-groups: ["$(AppIdentifierPrefix)com.matthewdovi.AudioNet.shared"]
-        # "Offline alerts break through Focus" (Settings, off by default).
-        com.apple.developer.usernotifications.time-sensitive: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.matthewdovi.AudioNet
@@ -78,7 +64,6 @@ targets:
         SWIFT_STRICT_CONCURRENCY: minimal
     dependencies:
       - target: NotificationService
-      - target: AudioNetWidgets
       - framework: Generated/AudioNetCore.xcframework
         embed: false
       - sdk: AVFoundation.framework
@@ -86,45 +71,11 @@ targets:
       - sdk: CoreAudio.framework
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework
-  # The Live Activity's design, the Home and Lock Screen widgets, and the
-  # Control Center controls. Actions run in the app (where the engine is).
-  AudioNetWidgets:
-    type: app-extension
-    platform: iOS
-    sources: [Widgets, Shared]
-    info:
-      path: Widgets/Info.plist
-      properties:
-        CFBundleDisplayName: AudioNet
-        CFBundleShortVersionString: "$(MARKETING_VERSION)"
-        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        # The keychain group the app shares its device list in.
-        AudioNetKeychainGroup: "$(AppIdentifierPrefix)com.matthewdovi.AudioNet.shared"
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.widgetkit-extension
-    entitlements:
-      path: Widgets/AudioNetWidgets.entitlements
-      properties:
-        keychain-access-groups: ["$(AppIdentifierPrefix)com.matthewdovi.AudioNet.shared"]
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.matthewdovi.AudioNet.Widgets
-        GENERATE_INFOPLIST_FILE: NO
-        TARGETED_DEVICE_FAMILY: "1,2"
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: AUDIONET_EXTENSION
-        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: ""
-    dependencies:
-      - sdk: WidgetKit.framework
-      - sdk: SwiftUI.framework
-      - sdk: ActivityKit.framework
-      - sdk: AppIntents.framework
   # Decrypts AudioNet's notifications (the text is sealed for this iPhone).
   NotificationService:
     type: app-extension
     platform: iOS
-    sources:
-      - NotificationService
-      - Shared/SharedState.swift
+    sources: [NotificationService]
     info:
       path: NotificationService/Info.plist
       properties:
@@ -144,8 +95,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.matthewdovi.AudioNet.NotificationService
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"
-    dependencies:
-      - sdk: WidgetKit.framework
   AudioNetUITests:
     type: bundle.ui-testing
     platform: iOS

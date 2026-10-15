@@ -16,13 +16,6 @@ struct StreamRow: Identifiable, Equatable {
     /// The account (this iPhone's device id in it) the stream runs in.
     let account: String
     let title: String
-    /// The other device, and whether this iPhone listens to it (else it
-    /// sends to it), for the Live Activity, widgets and Handoff.
-    let nodeId: String
-    let deviceName: String
-    let listening: Bool
-    /// The sound listened to, or the microphone sent (Handoff).
-    let sourceId: String
     var state: String
     /// Volume slider position (0 to 1) and mute, on this device: what the
     /// stream plays here, or what it sends from here.
@@ -37,11 +30,6 @@ struct StreamRow: Identifiable, Equatable {
 /// online or offline applies to all of them.
 @MainActor
 final class AppModel: ObservableObject {
-    /// The one model: the screens use it, and so do Siri, widgets, controls
-    /// and the Live Activity's buttons (which may start AudioNet in the
-    /// background, with no screen).
-    static let shared = AppModel()
-
     /// The accounts this iPhone is signed in to (each with this iPhone's
     /// device id in it as `nodeId`).
     @Published private(set) var accounts: [Account] = []
@@ -83,9 +71,6 @@ final class AppModel: ObservableObject {
     @Published var choices: [String: DeviceChoices] = [:]
     /// Devices whose disclosure is open (node ids).
     @Published var expanded: Set<String> = []
-    /// Streams stopped here on purpose (Stop, Siri, the Live Activity): their
-    /// end is not a problem worth an alert.
-    private(set) var stoppedByUser: Set<String> = []
 
     /// 0.7's "go online when AudioNet opens" (one switch for all accounts):
     /// read once, to carry that choice over to accounts with no sharing
@@ -388,6 +373,19 @@ final class AppModel: ObservableObject {
 
     // MARK: Remote
 
+    /// The connection to a device's account, or nil (and says why).
+    private func client(for d: Device) -> (account: String, client: Client)? {
+        guard let account = account(of: d) else {
+            announce("\(d.name) is no longer listed in your accounts.")
+            return nil
+        }
+        guard let c = clients[account] else {
+            announce("Not connected to \(name(account)) yet. Try again in a moment.")
+            return nil
+        }
+        return (account, c)
+    }
+
     /// The account (this iPhone's device id there) a device belongs to.
     func account(of d: Device) -> String? {
         devicesByAccount.first { $0.value.contains { $0.nodeId == d.nodeId } }?.key
@@ -413,72 +411,35 @@ final class AppModel: ObservableObject {
     }
 
     func listen(_ d: Device) {
-        do { try startListening(d) } catch { announce(message(error)) }
-    }
-
-    func send(_ d: Device) {
-        do { try startSending(d) } catch { announce(message(error)) }
-    }
-
-    /// Listens to a device's chosen (or default) sound on this iPhone's
-    /// chosen output. Returns what started; says why not by throwing.
-    @discardableResult
-    func startListening(_ d: Device) throws -> String {
-        let (account, c) = try connection(for: d)
-        guard d.online else { throw AudioNetIntentError("\(d.name) is offline.") }
-        guard d.sharing else {
-            throw AudioNetIntentError("\(d.name) is not sharing its audio, so it cannot be listened to. You can still send to it.")
-        }
-        fillChoices(d)
+        guard let (account, c) = client(for: d), usable(d), listenable(d) else { return }
         let ch = choices[d.nodeId] ?? DeviceChoices()
         guard let s = d.sources.first(where: { $0.id == ch.listenSource }),
               let o = local.outputs.first(where: { $0.id == ch.listenOutput }) else {
-            throw AudioNetIntentError("Choose the sound to listen to.")
+            announce("Choose the sound to listen to.")
+            return
         }
-        let title = "Listening to \(s.name) on \(d.name), playing on \(AudioSession.currentOutput)"
-        try start(account: account, title: title, device: d, listening: true, sourceId: s.id) {
+        start(account: account, title: "Listening to \(s.name) on \(d.name), playing on \(AudioSession.currentOutput)") {
             try c.listen(nodeId: d.nodeId, sourceId: s.id, outputId: o.id)
         }
-        return title
     }
 
-    /// Sends this iPhone's chosen microphone to a device's chosen output.
-    @discardableResult
-    func startSending(_ d: Device) throws -> String {
-        let (account, c) = try connection(for: d)
-        guard d.online else { throw AudioNetIntentError("\(d.name) is offline.") }
+    func send(_ d: Device) {
+        guard let (account, c) = client(for: d), usable(d) else { return }
         guard isSharing(account) else {
-            throw AudioNetIntentError("This iPhone is not sharing its audio in \(name(account)). Turn on sharing there to send from it.")
+            announce("This iPhone is not sharing its audio in \(name(account)). Turn on sharing there to send from it.")
+            return
         }
-        fillChoices(d)
         let ch = choices[d.nodeId] ?? DeviceChoices()
         guard let s = local.sources.first(where: { $0.id == ch.sendSource }),
               let o = d.outputs.first(where: { $0.id == ch.sendOutput }) else {
-            throw AudioNetIntentError(local.sources.isEmpty
-                ? "This iPhone's microphone is not available. Allow microphone access for AudioNet in Settings."
-                : "Choose where it should play.")
+            announce(local.sources.isEmpty
+                     ? "This iPhone's microphone is not available. Allow microphone access for AudioNet in Settings."
+                     : "Choose where it should play.")
+            return
         }
-        let title = "Sending this iPhone's \(s.name.lowercased()) to \(o.name) on \(d.name)"
-        try start(account: account, title: title, device: d, listening: false, sourceId: s.id) {
+        start(account: account, title: "Sending this iPhone's \(s.name.lowercased()) to \(o.name) on \(d.name)") {
             try c.send(nodeId: d.nodeId, sourceId: s.id, outputId: o.id)
         }
-        return title
-    }
-
-    /// The connection to a device's account, or why there is none.
-    private func connection(for d: Device) throws -> (account: String, client: Client) {
-        guard let account = account(of: d) else {
-            throw AudioNetIntentError("\(d.name) is no longer listed in your accounts.")
-        }
-        guard let c = clients[account] else {
-            throw AudioNetIntentError("Not connected to \(name(account)) yet. Try again in a moment.")
-        }
-        return (account, c)
-    }
-
-    /// An error in words for the screen (and VoiceOver).
-    private func message(_ error: Error) -> String {
-        (error as? AudioNetIntentError)?.message ?? "Could not start: \(describe(error))"
     }
 
     // MARK: Sharing
@@ -517,7 +478,6 @@ final class AppModel: ObservableObject {
     }
 
     func stopStream(_ row: StreamRow) {
-        stoppedByUser.insert(row.id)
         clients[row.account]?.stopStream(sessionId: row.id)
     }
 
@@ -533,31 +493,44 @@ final class AppModel: ObservableObject {
                 set: { m in self.updateVolume(id) { $0.muted = m } })
     }
 
-    func updateVolume(_ id: String, _ change: (inout StreamRow) -> Void) {
+    private func updateVolume(_ id: String, _ change: (inout StreamRow) -> Void) {
         guard let i = streams.firstIndex(where: { $0.id == id }) else { return }
         change(&streams[i])
         clients[streams[i].account]?.setStreamVolume(sessionId: id, volume: Float(streams[i].volume),
                                                      muted: streams[i].muted)
     }
 
-    private func start(account: String, title: String, device d: Device, listening: Bool, sourceId: String,
-                       _ begin: () throws -> String) throws {
-        let id: String
-        do {
-            id = try begin()
-        } catch {
-            throw AudioNetIntentError("Could not start: \(describe(error))")
+    private func usable(_ d: Device) -> Bool {
+        guard d.online else {
+            announce("\(d.name) is offline.")
+            return false
         }
-        streams.append(StreamRow(id: id, account: account, title: title, nodeId: d.nodeId,
-                                 deviceName: d.name, listening: listening, sourceId: sourceId,
-                                 state: "starting"))
-        announce("Starting: \(title).")
+        return true
+    }
+
+    /// A device that does not share can be sent to, not listened to.
+    private func listenable(_ d: Device) -> Bool {
+        guard d.sharing else {
+            announce("\(d.name) is not sharing its audio, so it cannot be listened to. You can still send to it.")
+            return false
+        }
+        return true
+    }
+
+    private func start(account: String, title: String, _ begin: () throws -> String) {
+        do {
+            let id = try begin()
+            streams.append(StreamRow(id: id, account: account, title: title, state: "starting"))
+            announce("Starting: \(title).")
+        } catch {
+            announce("Could not start: \(describe(error))")
+        }
     }
 
     // MARK: Engine events
 
     /// The account's name for messages ("mad-gamer26 on audionet.example.com").
-    func name(_ account: String) -> String {
+    private func name(_ account: String) -> String {
         accounts.first { $0.nodeId == account }?.accountName ?? "an account"
     }
 
@@ -606,9 +579,7 @@ final class AppModel: ObservableObject {
             if let i = streams.firstIndex(where: { $0.id == id }) {
                 let row = streams.remove(at: i)
                 diagnostics[id] = nil
-                let byUser = stoppedByUser.remove(id) != nil
                 announce("Stopped: \(row.title). \(reason)")
-                Integrations.shared.streamEnded(row, reason: reason, byUser: byUser, remaining: streams.count)
             }
         case .diagnostics(let id, let text):
             guard streams.contains(where: { $0.id == id }) else { return }
