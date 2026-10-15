@@ -100,7 +100,7 @@ struct DeviceQuery: EntityStringQuery {
 struct ListenIntent: AudioPlaybackIntent {
     static var title: LocalizedStringResource { "Listen to a Device" }
     static var description: IntentDescription {
-        IntentDescription("Plays a device's sound on this iPhone with AudioNet: the sound chosen for it, or its default one.")
+        IntentDescription("Plays a device's sound on this phone with AudioNet: the sound chosen for it, or its default one.")
     }
 
     @Parameter(title: "Device")
@@ -125,7 +125,7 @@ struct ListenIntent: AudioPlaybackIntent {
 struct SendMicrophoneIntent: AppIntent {
     static var title: LocalizedStringResource { "Send My Microphone" }
     static var description: IntentDescription {
-        IntentDescription("Sends this iPhone's microphone to a device with AudioNet. AudioNet opens to start recording.")
+        IntentDescription("Sends this phone's microphone to a device with AudioNet. AudioNet opens to start recording.")
     }
     static var openAppWhenRun: Bool { true }
 
@@ -150,7 +150,7 @@ struct SendMicrophoneIntent: AppIntent {
 struct StopStreamsIntent: LiveActivityIntent {
     static var title: LocalizedStringResource { "Stop AudioNet Streams" }
     static var description: IntentDescription {
-        IntentDescription("Stops every stream this iPhone started with AudioNet.")
+        IntentDescription("Stops every stream this phone started with AudioNet.")
     }
 
     init() {}
@@ -166,7 +166,7 @@ struct StopStreamsIntent: LiveActivityIntent {
 struct SetMutedIntent: SetValueIntent, LiveActivityIntent {
     static var title: LocalizedStringResource { "Mute AudioNet" }
     static var description: IntentDescription {
-        IntentDescription("Mutes or unmutes every stream this iPhone started with AudioNet.")
+        IntentDescription("Mutes or unmutes every stream this phone started with AudioNet.")
     }
 
     @Parameter(title: "Muted")

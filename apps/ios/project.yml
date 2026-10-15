@@ -19,7 +19,7 @@ settings:
     # raises the build number instead. The engine inside reports the
     # workspace version as "Engine version".
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "2"
+    CURRENT_PROJECT_VERSION: "3"
 targets:
   AudioNet:
     type: application
