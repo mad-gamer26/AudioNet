@@ -69,6 +69,8 @@ computer; the command-line agent as a device):
   back to the sign-in screen).
 * The app keeps its sign-in across a restart.
 
+Tested by the maintainer (2026-10-14): everything works as expected.
+
 Not yet: a real phone, sending the microphone (the emulator's microphone
 may be the computer's), speaking with TalkBack, push notifications (they
 would need Firebase), and the iPhone app's Live Activity, widget and Siri
