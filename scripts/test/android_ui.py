@@ -66,7 +66,14 @@ def tap(label, exact=False, timeout=15):
 
 
 def keyboard_shown():
-    return "mInputShown=true" in adb("shell", "dumpsys", "input_method")
+    """Whether a keyboard takes up part of the screen. A floating or
+    minimized keyboard (Gboard's bubble) counts as shown to the input
+    method but takes no room: Back would then leave the app, not close it."""
+    ime = r"type=ime frame=\[\d+,(\d+)\]\[\d+,(\d+)\][^\n]*?visible=(\w+)"
+    for m in re.finditer(ime, adb("shell", "dumpsys", "window")):
+        if m[3] == "true" and int(m[2]) > int(m[1]):
+            return True
+    return False
 
 
 def hide_keyboard():
