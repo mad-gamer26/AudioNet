@@ -105,7 +105,7 @@ class AppModel(private val context: Context) {
         private set
 
     /** The phone's microphones, by what they are ("Built-in microphone (bottom)"). */
-    var microphones by mutableStateOf(listOf<uniffi.audionet_ffi.Microphone>())
+    var microphones by mutableStateOf(listOf<uniffi.audionet_ffi.MicrophoneChoice>())
         private set
 
     private val clients = mutableMapOf<String, Client>()

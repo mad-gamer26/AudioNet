@@ -339,7 +339,7 @@ pub fn visitor_sign_out(login: VisitorLogin) -> Result<(), AudioNetError> {
 /// One of this phone's microphones (Android), to choose which one its
 /// "Microphone" source records from.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
-pub struct Microphone {
+pub struct MicrophoneChoice {
     pub id: String,
     /// What it is: "Built-in microphone (bottom)", "Bluetooth headset
     /// microphone: AirPods Pro".
@@ -349,12 +349,12 @@ pub struct Microphone {
 /// Android's microphones an app can record from. Empty elsewhere (the
 /// iPhone app lists its microphones through iOS itself).
 #[uniffi::export]
-pub fn microphones() -> Vec<Microphone> {
+pub fn microphones() -> Vec<MicrophoneChoice> {
     #[cfg(not(windows))]
     {
         audionet_node::cpal_audio::microphones()
             .into_iter()
-            .map(|m| Microphone {
+            .map(|m| MicrophoneChoice {
                 id: m.id,
                 name: m.name,
             })
