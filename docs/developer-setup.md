@@ -36,14 +36,19 @@
 
 ## Linux
 
-The server, protocol, codec, transport, engine and simulator build and
-test on Linux (`cargo test`). The device agent's audio backend (cpal)
-additionally needs the ALSA development files (`libasound2-dev` and `pkg-
-config` on Debian and Ubuntu). `audionet node` uses the portable cpal
-backend (ALSA, which PipeWire and PulseAudio also serve); it has not yet
-been tested with real Linux audio devices. The local test commands
-(`keygen`, `capture-test`, `tone-test`, `send`, `receive`) are Windows-
-only for now.
+Everything but the Windows, Apple and Android pieces builds and tests on
+Linux (`cargo test`). The device agent's audio backend (cpal) needs the
+ALSA development files (`libasound2-dev` and `pkg-config` on Debian and
+Ubuntu). It talks to PulseAudio, or PipeWire's PulseAudio server, through
+cpal's pure-Rust PulseAudio client, and falls back to ALSA. `audionet list`
+shows what the device offers; the other local test commands (`keygen`,
+`capture-test`, `tone-test`, `send`, `receive`) are Windows-only.
+
+End to end: `cargo build --release -p audionet-server -p audionet-cli -p
+audionet-visitor`, then `python3 scripts/test/linux_roundtrip.py` (needs
+`pulseaudio` and `pulseaudio-utils`; it runs a private PulseAudio and never
+touches the computer's own sound). `scripts/package-linux.sh` builds the
+release package. Using it: [linux.md](linux.md).
 
 Server only: `cargo build --release -p audionet-server` (needs gcc for the
 bundled SQLite).

@@ -346,5 +346,6 @@ fixed.
    core). Encoding once with per-listener lanes, and an SFU for many
    listeners, are worth doing when measurements show that cost matters.
 4. macOS system-audio capture (Core Audio process taps) and a macOS app
-   bundle; Linux verification on PipeWire with real devices.
+   bundle (done); Linux on PipeWire and with real sound hardware (the
+   PulseAudio path is tested with virtual outputs).
 5. Lower-latency modes after measurements show margin (phase 5).

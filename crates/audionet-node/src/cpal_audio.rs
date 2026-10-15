@@ -106,6 +106,41 @@ fn device_name(d: &cpal::Device) -> String {
         .unwrap_or_else(|_| "Unnamed device".into())
 }
 
+/// The configuration a stream opens `device` with: its own format, and on
+/// PulseAudio (PipeWire too, through its Pulse server) a buffer of 20 ms
+/// chunks, the playback stream holding two.
+///
+/// Left to the server, PulseAudio's playback target is 2 seconds: measured
+/// on Linux ("Buffer Latency: 2000000 usec"), it pulled audio far faster
+/// than real time, AudioNet's playout ran dry over and over (9 underruns in
+/// 15 seconds) and most of what played was the silence that fills an
+/// underrun. AudioNet's own playout buffer absorbs network jitter; the
+/// device side only needs to ride out scheduling.
+fn stream_config(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+) -> cpal::StreamConfig {
+    #[allow(unused_mut)]
+    let mut c = config.config();
+    #[cfg(target_os = "linux")]
+    if device
+        .id()
+        .is_ok_and(|id| id.host() == cpal::HostId::PulseAudio)
+    {
+        c.buffer_size = cpal::BufferSize::Fixed(config.sample_rate() / 50);
+    }
+    let _ = device;
+    c
+}
+
+/// A PulseAudio (or PipeWire) monitor source: what an output plays. Returns
+/// the output's id and name for a monitor ("Jason.monitor", "Monitor of
+/// Jason"), `None` for anything else.
+fn linux_monitor<'a>(id: &'a str, name: &'a str) -> Option<(&'a str, &'a str)> {
+    let output = id.strip_suffix(".monitor")?;
+    Some((output, name.strip_prefix("Monitor of ").unwrap_or(name)))
+}
+
 /// iOS has one "Default Device": the system routes it (built-in microphone
 /// and speaker, headphones, Bluetooth). Names that say what it is, for
 /// input and output.
@@ -475,12 +510,25 @@ impl NodeAudio for CpalNodeAudio {
                 (name.clone(), name.clone())
             };
             if d.supports_input() {
-                sources.push(SourceInfo {
-                    id: format!("input:{id}"),
-                    name: input_name,
-                    source_type: SourceType::Input,
-                    is_default: default_in.as_ref() == Some(&id),
-                });
+                // Linux (PulseAudio, PipeWire): an output's monitor is the
+                // sound that output plays (system audio), not a microphone.
+                if let Some((output, output_name)) =
+                    linux_monitor(id.id(), &name).filter(|_| cfg!(target_os = "linux"))
+                {
+                    sources.push(SourceInfo {
+                        id: format!("input:{id}"),
+                        name: format!("Sound playing on {output_name}"),
+                        source_type: SourceType::Loopback,
+                        is_default: default_out.as_ref().is_some_and(|o| o.id() == output),
+                    });
+                } else {
+                    sources.push(SourceInfo {
+                        id: format!("input:{id}"),
+                        name: input_name,
+                        source_type: SourceType::Input,
+                        is_default: default_in.as_ref() == Some(&id),
+                    });
+                }
             }
             if d.supports_output() {
                 #[cfg(target_os = "macos")]
@@ -548,7 +596,7 @@ impl NodeAudio for CpalNodeAudio {
                 let _ = ring_tx.send(consumer);
                 let stream = device
                 .build_input_stream::<f32, _, _>(
-                    config.config(),
+                    stream_config(&device, &config),
                     move |data: &[f32], _| {
                         let whole = data.len() - data.len() % channels;
                         let _ = producer.write(&data[..whole]);
@@ -633,7 +681,7 @@ impl NodeAudio for CpalNodeAudio {
                 let probe = device.clone();
                 let stream = device
                     .build_output_stream::<f32, _, _>(
-                        config.config(),
+                        stream_config(&device, &config),
                         move |data: &mut [f32], _| source.render(data, clock::now_ns()),
                         move |e| {
                             on_stream_error(&failure, &glitches, &e, format, || {
@@ -660,5 +708,25 @@ impl NodeAudio for CpalNodeAudio {
             }),
             description,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::linux_monitor;
+
+    #[test]
+    fn a_linux_monitor_is_the_sound_its_output_plays() {
+        assert_eq!(
+            linux_monitor(
+                "alsa_output.pci.analog-stereo.monitor",
+                "Monitor of Built-in Audio"
+            ),
+            Some(("alsa_output.pci.analog-stereo", "Built-in Audio"))
+        );
+        assert_eq!(
+            linux_monitor("alsa_input.pci.analog-stereo", "Built-in Audio"),
+            None
+        );
     }
 }

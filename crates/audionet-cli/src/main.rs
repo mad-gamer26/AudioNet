@@ -12,9 +12,12 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+#[cfg(windows)]
 use audionet_audio::{EndpointEnumerator, EnumerationOptions};
+#[cfg(windows)]
 use audionet_cli::list;
 use audionet_cli::select::EndpointSelector;
+#[cfg(windows)]
 use audionet_wasapi::WasapiEnumerator;
 use clap::{ArgGroup, Parser, Subcommand};
 
@@ -438,6 +441,7 @@ fn run_capture_test(_args: CaptureArgs) -> ExitCode {
     ExitCode::FAILURE
 }
 
+#[cfg(windows)]
 fn run_list(json: bool, all: bool) -> ExitCode {
     let enumerator = WasapiEnumerator;
     let options = EnumerationOptions {
@@ -456,6 +460,75 @@ fn run_list(json: bool, all: bool) -> ExitCode {
         list::render_text(&inventory)
     };
     write_stdout(&output)
+}
+
+/// macOS and Linux: what this computer offers as a device (the same list
+/// `audionet node run` shares), one line each: sources first, then outputs.
+#[cfg(not(windows))]
+fn run_list(json: bool, _all: bool) -> ExitCode {
+    use audionet_node::audio::NodeAudio;
+    use audionet_protocol::signal::SourceType;
+    let (sources, outputs) = match audionet_node::cpal_audio::CpalNodeAudio.endpoints() {
+        Ok(found) => found,
+        Err(e) => {
+            eprintln!("Error: the audio system could not list devices: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let kind = |t: SourceType| match t {
+        SourceType::Loopback => "sound playing",
+        _ => "input",
+    };
+    if json {
+        let text = serde_json::json!({
+            "schema": 1,
+            "sources": sources.iter().map(|s| serde_json::json!({
+                "id": s.id, "name": s.name, "kind": kind(s.source_type), "is_default": s.is_default,
+            })).collect::<Vec<_>>(),
+            "outputs": outputs.iter().map(|o| serde_json::json!({
+                "id": o.id, "name": o.name, "is_default": o.is_default,
+            })).collect::<Vec<_>>(),
+        });
+        return write_stdout(&format!(
+            "{text:#}
+"
+        ));
+    }
+    let mut text = String::new();
+    if sources.is_empty() {
+        text.push_str(
+            "Sources: none
+",
+        );
+    }
+    for (i, s) in sources.iter().enumerate() {
+        text.push_str(&format!(
+            "Source {} of {}: {} ({}{})
+",
+            i + 1,
+            sources.len(),
+            s.name,
+            kind(s.source_type),
+            if s.is_default { ", default" } else { "" }
+        ));
+    }
+    if outputs.is_empty() {
+        text.push_str(
+            "Outputs: none
+",
+        );
+    }
+    for (i, o) in outputs.iter().enumerate() {
+        text.push_str(&format!(
+            "Output {} of {}: {}{}
+",
+            i + 1,
+            outputs.len(),
+            o.name,
+            if o.is_default { " (default)" } else { "" }
+        ));
+    }
+    write_stdout(&text)
 }
 
 fn write_stdout(text: &str) -> ExitCode {

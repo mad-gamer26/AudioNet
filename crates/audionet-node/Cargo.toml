@@ -36,5 +36,12 @@ cpal.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 audionet-coreaudio.workspace = true
 
+# Linux: cpal's PulseAudio backend (a pure-Rust client of the PulseAudio
+# protocol, which PipeWire also serves): it lists each output's monitor, so
+# a Linux computer can share the sound it plays. cpal falls back to ALSA
+# when no sound server runs.
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { workspace = true, features = ["pulseaudio"] }
+
 [lints]
 workspace = true

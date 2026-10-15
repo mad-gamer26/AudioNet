@@ -9,7 +9,8 @@ be fully usable by blind people with a screen reader.
 AudioNet has two parts:
 
 * **Devices** (called *nodes*) own audio sources and outputs: a Windows PC
-  (fully supported), or a Mac or Linux computer (early). A node runs the
+  (fully supported), a Mac, or a Linux computer (command line only, see
+  [docs/linux.md](docs/linux.md)). A node runs the
   `audionet` program or, on Windows, the AudioNet desktop app.
 * **Clients** listen to and talk to devices: the web client in any modern
   browser, and the native Windows, Mac and iPhone apps (which are devices
@@ -38,7 +39,7 @@ Early but working. What exists and is tested today:
 | iPhone app | Native SwiftUI app on the same engine: sign in, share this iPhone's microphone and output, listen to your other devices and send the microphone to them, background audio, mixes with other apps' audio; Xcode accessibility audit and a listen flow pass in the simulator; tested with VoiceOver; beta on [TestFlight](https://testflight.apple.com/join/ebstQCWY), not yet in the App Store |
 | macOS app | Native SwiftUI app on the same engine: sign in, share this Mac, listen to your other devices and send to them, menu bar, start at login; microphones, outputs and system audio (Core Audio process taps); engine tested end to end between a Mac and a Windows PC, system audio included; Xcode accessibility audit passes; signed automatic updates; download from the GitHub releases; Developer ID signed and notarized |
 | NVDA add-on | Listen to your devices and send audio to them from NVDA, as a visitor of your accounts (no device record, like the web client): an AudioNet window, NVDA settings for accounts, an NVDA+Alt+A command layer; the engine runs as a separate program; engine tested end to end on Windows audio; tested in NVDA by the maintainer, fully working |
-| Linux devices | `audionet node` runs through a portable audio backend (cpal); untested with real devices |
+| Linux devices | `audionet node` (command line, no desktop app): microphones, outputs, and the sound each output plays, through PulseAudio or PipeWire's PulseAudio server (ALSA otherwise); tested end to end on Ubuntu 22.04 with virtual outputs (a tone sent and received exactly); not yet with real sound hardware or PipeWire. See [docs/linux.md](docs/linux.md) |
 | Accessibility | Built for screen readers; automated checks (browser, UI Automation, Xcode audit) pass; tested by the maintainer and fully working with NVDA on Windows (desktop app, NVDA add-on, web client) and VoiceOver on macOS and iOS (apps, web client); the command line not yet (see [docs/accessibility.md](docs/accessibility.md)) |
 
 Measured results (Windows, details in [docs/windows-audio.md](docs/windows-audio.md)):
