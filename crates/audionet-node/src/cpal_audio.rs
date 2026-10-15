@@ -1,6 +1,10 @@
 //! [`NodeAudio`] for macOS, Linux and other non-Windows platforms, using
 //! cpal (Core Audio on macOS, PipeWire/ALSA on Linux, AAudio on Android).
 //!
+//! On Android only the devices an app can use are offered, named by what
+//! they are ([`crate::android_names`]), after the system's own choice of
+//! microphone and output (cpal's default device, id `-1`).
+//!
 //! Source ids are `input:<cpal device id>`, and on macOS also
 //! `loopback:<cpal device id>` for what an output device plays (system
 //! audio); destination ids are `output:<cpal device id>`.
@@ -109,8 +113,16 @@ fn find(id: &str, input: bool) -> Result<cpal::Device, String> {
     let parsed: cpal::DeviceId = id
         .parse()
         .map_err(|e| format!("unknown device {id}: {e}"))?;
-    let device = host
-        .device_by_id(&parsed)
+    // The system's default device is not in every host's device list
+    // (Android's is listed only by its default).
+    let default = if input {
+        host.default_input_device()
+    } else {
+        host.default_output_device()
+    }
+    .filter(|d| d.id().ok().as_ref() == Some(&parsed));
+    let device = default
+        .or_else(|| host.device_by_id(&parsed))
         .ok_or_else(|| format!("the audio device {id} is not available"))?;
     let ok = if input {
         device.supports_input()
@@ -298,6 +310,109 @@ fn output_mute(_device_id: String) -> Box<dyn FnMut() + Send> {
     Box::new(|| {})
 }
 
+/// Android's sources and destinations: the system's choice first (the
+/// default), then each device an app can use, named by what it is.
+fn android_endpoints(
+    host: &cpal::Host,
+    devices: impl Iterator<Item = cpal::Device>,
+) -> (Vec<SourceInfo>, Vec<DestinationInfo>) {
+    use crate::android_names::{self, Kind, Link};
+    use cpal::{DeviceType, InterfaceType};
+    let mut sources = Vec::new();
+    let mut destinations = Vec::new();
+    if let Some(id) = host.default_input_device().and_then(|d| d.id().ok()) {
+        sources.push(SourceInfo {
+            id: format!("input:{id}"),
+            name: android_names::DEFAULT_INPUT.into(),
+            source_type: SourceType::Input,
+            is_default: true,
+        });
+    }
+    if let Some(id) = host.default_output_device().and_then(|d| d.id().ok()) {
+        destinations.push(DestinationInfo {
+            id: format!("output:{id}"),
+            name: android_names::DEFAULT_OUTPUT.into(),
+            is_default: true,
+        });
+    }
+    let (mut inputs, mut outputs) = (Vec::new(), Vec::new());
+    for d in devices {
+        let (Ok(id), Ok(desc)) = (d.id(), d.description()) else {
+            continue;
+        };
+        let kind = match desc.device_type() {
+            DeviceType::Microphone => Kind::Microphone,
+            DeviceType::Speaker => Kind::Speaker,
+            DeviceType::Headphones => Kind::Headphones,
+            DeviceType::Headset => Kind::Headset,
+            DeviceType::Earpiece => Kind::Earpiece,
+            DeviceType::HearingAid => Kind::HearingAid,
+            DeviceType::Dock => Kind::Dock,
+            _ => Kind::Other,
+        };
+        let link = match desc.interface_type() {
+            InterfaceType::BuiltIn => Link::BuiltIn,
+            InterfaceType::Usb => Link::Usb,
+            InterfaceType::Bluetooth => Link::Bluetooth,
+            InterfaceType::Hdmi => Link::Hdmi,
+            InterfaceType::Line => Link::Line,
+            InterfaceType::Virtual | InterfaceType::Network => Link::Virtual,
+            _ => Link::Other,
+        };
+        // A tuner is never a microphone or an output.
+        let kind = if desc.device_type() == DeviceType::Tuner {
+            Kind::Other
+        } else {
+            kind
+        };
+        let link = if desc.device_type() == DeviceType::Tuner {
+            Link::Other
+        } else {
+            link
+        };
+        // cpal names it "Product (Kind)": the product alone.
+        let full = desc.name();
+        let suffix = format!(" ({})", desc.device_type());
+        let product = full.strip_suffix(suffix.as_str()).unwrap_or(full);
+        if d.supports_input()
+            && let Some(name) = android_names::name(true, kind, link, product, desc.address())
+        {
+            inputs.push((format!("input:{id}"), name));
+        }
+        if d.supports_output()
+            && let Some(name) = android_names::name(false, kind, link, product, desc.address())
+        {
+            outputs.push((format!("output:{id}"), name));
+        }
+    }
+    let mut names: Vec<String> = inputs.iter().map(|(_, n)| n.clone()).collect();
+    android_names::number_repeats(&mut names);
+    sources.extend(
+        inputs
+            .into_iter()
+            .zip(names)
+            .map(|((id, _), name)| SourceInfo {
+                id,
+                name,
+                source_type: SourceType::Input,
+                is_default: false,
+            }),
+    );
+    let mut names: Vec<String> = outputs.iter().map(|(_, n)| n.clone()).collect();
+    android_names::number_repeats(&mut names);
+    destinations.extend(
+        outputs
+            .into_iter()
+            .zip(names)
+            .map(|((id, _), name)| DestinationInfo {
+                id,
+                name,
+                is_default: false,
+            }),
+    );
+    (sources, destinations)
+}
+
 impl NodeAudio for CpalNodeAudio {
     fn endpoints(&self) -> Result<(Vec<SourceInfo>, Vec<DestinationInfo>), String> {
         let host = cpal::default_host();
@@ -308,6 +423,9 @@ impl NodeAudio for CpalNodeAudio {
         let devices = host
             .devices()
             .map_err(|e| format!("could not list audio devices: {e}"))?;
+        if cfg!(target_os = "android") {
+            return Ok(android_endpoints(&host, devices));
+        }
         for d in devices {
             let Ok(id) = d.id() else { continue };
             let name = device_name(&d);
