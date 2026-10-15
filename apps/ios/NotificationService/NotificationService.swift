@@ -49,15 +49,19 @@ final class NotificationService: UNNotificationServiceExtension {
             }
             if let body = text["body"] { content.body = body }
             if let nodeId = text["node_id"], let event = text["event"] {
-                apply(event, to: nodeId, content: content)
+                apply(event, sharing: text["sharing"], to: nodeId, content: content)
             }
         }
         contentHandler(content)
     }
 
     /// What the notification says about a device: its state in the shared
-    /// state (and the widgets), Listen, and how it is delivered.
-    private func apply(_ event: String, to nodeId: String, content: UNMutableNotificationContent) {
+    /// state (and the widgets), Listen, and how it is delivered. `sharing`
+    /// ("true", "false" or "unknown") is whether it shares its audio now:
+    /// it may have stopped sharing while it was offline, so "online" offers
+    /// Listen only when the server says it shares.
+    private func apply(_ event: String, sharing: String?, to nodeId: String,
+                       content: UNMutableNotificationContent) {
         content.userInfo["node_id"] = nodeId
         var listenable = false
         var settings = SharedState()
@@ -65,7 +69,13 @@ final class NotificationService: UNNotificationServiceExtension {
             settings = state
             guard let i = state.devices.firstIndex(where: { $0.nodeId == nodeId }) else { return }
             switch event {
-            case "online": state.devices[i].online = true
+            case "online":
+                state.devices[i].online = true
+                switch sharing {
+                case "true": state.devices[i].sharing = true
+                case "false": state.devices[i].sharing = false
+                default: break
+                }
             case "offline": state.devices[i].online = false
             case "sharing": state.devices[i].sharing = true
             case "not_sharing": state.devices[i].sharing = false
@@ -74,7 +84,7 @@ final class NotificationService: UNNotificationServiceExtension {
             listenable = state.devices[i].listenable
         }
         WidgetCenter.shared.reloadAllTimelines()
-        if listenable && (event == "online" || event == "sharing") {
+        if listenable && (event == "sharing" || (event == "online" && sharing == "true")) {
             content.categoryIdentifier = "audionet.listenable"
         }
         if settings.quietNotifications {

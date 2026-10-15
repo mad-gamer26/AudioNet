@@ -6,14 +6,17 @@
 //! * Offline: only after the device has stayed away [`PushTiming::offline_grace`]
 //!   (a short network blip or a restart of the app says nothing). Online:
 //!   only after an offline notification, or when it was away longer than
-//!   that; not while devices reconnect after this server starts.
+//!   that; not while devices reconnect after this server starts. It waits
+//!   up to [`REPORT_WAIT`] for the sharing the device reports on connecting,
+//!   so it can say whether the device can be listened to now.
 //! * Sharing: a change the device reports while online (not its report on
 //!   connecting, and not the first one this server hears).
 //!
 //! The text (title: the account name; body: "Studio PC is online.") and
-//! what it is about (the device's id and name, and the event: `online`,
-//! `offline`, `sharing` or `not_sharing`, so the phone can update its
-//! widgets and offer to listen) are encrypted for the phone with ChaCha20-Poly1305 and the phone's own key;
+//! what it is about (the device's id and name, the event: `online`,
+//! `offline`, `sharing` or `not_sharing`, and whether it shares its audio
+//! now, so the phone can update its widgets and offer to listen) are
+//! encrypted for the phone with ChaCha20-Poly1305 and the phone's own key;
 //! the push gateway and Apple see only ciphertext. The server sends only to
 //! the gateway in its configuration.
 
@@ -52,6 +55,10 @@ impl Default for PushTiming {
     }
 }
 
+/// How long an "online" notice waits for the device's report of its
+/// sharing (sent right after it connects).
+pub const REPORT_WAIT: Duration = Duration::from_secs(2);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Presence,
@@ -69,6 +76,8 @@ struct Notice {
     /// `sharing` or `not_sharing`.
     device: String,
     event: &'static str,
+    /// Whether the device shares its audio now, if known.
+    sharing: Option<bool>,
 }
 
 /// The decisions, apart from the sending (so they can be tested with a
@@ -81,6 +90,8 @@ struct Decider {
     pending_offline: HashMap<String, (Instant, Notice)>,
     /// Devices whose offline notice was sent.
     offline_sent: HashSet<String>,
+    /// "Online" notices waiting for the device's sharing report.
+    pending_online: HashMap<String, (Instant, Notice)>,
     /// Devices online now, and when they came.
     online_since: HashMap<String, Instant>,
     /// The sharing each device last reported.
@@ -94,6 +105,7 @@ impl Decider {
             started: now,
             pending_offline: HashMap::new(),
             offline_sent: HashSet::new(),
+            pending_online: HashMap::new(),
             online_since: HashMap::new(),
             sharing: HashMap::new(),
         }
@@ -112,14 +124,21 @@ impl Decider {
                 }
                 let was_announced_offline = self.offline_sent.remove(&node_id);
                 let quiet = now.duration_since(self.started) < self.timing.startup_quiet;
-                (was_announced_offline || !quiet).then(|| Notice {
-                    user_id,
-                    body: format!("{name} is online."),
-                    node_id,
-                    kind: Kind::Presence,
-                    device: name,
-                    event: "online",
-                })
+                if was_announced_offline || !quiet {
+                    let notice = Notice {
+                        user_id,
+                        body: format!("{name} is online."),
+                        node_id: node_id.clone(),
+                        kind: Kind::Presence,
+                        device: name,
+                        event: "online",
+                        sharing: None,
+                    };
+                    // Said once its sharing is known (or REPORT_WAIT passes).
+                    self.pending_online
+                        .insert(node_id, (now + REPORT_WAIT, notice));
+                }
+                None
             }
             Presence::Offline {
                 user_id,
@@ -127,6 +146,8 @@ impl Decider {
                 name,
             } => {
                 self.online_since.remove(&node_id);
+                // Gone before reporting its sharing: say it came, unknown.
+                let came = self.pending_online.remove(&node_id).map(|(_, n)| n);
                 let notice = Notice {
                     user_id,
                     body: format!("{name} is offline."),
@@ -134,10 +155,11 @@ impl Decider {
                     kind: Kind::Presence,
                     device: name,
                     event: "offline",
+                    sharing: None,
                 };
                 self.pending_offline
                     .insert(node_id, (now + self.timing.offline_grace, notice));
-                None
+                came
             }
             Presence::Sharing {
                 user_id,
@@ -146,6 +168,10 @@ impl Decider {
                 sharing,
             } => {
                 let before = self.sharing.insert(node_id.clone(), sharing);
+                if let Some((_, mut notice)) = self.pending_online.remove(&node_id) {
+                    notice.sharing = Some(sharing);
+                    return Some(notice);
+                }
                 // Only a change while the device stays online (a device
                 // reports its sharing on connecting).
                 let settled = self
@@ -163,26 +189,41 @@ impl Decider {
                     kind: Kind::Sharing,
                     device: name,
                     event: if sharing { "sharing" } else { "not_sharing" },
+                    sharing: Some(sharing),
                 })
             }
         }
     }
 
-    /// Offline notices now due.
+    /// Offline notices now due, and online ones whose device never reported
+    /// its sharing (the server counts such a device as sharing).
     fn due(&mut self, now: Instant) -> Vec<Notice> {
+        let unreported: Vec<String> = self
+            .pending_online
+            .iter()
+            .filter(|(_, (at, _))| *at <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut out: Vec<Notice> = unreported
+            .into_iter()
+            .filter_map(|id| self.pending_online.remove(&id))
+            .map(|(_, mut n)| {
+                n.sharing = Some(true);
+                n
+            })
+            .collect();
         let due: Vec<String> = self
             .pending_offline
             .iter()
             .filter(|(_, (at, _))| *at <= now)
             .map(|(id, _)| id.clone())
             .collect();
-        due.into_iter()
-            .filter_map(|id| {
-                let (_, notice) = self.pending_offline.remove(&id)?;
-                self.offline_sent.insert(id);
-                Some(notice)
-            })
-            .collect()
+        out.extend(due.into_iter().filter_map(|id| {
+            let (_, notice) = self.pending_offline.remove(&id)?;
+            self.offline_sent.insert(id);
+            Some(notice)
+        }));
+        out
     }
 }
 
@@ -192,10 +233,16 @@ pub struct About<'a> {
     pub node_id: &'a str,
     pub device: &'a str,
     pub event: &'a str,
+    /// Whether the device shares its audio now, if known.
+    pub sharing: Option<bool>,
 }
 
 /// Encrypts a notification for a phone: base64 of nonce, ciphertext and tag
 /// (the layout CryptoKit's `ChaChaPoly.SealedBox(combined:)` reads).
+///
+/// Every value is a string: the iPhone app's notification extension reads
+/// the object as strings only, so `sharing` is "true", "false" or
+/// "unknown".
 pub fn seal(key: &[u8], title: &str, body: &str, about: About<'_>) -> Option<String> {
     let cipher = ChaCha20Poly1305::new_from_slice(key).ok()?;
     let mut nonce = [0u8; 12];
@@ -206,6 +253,11 @@ pub fn seal(key: &[u8], title: &str, body: &str, about: About<'_>) -> Option<Str
         "node_id": about.node_id,
         "device": about.device,
         "event": about.event,
+        "sharing": match about.sharing {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "unknown",
+        },
     })
     .to_string();
     let sealed = cipher.encrypt(&Nonce::from(nonce), plain.as_bytes()).ok()?;
@@ -267,6 +319,7 @@ async fn deliver(s: &Shared, gateway: &str, n: Notice) {
             node_id: &n.node_id,
             device: &n.device,
             event: n.event,
+            sharing: n.sharing,
         };
         let Some(payload) = seal(&p.key, &user.username, &n.body, about) else {
             continue;
@@ -406,6 +459,8 @@ mod tests {
         assert_eq!(d.event(online("Mac"), s(1)), None);
         assert_eq!(d.event(sharing("Mac", true), s(1)), None, "first report");
 
+        assert!(d.due(s(50)).is_empty());
+
         // A blip: gone and back within the grace, nothing at all.
         assert_eq!(d.event(offline("Mac"), s(100)), None);
         assert!(d.due(s(110)).is_empty());
@@ -425,14 +480,21 @@ mod tests {
         assert!(d.due(s(329)).is_empty());
         assert_eq!(bodies(d.due(s(330))), ["Mac is offline."]);
         assert!(d.due(s(400)).is_empty(), "said once");
-        let back = d.event(online("Mac"), s(500)).unwrap();
+        // Back: said with the sharing it reports on connecting.
+        assert_eq!(d.event(online("Mac"), s(500)), None);
+        let back = d.event(sharing("Mac", false), s(500)).unwrap();
         assert_eq!(back.body, "Mac is online.");
-        assert_eq!(back.kind, Kind::Presence);
+        assert_eq!(
+            (back.kind, back.event, back.sharing),
+            (Kind::Presence, "online", Some(false))
+        );
+        d.event(sharing("Mac", true), s(505));
 
         // Sharing changes while online.
+        let off = d.event(sharing("Mac", false), s(510)).unwrap();
         assert_eq!(
-            d.event(sharing("Mac", false), s(510)).unwrap().body,
-            "Mac stopped sharing its audio."
+            (off.body.as_str(), off.sharing),
+            ("Mac stopped sharing its audio.", Some(false))
         );
         assert_eq!(d.event(sharing("Mac", false), s(511)), None, "no change");
         let on = d.event(sharing("Mac", true), s(520)).unwrap();
@@ -441,10 +503,24 @@ mod tests {
             ("Mac started sharing its audio.", Kind::Sharing)
         );
 
-        // A device first seen after the quiet period: online is said.
+        // A device first seen after the quiet period that never reports
+        // its sharing: online is said after REPORT_WAIT, as sharing (what
+        // the server counts it as).
+        assert_eq!(d.event(online("Phone"), s(600)), None);
+        assert!(d.due(s(601)).is_empty());
+        let phone = d.due(s(602));
+        assert_eq!(bodies(phone.clone()), ["Phone is online."]);
+        assert_eq!(phone[0].sharing, Some(true));
+
+        // Gone again before reporting: online is said at once, sharing
+        // unknown.
+        d.event(offline("Phone"), s(700));
+        assert_eq!(bodies(d.due(s(730))), ["Phone is offline."]);
+        assert_eq!(d.event(online("Phone"), s(800)), None);
+        let came = d.event(offline("Phone"), s(801)).unwrap();
         assert_eq!(
-            d.event(online("Phone"), s(600)).unwrap().body,
-            "Phone is online."
+            (came.body.as_str(), came.sharing),
+            ("Phone is online.", None)
         );
     }
 
@@ -452,6 +528,7 @@ mod tests {
         node_id: "node_mac",
         device: "Mac",
         event: "online",
+        sharing: Some(false),
     };
 
     #[test]
@@ -478,6 +555,15 @@ mod tests {
                 v["event"].as_str()
             ),
             (Some("node_mac"), Some("Mac"), Some("online"))
+        );
+        assert_eq!(
+            v["sharing"].as_str(),
+            Some("false"),
+            "a string, as the phone reads it"
+        );
+        assert!(
+            v.as_object().unwrap().values().all(|x| x.is_string()),
+            "every value a string"
         );
         assert!(
             seal(&[1u8; 5], "a", "b", MAC_ONLINE).is_none(),

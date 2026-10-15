@@ -153,7 +153,11 @@ async fn received(sent: &Mutex<Vec<Sent>>, n: usize) -> Vec<(String, String, Str
             let v: serde_json::Value = serde_json::from_slice(&plain).unwrap();
             (
                 v["title"].as_str().unwrap().to_owned(),
-                v["body"].as_str().unwrap().to_owned(),
+                format!(
+                    "{} ({})",
+                    v["body"].as_str().unwrap(),
+                    v["sharing"].as_str().unwrap()
+                ),
                 s.collapse_id.clone(),
             )
         })
@@ -217,14 +221,14 @@ async fn a_phone_hears_about_the_accounts_other_devices() {
 
     // The phone itself coming online says nothing to itself.
     let _phone_ws = go_online(&addr, &phone).await;
-    // The PC comes online, reports its sharing (nothing), then stops
-    // sharing, then starts again, then goes away for good.
+    // The PC comes online and reports it is not sharing (said with
+    // "online"), then starts sharing, then stops, then goes away for good.
     let mut pc_ws = go_online(&addr, &pc).await;
-    set_sharing(&mut pc_ws, true).await;
-    tokio::time::sleep(Duration::from_millis(2300)).await;
     set_sharing(&mut pc_ws, false).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(2300)).await;
     set_sharing(&mut pc_ws, true).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    set_sharing(&mut pc_ws, false).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     drop(pc_ws);
 
@@ -233,10 +237,10 @@ async fn a_phone_hears_about_the_accounts_other_devices() {
     assert_eq!(
         bodies,
         [
-            "Studio PC is online.",
-            "Studio PC stopped sharing its audio.",
-            "Studio PC started sharing its audio.",
-            "Studio PC is offline.",
+            "Studio PC is online. (false)",
+            "Studio PC started sharing its audio. (true)",
+            "Studio PC stopped sharing its audio. (false)",
+            "Studio PC is offline. (unknown)",
         ]
     );
     assert!(
@@ -266,7 +270,7 @@ async fn a_phone_hears_about_the_accounts_other_devices() {
     let got = received(&sent, 1).await;
     assert_eq!(
         got.iter().map(|g| g.1.as_str()).collect::<Vec<_>>(),
-        ["Studio PC is online."]
+        ["Studio PC is online. (true)"]
     );
 
     // Both off: the pusher is gone.

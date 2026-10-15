@@ -363,12 +363,16 @@ exponential backoff.
 
 A notification's title is the account name and its body one of "NAME is
 online.", "NAME is offline.", "NAME started sharing its audio.", "NAME
-stopped sharing its audio." The server seals `{"title", "body"}` with
+stopped sharing its audio." The server seals `{"title", "body",
+"node_id", "device", "event", "sharing"}` (all strings: `event` is
+`online`, `offline`, `sharing` or `not_sharing`; `sharing`, whether the
+device shares its audio now, is `true`, `false` or `unknown`) with
 ChaCha20-Poly1305 and the device's key (base64 of nonce, ciphertext and
 tag), so the gateway and Apple see only a placeholder and ciphertext; the
 app's notification extension opens it. "Offline" is sent only after a device
 has stayed away 30 seconds, "online" only after an "offline" or a longer
-absence, never for devices reconnecting just after the server starts;
+absence, never for devices reconnecting just after the server starts, and
+it waits up to 2 seconds for the sharing the device reports on connecting;
 sharing only for changes while online.
 
 An account has at most a confirmed address (unique) and one waiting for
