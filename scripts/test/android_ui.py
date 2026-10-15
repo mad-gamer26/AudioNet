@@ -82,8 +82,15 @@ def hide_keyboard():
 def type_into(label, text):
     """Focuses the field labelled `label`, clears it and types `text`. The
     keyboard is closed first: it can be a full-screen one (a braille
-    keyboard) that covers the form."""
-    tap(label)
+    keyboard) that covers the form.
+
+    The field itself is tapped (the one nearest its label): a field with
+    text has its label on its top border, where a tap can miss it."""
+    n = find(label)
+    fields = [f for f in nodes() if f["cls"] == "EditText" and abs(f["y"] - n["y"]) <= 120]
+    target = min(fields, key=lambda f: abs(f["y"] - n["y"])) if fields else n
+    adb("shell", "input", "tap", str(target["x"]), str(target["y"]))
+    time.sleep(0.6)
     hide_keyboard()
     adb("shell", "input", "keycombination", "113", "29")  # Ctrl+A
     adb("shell", "input", "keyevent", "67")  # Delete
@@ -115,7 +122,12 @@ def paused_accessibility():
     services = adb("shell", "settings", "get", "secure", "enabled_accessibility_services").strip()
     enabled = adb("shell", "settings", "get", "secure", "accessibility_enabled").strip()
     adb("shell", "settings", "put", "secure", "enabled_accessibility_services", '""')
-    time.sleep(1)
+    # TalkBack takes a moment to let go; until then it swallows taps.
+    for _ in range(20):
+        if "Bound services:{}" in adb("shell", "dumpsys", "accessibility"):
+            break
+        time.sleep(0.5)
+    time.sleep(0.5)
     try:
         yield
     finally:

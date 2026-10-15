@@ -1,4 +1,4 @@
-# Releasing the Windows and Mac apps (and automatic updates)
+# Releasing the Windows, Mac and Android apps (and automatic updates)
 
 The Windows desktop app can update itself. It does so only when the build
 was given an update source and a public key; plain source builds never
@@ -149,6 +149,35 @@ being moved there by the person who uses it.
 
 3. Attach the zip, its `.sha256`, `latest-macos.json` and its `.sig` to
    the same GitHub release as the Windows app.
+
+## The Android app
+
+The Android app does not update itself: people download each new APK
+(Android asks before installing it over the old one). Its version is the
+workspace's (versionName 1.2.4, versionCode 10204: major × 10000 + minor ×
+100 + patch), so every release installs as an update.
+
+An update installs only if it is signed with the same key as the copy on
+the phone. The release keystore is
+`%USERPROFILE%\.audionet-release\android-release.jks`, named with its
+passwords in `android-signing.properties` beside it (`storeFile`,
+`storePassword`, `keyAlias`, `keyPassword`); neither is ever committed.
+Keep a backup: without that key no later APK installs over an existing
+one, and people would have to uninstall first (losing their sign-in).
+Without the properties file, release builds come out unsigned.
+
+1. Build the engine for phones and the emulator, then the APK:
+
+   ```sh
+   powershell -ExecutionPolicy Bypass -File apps\android\build-core.ps1
+   cd apps\android
+   gradlew assembleRelease -PaudionetDefaultServer=https://audionet.mad-gamer.com
+   ```
+
+   It is `app/build/outputs/apk/release/app-release.apk`, for arm64 phones
+   and the x86_64 emulator, with 16 KB-aligned libraries.
+2. Attach it to the same GitHub release as
+   `audionet-android-<version>.apk`, with its `.sha256`.
 
 ## Testing
 

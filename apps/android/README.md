@@ -24,7 +24,9 @@ What it does today, like the iPhone app:
   it keeps the CPU awake and Wi-Fi in low-latency mode.
 
 Android 8.0 (API 26) and later; built for Android 17 (API 37). Phones
-(arm64-v8a) and the x86_64 emulator; 16 KB memory pages.
+(arm64-v8a) and the x86_64 emulator; 16 KB memory pages. Its version is
+the workspace's, like every AudioNet part; releases are signed APKs on
+GitHub (see [releasing](../../docs/releasing.md#the-android-app)).
 
 ## Building (Windows)
 
@@ -68,6 +70,8 @@ computer; the command-line agent as a device):
   network. Then Stop, and Sign Out (the phone removed from the account,
   back to the sign-in screen).
 * The app keeps its sign-in across a restart.
+
+The signed release build (1.2.4) passes the same test.
 
 Tested by the maintainer (2026-10-14): everything works as expected.
 

@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -12,6 +14,19 @@ fun cargoLockVersion(crate: String): String {
     return lines.drop(i + 1).first { it.trim().startsWith("version = ") }.substringAfter('"').substringBefore('"')
 }
 
+// Every AudioNet part has the workspace's version (Cargo.toml); the version
+// code follows it (1.2.4 is 10204), so each release is an update.
+val workspaceVersion: String = rootDir.resolve("../../Cargo.toml").readLines()
+    .first { it.startsWith("version = ") }.substringAfter('"').substringBefore('"')
+val workspaceVersionCode: Int = workspaceVersion.split(".").map { it.toInt() }
+    .let { (major, minor, patch) -> major * 10000 + minor * 100 + patch }
+
+// Release signing: a keystore kept outside the repository, named in
+// ~/.audionet-release/android-signing.properties (storeFile, storePassword,
+// keyAlias, keyPassword). Without it, release builds are unsigned.
+val signingFile = File(System.getProperty("user.home"), ".audionet-release/android-signing.properties")
+val signing = Properties().apply { if (signingFile.isFile) signingFile.inputStream().use { load(it) } }
+
 android {
     namespace = "com.matthewdovi.audionet"
     compileSdk = 37
@@ -21,15 +36,31 @@ android {
         // AAudio (cpal's Android audio) needs Android 8.0.
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = workspaceVersionCode
+        versionName = workspaceVersion
         buildConfigField("String", "DEFAULT_SERVER", "\"${project.findProperty("audionetDefaultServer") ?: ""}\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Only where the engine is built (build-core.ps1): JNA brings
+        // libraries for more, which would let a phone without the engine
+        // install the app.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+
+    signingConfigs {
+        if (signing.getProperty("storeFile") != null) {
+            create("release") {
+                storeFile = File(signingFile.parentFile, signing.getProperty("storeFile"))
+                storePassword = signing.getProperty("storePassword")
+                keyAlias = signing.getProperty("keyAlias")
+                keyPassword = signing.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
     compileOptions {
