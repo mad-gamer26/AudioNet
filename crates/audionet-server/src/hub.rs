@@ -191,12 +191,12 @@ impl Hub {
                 );
             }
         }
-        if let Some(meta) = conn.node {
-            if g.node_conn.get(&meta.id).is_some_and(|c| c == conn_id) {
-                g.node_conn.remove(&meta.id);
-                g.endpoints.remove(&meta.id);
-                Self::broadcast_node(&mut g, conn.user_id, &meta);
-            }
+        if let Some(meta) = conn.node
+            && g.node_conn.get(&meta.id).is_some_and(|c| c == conn_id)
+        {
+            g.node_conn.remove(&meta.id);
+            g.endpoints.remove(&meta.id);
+            Self::broadcast_node(&mut g, conn.user_id, &meta);
         }
     }
 

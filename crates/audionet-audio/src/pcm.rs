@@ -69,25 +69,25 @@ impl PcmLayout {
         let bytes = &bytes[..n * self.bytes_per_sample()];
         match self {
             PcmLayout::F32 => {
-                for (o, b) in out.iter_mut().zip(bytes.chunks_exact(4)) {
-                    *o = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                for (o, b) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
+                    *o = f32::from_le_bytes(*b);
                 }
             }
             PcmLayout::I16 => {
-                for (o, b) in out.iter_mut().zip(bytes.chunks_exact(2)) {
-                    *o = f32::from(i16::from_le_bytes([b[0], b[1]])) / 32_768.0;
+                for (o, b) in out.iter_mut().zip(bytes.as_chunks::<2>().0) {
+                    *o = f32::from(i16::from_le_bytes(*b)) / 32_768.0;
                 }
             }
             PcmLayout::I24Packed => {
-                for (o, b) in out.iter_mut().zip(bytes.chunks_exact(3)) {
+                for (o, b) in out.iter_mut().zip(bytes.as_chunks::<3>().0) {
                     // Place the 24 bits at the top of an i32 to sign-extend.
                     let v = i32::from_le_bytes([0, b[0], b[1], b[2]]);
                     *o = (v as f64 / 2_147_483_648.0) as f32;
                 }
             }
             PcmLayout::I32 => {
-                for (o, b) in out.iter_mut().zip(bytes.chunks_exact(4)) {
-                    let v = i32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                for (o, b) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
+                    let v = i32::from_le_bytes(*b);
                     *o = (v as f64 / 2_147_483_648.0) as f32;
                 }
             }

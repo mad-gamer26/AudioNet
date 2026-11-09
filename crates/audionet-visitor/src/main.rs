@@ -198,10 +198,10 @@ impl Engine {
     }
 
     fn disconnect(&mut self, account: &str) {
-        if let Some(mut a) = self.accounts.remove(account) {
-            if let Some(stop) = a.stop.take() {
-                let _ = stop.send(());
-            }
+        if let Some(mut a) = self.accounts.remove(account)
+            && let Some(stop) = a.stop.take()
+        {
+            let _ = stop.send(());
         }
         self.sessions
             .lock()

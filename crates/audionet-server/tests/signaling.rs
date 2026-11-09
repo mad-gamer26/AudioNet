@@ -21,10 +21,15 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 async fn start_server() -> (String, Arc<AppState>) {
+    start_server_with("").await
+}
+
+/// `extra_ice`: more `[ice]` settings, one per line.
+async fn start_server_with(extra_ice: &str) -> (String, Arc<AppState>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut config = Config::parse(&format!(
-        "public_url = \"http://{addr}\"\n[ice]\nstun_urls = [\"stun:stun.example.com:3478\"]\nturn_urls = [\"turn:turn.example.com:3478\"]\nturn_secret = \"test-secret\""
+        "public_url = \"http://{addr}\"\n[ice]\nstun_urls = [\"stun:stun.example.com:3478\"]\nturn_urls = [\"turn:turn.example.com:3478\"]\nturn_secret = \"test-secret\"\n{extra_ice}"
     ))
     .unwrap();
     config.validate().unwrap();
@@ -457,4 +462,61 @@ async fn native_apps_sign_in_as_devices_and_reach_each_other() {
         recv(&mut mallory).await,
         ServerMessage::Error { code, .. } if code == "node_offline"
     ));
+}
+
+/// TURN credentials expire (`turn_credential_ttl_s`): a client that stays
+/// connected longer would be refused by the TURN server and start every
+/// session without a relay. The server sends fresh ones before that.
+#[tokio::test]
+async fn connected_clients_get_fresh_turn_credentials_before_they_expire() {
+    let (addr, _state) =
+        start_server_with("turn_credential_ttl_s = 4\nturn_credential_refresh_s = 1").await;
+    let origin = format!("http://{addr}");
+    let (st, h, body) = post(
+        &addr,
+        "/api/v1/login",
+        r#"{"username":"alice","password":"correct horse battery"}"#,
+        &[("Origin", &origin)],
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    let cookie = h.iter().find(|(k, _)| k == "set-cookie").unwrap().1.clone();
+    let cookie = cookie.split(';').next().unwrap().to_owned();
+    let mut browser = connect(&addr, &[("Cookie", &cookie), ("Origin", &origin)])
+        .await
+        .unwrap();
+    send(&mut browser, &hello(ClientKind::Browser)).await;
+    let expiry = |servers: &[audionet_protocol::signal::IceServer]| -> u64 {
+        let user = servers[1].username.as_deref().unwrap();
+        assert!(user.ends_with(":alice"), "{user}");
+        user.split(':').next().unwrap().parse().unwrap()
+    };
+    let ServerMessage::Welcome { ice_servers, .. } = recv(&mut browser).await else {
+        panic!("no welcome")
+    };
+    let mut last = expiry(&ice_servers);
+    // Two refreshes, each with credentials that expire later than before
+    // (and still in the future when they arrive).
+    for _ in 0..2 {
+        let fresh = loop {
+            if let ServerMessage::IceServers { ice_servers } = recv(&mut browser).await {
+                break ice_servers;
+            }
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let e = expiry(&fresh);
+        assert!(
+            e > last,
+            "fresh credentials expire later ({e} after {last})"
+        );
+        assert!(
+            e > now + 2,
+            "fresh credentials have most of their life left"
+        );
+        assert_ne!(fresh[1].credential, ice_servers[1].credential);
+        last = e;
+    }
 }

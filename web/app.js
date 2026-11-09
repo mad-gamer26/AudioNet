@@ -526,19 +526,30 @@ function connect() {
   };
 }
 
+// The server's ICE servers as RTCPeerConnection takes them (no null fields).
+function rtcIceServers(servers) {
+  return (servers || []).map((s) => {
+    const o = { urls: s.urls };
+    if (s.username) o.username = s.username;
+    if (s.credential) o.credential = s.credential;
+    return o;
+  });
+}
+
 function handleServer(msg) {
   switch (msg.type) {
     case "welcome":
       state.connected = true;
       state.wsBackoff = 1000;
-      state.iceServers = msg.ice_servers.map((s) => {
-        const o = { urls: s.urls };
-        if (s.username) o.username = s.username;
-        if (s.credential) o.credential = s.credential;
-        return o;
-      });
+      state.iceServers = rtcIceServers(msg.ice_servers);
       setConnectionText("Connected to the server.");
       send({ type: "list_nodes" });
+      break;
+    case "ice_servers":
+      // Fresh TURN credentials: the Welcome's expire, and a tab left open
+      // longer would start every session without a relay. New sessions use
+      // these.
+      state.iceServers = rtcIceServers(msg.ice_servers);
       break;
     case "nodes":
       state.nodes.clear();

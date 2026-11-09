@@ -315,7 +315,7 @@ impl Agent {
         if sink.send(send(&hello)).await.is_err() {
             return Outcome::Retry("the connection closed during sign-in".into());
         }
-        let (ice_servers, my_node_id): (Vec<IceServer>, Option<NodeId>) =
+        let (mut ice_servers, my_node_id): (Vec<IceServer>, Option<NodeId>) =
             match tokio::time::timeout(Duration::from_secs(10), stream.next()).await {
                 Ok(Some(Ok(Message::Text(t)))) => {
                     match serde_json::from_str::<ServerMessage>(t.as_str()) {
@@ -440,6 +440,12 @@ impl Agent {
                                 }
                                 self.active_sessions.store(sessions.len(), Relaxed);
                             }
+                            // Fresh TURN credentials: the ones from Welcome expire, and
+                            // a device connected longer than that would start every
+                            // session without a relay. New sessions use these.
+                            ServerMessage::IceServers { ice_servers: fresh } => {
+                                ice_servers = fresh;
+                            }
                             ServerMessage::SessionEnd { session_id, reason } => {
                                 if let Some(mut h) = sessions.remove(session_id.as_str()) {
                                     tokio::task::spawn_blocking(move || h.stop());
@@ -457,11 +463,10 @@ impl Agent {
                             }
                             ServerMessage::SessionStatus { session_id, state, detail } => {
                                 // The other device's view of a session we started.
-                                if outgoing.contains_key(session_id.as_str()) {
-                                    if let Some(detail) = detail {
+                                if outgoing.contains_key(session_id.as_str())
+                                    && let Some(detail) = detail {
                                         self.emit(AppEvent::Session { session_id, state, detail });
                                     }
-                                }
                             }
                             ServerMessage::Nodes { nodes } => {
                                 known = nodes.iter().map(|n| (n.node_id.as_str().to_owned(), n.clone())).collect();
@@ -642,20 +647,18 @@ impl Agent {
                             Some(ClientMessage::SessionEnd { session_id, reason: "Stopped in the app.".into() })
                         }
                     };
-                    if let Some(m) = msg {
-                        if sink.send(send(&m)).await.is_err() {
+                    if let Some(m) = msg
+                        && sink.send(send(&m)).await.is_err() {
                             break Outcome::Retry("the connection closed".into());
                         }
-                    }
                 }
                 _ = refresh.tick(), if !self.visitor => {
                     let now = self.endpoints().await;
                     if now.is_some() && now != last_endpoints {
-                        if let Some(m) = &now {
-                            if sink.send(send(m)).await.is_err() {
+                        if let Some(m) = &now
+                            && sink.send(send(m)).await.is_err() {
                                 break Outcome::Retry("the connection closed".into());
                             }
-                        }
                         last_endpoints = now;
                     }
                 }

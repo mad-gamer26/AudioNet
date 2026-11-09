@@ -1267,8 +1267,18 @@ async fn run_connection(s: Shared, p: Principal, socket: WebSocket) {
 
     let mut ping = tokio::time::interval(WS_PING);
     ping.tick().await;
+    // Fresh TURN credentials before the Welcome's expire: a device that
+    // stays connected longer than their lifetime would otherwise be refused
+    // by the TURN server and start every session without a relay. Clients
+    // that predate `ice_servers` ignore it.
+    let refresh_every = s.config.ice.credential_refresh();
+    let mut ice_refresh = tokio::time::interval(refresh_every.unwrap_or(WS_PING));
+    ice_refresh.tick().await;
     loop {
         tokio::select! {
+            _ = ice_refresh.tick(), if refresh_every.is_some() => {
+                let _ = tx.try_send(ServerMessage::IceServers { ice_servers: ice_servers(&s, &p) });
+            }
             out = rx.recv() => match out {
                 Some(msg) => {
                     let text = serde_json::to_string(&msg).expect("serializes");

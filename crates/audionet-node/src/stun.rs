@@ -98,11 +98,11 @@ pub fn query(socket: &UdpSocket, server: SocketAddr) -> Option<SocketAddr> {
             break;
         }
         while let Ok((n, from)) = socket.recv_from(&mut buf) {
-            if from == server {
-                if let Some(a) = parse_binding_response(&buf[..n], &txid) {
-                    result = Some(a);
-                    break 'tries;
-                }
+            if from == server
+                && let Some(a) = parse_binding_response(&buf[..n], &txid)
+            {
+                result = Some(a);
+                break 'tries;
             }
         }
     }

@@ -269,6 +269,7 @@ pings every 20 seconds.
 | `type` | Fields |
 | --- | --- |
 | `welcome` | `protocol_version`, `connection_id`, `username`, `node_id` (devices; otherwise `null`), `ice_servers: [{urls, username, credential}]` |
+| `ice_servers` | `ice_servers: [{urls, username, credential}]`: fresh TURN credentials, sent every `[ice] turn_credential_refresh_s` (half their lifetime by default) so a client connected longer than `turn_credential_ttl_s` keeps a working relay. Clients use the newest for every later session. Clients that predate it ignore it. |
 | `nodes` | `nodes: [NodeSummary]` |
 | `node_update` | `node: NodeSummary` (a device came online or offline, started or stopped sharing, or its endpoints changed); sent to browsers and to the account's other devices |
 | `session_offer` | `session_id`, `from` (offerer connection id), `media`, `sdp` |

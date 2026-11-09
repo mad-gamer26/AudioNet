@@ -182,10 +182,10 @@ impl SequenceTracker {
         for i in (0..n).rev() {
             let src = i.checked_sub(words);
             let mut v = src.map_or(0, |s| self.seen[s] << bits);
-            if bits > 0 {
-                if let Some(s) = src.and_then(|s| s.checked_sub(1)) {
-                    v |= self.seen[s] >> (64 - bits);
-                }
+            if bits > 0
+                && let Some(s) = src.and_then(|s| s.checked_sub(1))
+            {
+                v |= self.seen[s] >> (64 - bits);
             }
             self.seen[i] = v;
         }

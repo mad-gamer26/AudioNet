@@ -126,10 +126,10 @@ impl AudioRoute {
                 max: MAX_DESTINATIONS_PER_ROUTE,
             });
         }
-        if let SourceKind::ProcessCapture { executable, .. } = &self.source.kind {
-            if executable.trim().is_empty() {
-                return Err(RouteError::EmptyExecutableName);
-            }
+        if let SourceKind::ProcessCapture { executable, .. } = &self.source.kind
+            && executable.trim().is_empty()
+        {
+            return Err(RouteError::EmptyExecutableName);
         }
         for (index, dest) in self.destinations.iter().enumerate() {
             if self.destinations[..index].contains(dest) {
@@ -139,10 +139,10 @@ impl AudioRoute {
                 SourceKind::EndpointLoopback { endpoint: src },
                 DestinationKind::EndpointRender { endpoint: dst },
             ) = (&self.source.kind, &dest.kind)
+                && src == dst
+                && self.source.node == dest.node
             {
-                if src == dst && self.source.node == dest.node {
-                    return Err(RouteError::FeedbackLoop { index });
-                }
+                return Err(RouteError::FeedbackLoop { index });
             }
         }
         Ok(())

@@ -178,6 +178,14 @@ pub enum ServerMessage {
         node_id: Option<NodeId>,
         ice_servers: Vec<IceServer>,
     },
+    /// Fresh ICE servers (TURN credentials are short-lived). Sent before the
+    /// ones in [`ServerMessage::Welcome`] or the last `IceServers` expire;
+    /// clients use the newest for every session they start or answer from
+    /// then on. Clients that predate this message ignore it (and keep the
+    /// Welcome's credentials until they reconnect).
+    IceServers {
+        ice_servers: Vec<IceServer>,
+    },
     Nodes {
         nodes: Vec<NodeSummary>,
     },
@@ -280,6 +288,24 @@ mod tests {
         let old = r#"{"node_id":"n1","name":"PC","platform":null,"online":true,"sources":[],"destinations":[]}"#;
         let n: NodeSummary = serde_json::from_str(old).unwrap();
         assert!(n.sharing, "online meant sharing before sharing existed");
+    }
+
+    #[test]
+    fn ice_servers_on_the_wire() {
+        let m = ServerMessage::IceServers {
+            ice_servers: vec![IceServer {
+                urls: vec!["turn:example.org:3478?transport=udp".into()],
+                username: Some("1700000000:alice".into()),
+                credential: Some("c2VjcmV0".into()),
+            }],
+        };
+        assert_eq!(
+            serde_json::to_string(&m).unwrap(),
+            r#"{"type":"ice_servers","ice_servers":[{"urls":["turn:example.org:3478?transport=udp"],"username":"1700000000:alice","credential":"c2VjcmV0"}]}"#
+        );
+        let back: ServerMessage =
+            serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back, m);
     }
 
     #[test]

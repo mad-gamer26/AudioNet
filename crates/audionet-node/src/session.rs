@@ -796,12 +796,11 @@ fn run(
     if !network.relay_only {
         let host = Candidate::host(local, "udp").map_err(|e| format!("bad host candidate: {e}"))?;
         rtc.add_local_candidate(host);
-        if let Some(public) = public {
-            if public != local {
-                if let Ok(c) = Candidate::server_reflexive(public, local, "udp") {
-                    rtc.add_local_candidate(c);
-                }
-            }
+        if let Some(public) = public
+            && public != local
+            && let Ok(c) = Candidate::server_reflexive(public, local, "udp")
+        {
+            rtc.add_local_candidate(c);
         }
     }
     if let Some(r) = &relay {
@@ -928,20 +927,20 @@ fn run(
         if stop.load(Relaxed) {
             return Ok(());
         }
-        if pending.is_some() {
-            if let Ok(sdp) = answers.try_recv() {
-                mdns = find_hidden_addresses(&sdp, local_ip, network.relay_only);
-                let answer = SdpAnswer::from_sdp_string(&sdp)
-                    .map_err(|e| format!("the answer is not valid SDP: {e}"))?;
-                let pend = pending.take().expect("checked");
-                rtc.sdp_api()
-                    .accept_answer(pend, answer)
-                    .map_err(|e| format!("could not accept the answer: {e}"))?;
-                note(format!(
-                    "The other device answered ({}).",
-                    describe_candidates(&sdp)
-                ));
-            }
+        if pending.is_some()
+            && let Ok(sdp) = answers.try_recv()
+        {
+            mdns = find_hidden_addresses(&sdp, local_ip, network.relay_only);
+            let answer = SdpAnswer::from_sdp_string(&sdp)
+                .map_err(|e| format!("the answer is not valid SDP: {e}"))?;
+            let pend = pending.take().expect("checked");
+            rtc.sdp_api()
+                .accept_answer(pend, answer)
+                .map_err(|e| format!("could not accept the answer: {e}"))?;
+            note(format!(
+                "The other device answered ({}).",
+                describe_candidates(&sdp)
+            ));
         }
         // Hidden local addresses the lookup found: direct paths to try.
         // Shown while connecting; once connected the stream's state stays
@@ -998,33 +997,32 @@ fn run(
                 packet,
                 rtp_time,
             } => {
-                if let Err(loss) = input {
-                    if loss.should_retry(Instant::now())? {
-                        if let Ok(reopened) = open_listen(audio, source_id) {
-                            // Keep RTP time in step with wall time across
-                            // the gap, in whole Opus frames.
-                            let step = encoder.frame_samples() as u64;
-                            let gap = loss.since.elapsed().as_nanos() as u64 * 48 / 1_000_000;
-                            *rtp_time += gap / step * step;
-                            *fill = 0;
-                            status(
-                                if connected {
-                                    SessionState::Active
-                                } else {
-                                    SessionState::Starting
-                                },
-                                if loss.why.contains(crate::audio::MICROPHONE_CHANGED) {
-                                    format!("Capturing {}.", reopened.capture.description)
-                                } else {
-                                    format!(
-                                        "The audio device is back. Capturing {}.",
-                                        reopened.capture.description
-                                    )
-                                },
-                            );
-                            *input = Ok(reopened);
-                        }
-                    }
+                if let Err(loss) = input
+                    && loss.should_retry(Instant::now())?
+                    && let Ok(reopened) = open_listen(audio, source_id)
+                {
+                    // Keep RTP time in step with wall time across
+                    // the gap, in whole Opus frames.
+                    let step = encoder.frame_samples() as u64;
+                    let gap = loss.since.elapsed().as_nanos() as u64 * 48 / 1_000_000;
+                    *rtp_time += gap / step * step;
+                    *fill = 0;
+                    status(
+                        if connected {
+                            SessionState::Active
+                        } else {
+                            SessionState::Starting
+                        },
+                        if loss.why.contains(crate::audio::MICROPHONE_CHANGED) {
+                            format!("Capturing {}.", reopened.capture.description)
+                        } else {
+                            format!(
+                                "The audio device is back. Capturing {}.",
+                                reopened.capture.description
+                            )
+                        },
+                    );
+                    *input = Ok(reopened);
                 }
                 let failure = match input {
                     Ok(i) => i.capture.guard.failure(),
@@ -1072,12 +1070,11 @@ fn run(
                                 src = &src[take..];
                                 if *fill == frame.len() {
                                     *fill = 0;
-                                    if let Ok(n) = encoder.encode(frame, packet) {
-                                        if let (true, Some(m)) = (connected, mid) {
-                                            if !write_media(&mut rtc, m, *rtp_time, &packet[..n]) {
-                                                refused_frames += 1;
-                                            }
-                                        }
+                                    if let Ok(n) = encoder.encode(frame, packet)
+                                        && let (true, Some(m)) = (connected, mid)
+                                        && !write_media(&mut rtc, m, *rtp_time, &packet[..n])
+                                    {
+                                        refused_frames += 1;
                                     }
                                     *rtp_time += encoder.frame_samples() as u64;
                                 }
@@ -1117,21 +1114,19 @@ fn run(
                 destination_id,
                 output,
             } => {
-                if let Err(loss) = output {
-                    if loss.should_retry(Instant::now())? {
-                        if let Ok((reopened, description)) = open_speak(audio, destination_id, gain)
-                        {
-                            status(
-                                if connected {
-                                    SessionState::Active
-                                } else {
-                                    SessionState::Starting
-                                },
-                                format!("The audio device is back. Playing on {description}."),
-                            );
-                            *output = Ok(reopened);
-                        }
-                    }
+                if let Err(loss) = output
+                    && loss.should_retry(Instant::now())?
+                    && let Ok((reopened, description)) = open_speak(audio, destination_id, gain)
+                {
+                    status(
+                        if connected {
+                            SessionState::Active
+                        } else {
+                            SessionState::Starting
+                        },
+                        format!("The audio device is back. Playing on {description}."),
+                    );
+                    *output = Ok(reopened);
                 }
                 let failure = match output {
                     Ok(o) => o.guard.failure(),
@@ -1258,28 +1253,28 @@ fn run(
         }
         if let Some(r) = relay.as_mut() {
             let now = Instant::now();
-            if let Ok((n, source)) = &received_packet {
-                if r.is_from_server(*source) {
-                    // Relayed data from peers, as if it arrived at the
-                    // relayed address.
-                    let relayed = r.relayed();
-                    for (peer, data) in r.receive(&socket, &buf[..*n], now) {
-                        route.count(Route::OurRelay);
-                        if let Ok(contents) = data.as_slice().try_into() {
-                            rtc.handle_input(Input::Receive(
-                                now,
-                                Receive {
-                                    proto: Protocol::Udp,
-                                    source: peer,
-                                    destination: relayed,
-                                    contents,
-                                },
-                            ))
-                            .map_err(|e| format!("WebRTC error: {e}"))?;
-                        }
+            if let Ok((n, source)) = &received_packet
+                && r.is_from_server(*source)
+            {
+                // Relayed data from peers, as if it arrived at the
+                // relayed address.
+                let relayed = r.relayed();
+                for (peer, data) in r.receive(&socket, &buf[..*n], now) {
+                    route.count(Route::OurRelay);
+                    if let Ok(contents) = data.as_slice().try_into() {
+                        rtc.handle_input(Input::Receive(
+                            now,
+                            Receive {
+                                proto: Protocol::Udp,
+                                source: peer,
+                                destination: relayed,
+                                contents,
+                            },
+                        ))
+                        .map_err(|e| format!("WebRTC error: {e}"))?;
                     }
-                    continue;
                 }
+                continue;
             }
             r.tick(&socket, now);
         }

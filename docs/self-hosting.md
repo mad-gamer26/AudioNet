@@ -98,6 +98,7 @@ curl http://127.0.0.1:8740/api/v1/info
 | `[ice] turn_urls` | `[]` | TURN servers given to clients (require a secret). |
 | `[ice] turn_secret` | none | Shared secret with coturn. Prefer the environment variable. |
 | `[ice] turn_credential_ttl_s` | `3600` | Lifetime of generated TURN credentials. |
+| `[ice] turn_credential_refresh_s` | half the lifetime | How often connected clients get fresh TURN credentials (never later than half the lifetime). |
 
 Environment variables (override the file; put secrets here):
 `AUDIONET_CONFIG` (config path), `AUDIONET_PUBLIC_URL`, `AUDIONET_BIND`,
@@ -205,7 +206,11 @@ turn_urls = [
 ```
 
 and restart both services. Credentials handed to clients expire after
-`turn_credential_ttl_s` seconds.
+`turn_credential_ttl_s` seconds; connected clients get fresh ones every
+`turn_credential_refresh_s` (by default half that), so a device that stays
+connected for days keeps its relay. A device whose credentials the TURN
+server refuses gives up on the relay at once and says so in its status log
+("the relay server refused this device's credentials").
 
 ## 7. Verify
 

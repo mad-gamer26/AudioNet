@@ -855,17 +855,17 @@ async fn a_visitor_listens_and_sends_without_becoming_a_device() {
     })
     .await;
     // The receive diagnostics say which way the audio came: here, on this
-    // machine, directly.
+    // machine, directly (not through the relay). Whether that direct route
+    // is described as "on the local network" or "across the internet"
+    // depends on this machine's addresses: on a server whose interface has
+    // a public address, both ends use it.
     let diag = next_event(&mut events, "receive diagnostics", |e| {
         matches!(e, AppEvent::Diagnostics { session_id, text } if *session_id == listen && text.contains("Route:"))
     })
     .await;
     if let AppEvent::Diagnostics { text, .. } = &diag {
         println!("{text}");
-        assert!(
-            text.contains("Route: direct, on the local network."),
-            "{text}"
-        );
+        assert!(text.contains("Route: direct,"), "{text}");
     }
     tokio::time::sleep(Duration::from_secs(1)).await;
     let (level, hz) = analyse(&visitor_audio.played);

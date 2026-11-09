@@ -60,3 +60,5 @@ turn_urls = [
 ]
 # turn_secret comes from AUDIONET_TURN_SECRET in the environment file.
 turn_credential_ttl_s = 3600
+# Connected clients get fresh credentials this often (default: half the lifetime).
+# turn_credential_refresh_s = 1800

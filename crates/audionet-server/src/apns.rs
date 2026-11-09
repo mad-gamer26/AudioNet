@@ -142,10 +142,10 @@ impl Client {
     /// The current provider token (ES256 JWT), renewed when due.
     fn provider_token(&self) -> Result<String, String> {
         let mut cached = self.token.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((token, at)) = cached.as_ref() {
-            if at.elapsed() < TOKEN_LIFETIME {
-                return Ok(token.clone());
-            }
+        if let Some((token, at)) = cached.as_ref()
+            && at.elapsed() < TOKEN_LIFETIME
+        {
+            return Ok(token.clone());
         }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

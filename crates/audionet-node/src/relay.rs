@@ -103,6 +103,7 @@ impl Relay {
         let deadline = Instant::now() + timeout;
         let old_timeout = socket.read_timeout().ok().flatten();
         let mut buf = vec![0u8; 2048];
+        let mut challenge: Option<[u8; 12]> = None;
         let result = loop {
             let now = Instant::now();
             if now >= deadline {
@@ -125,10 +126,17 @@ impl Relay {
                     .min(Duration::from_millis(50))
                     .max(Duration::from_millis(1)),
             ));
-            if let Ok((n, from)) = socket.recv_from(&mut buf) {
-                if from == relay.server {
-                    let _ = relay.receive(socket, &buf[..n], Instant::now());
+            if let Ok((n, from)) = socket.recv_from(&mut buf)
+                && from == relay.server
+            {
+                // turn-client-proto ignores an error the server cannot
+                // sign, which is every refusal of our credentials (it
+                // cannot sign with credentials it rejects), and would
+                // keep retrying until `timeout`. Stop at once instead.
+                if let Some(why) = allocate_refusal(&buf[..n], &mut challenge) {
+                    break Err(why);
                 }
+                let _ = relay.receive(socket, &buf[..n], Instant::now());
             }
         };
         let _ = socket.set_read_timeout(old_timeout);
@@ -206,6 +214,55 @@ impl Relay {
     }
 }
 
+/// STUN Allocate error response (RFC 8656 / RFC 8489 message type).
+const ALLOCATE_ERROR: u16 = 0x0113;
+const MAGIC_COOKIE: [u8; 4] = [0x21, 0x12, 0xa4, 0x42];
+const ATTR_ERROR_CODE: u16 = 0x0009;
+
+/// Whether a datagram from the TURN server refuses our credentials.
+///
+/// An Allocate starts unauthenticated and the server answers 401 with its
+/// realm and nonce: that first 401 (whose transaction id is remembered in
+/// `challenge`) is normal. A 401 to any later transaction answers a request
+/// that carried our credentials: the server refused them (most often
+/// because they expired). Anything else returns `None`.
+fn allocate_refusal(msg: &[u8], challenge: &mut Option<[u8; 12]>) -> Option<String> {
+    if msg.len() < 20
+        || u16::from_be_bytes([msg[0], msg[1]]) != ALLOCATE_ERROR
+        || msg[4..8] != MAGIC_COOKIE
+    {
+        return None;
+    }
+    let len = usize::from(u16::from_be_bytes([msg[2], msg[3]]));
+    let attrs = msg.get(20..20 + len)?;
+    let mut txn = [0u8; 12];
+    txn.copy_from_slice(&msg[8..20]);
+    let mut at = 0;
+    let mut code = None;
+    while at + 4 <= attrs.len() {
+        let kind = u16::from_be_bytes([attrs[at], attrs[at + 1]]);
+        let alen = usize::from(u16::from_be_bytes([attrs[at + 2], attrs[at + 3]]));
+        let value = attrs.get(at + 4..at + 4 + alen)?;
+        if kind == ATTR_ERROR_CODE && value.len() >= 4 {
+            code = Some(u16::from(value[2] & 0x07) * 100 + u16::from(value[3]));
+        }
+        at += 4 + alen.div_ceil(4) * 4;
+    }
+    if code != Some(401) {
+        return None;
+    }
+    match challenge {
+        None => {
+            *challenge = Some(txn);
+            None
+        }
+        Some(first) if *first == txn => None, // the challenge, repeated
+        Some(_) => Some(
+            "the relay server refused this device's credentials (401 Unauthorized; they may have expired)".to_owned(),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +313,110 @@ mod tests {
             credential: None,
         }];
         assert_eq!(find_turn(&ice), None);
+    }
+
+    /// A STUN Allocate error response with ERROR-CODE `code`, REALM and
+    /// NONCE, as coturn sends.
+    fn allocate_error(txn: [u8; 12], code: u16) -> Vec<u8> {
+        fn attr(out: &mut Vec<u8>, kind: u16, value: &[u8]) {
+            out.extend_from_slice(&kind.to_be_bytes());
+            out.extend_from_slice(&(value.len() as u16).to_be_bytes());
+            out.extend_from_slice(value);
+            out.resize(out.len().div_ceil(4) * 4, 0);
+        }
+        let mut attrs = Vec::new();
+        let mut ec = vec![0, 0, (code / 100) as u8, (code % 100) as u8];
+        ec.extend_from_slice(b"Unauthorized");
+        attr(&mut attrs, 0x0009, &ec);
+        attr(&mut attrs, 0x0014, b"test.example");
+        attr(&mut attrs, 0x0015, b"0123456789abcdef");
+        let mut m = Vec::new();
+        m.extend_from_slice(&ALLOCATE_ERROR.to_be_bytes());
+        m.extend_from_slice(&(attrs.len() as u16).to_be_bytes());
+        m.extend_from_slice(&MAGIC_COOKIE);
+        m.extend_from_slice(&txn);
+        m.extend_from_slice(&attrs);
+        m
+    }
+
+    #[test]
+    fn a_second_401_is_a_refusal_not_a_challenge() {
+        let mut challenge = None;
+        // The first 401 challenges (realm and nonce); repeated, still fine.
+        assert_eq!(
+            allocate_refusal(&allocate_error([1; 12], 401), &mut challenge),
+            None
+        );
+        assert_eq!(
+            allocate_refusal(&allocate_error([1; 12], 401), &mut challenge),
+            None
+        );
+        // Another error (stale nonce) is left to the TURN client.
+        assert_eq!(
+            allocate_refusal(&allocate_error([2; 12], 438), &mut challenge),
+            None
+        );
+        // A 401 to the request that carried the credentials: refused.
+        let why = allocate_refusal(&allocate_error([2; 12], 401), &mut challenge).unwrap();
+        assert!(why.contains("refused"), "{why}");
+        // Not an Allocate error, or not STUN at all.
+        let mut fresh = None;
+        let mut success = allocate_error([3; 12], 401);
+        success[1] = 0x03; // Allocate success response
+        assert_eq!(allocate_refusal(&success, &mut fresh), None);
+        assert_eq!(allocate_refusal(b"not stun", &mut fresh), None);
+        assert_eq!(
+            allocate_refusal(&allocate_error([4; 12], 401)[..30], &mut fresh),
+            None
+        );
+        assert_eq!(fresh, None);
+    }
+
+    /// A TURN server that refuses the credentials (as coturn does once they
+    /// have expired): allocation fails at once instead of after `timeout`.
+    #[test]
+    fn refused_credentials_fail_fast() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let server_addr = server.local_addr().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let refuser = std::thread::spawn(move || {
+            let mut buf = [0u8; 2048];
+            let mut answered = 0;
+            while let Ok((n, from)) = server.recv_from(&mut buf) {
+                if n >= 20 && buf[0..2] == [0x00, 0x03] {
+                    let mut txn = [0u8; 12];
+                    txn.copy_from_slice(&buf[8..20]);
+                    let _ = server.send_to(&allocate_error(txn, 401), from);
+                    answered += 1;
+                    if answered == 4 {
+                        break;
+                    }
+                }
+            }
+            answered
+        });
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let local = socket.local_addr().unwrap();
+        let turn = TurnServer {
+            host: "127.0.0.1".into(),
+            port: server_addr.port(),
+            username: "1000:expired".into(),
+            password: "c2VjcmV0".into(),
+        };
+        let started = Instant::now();
+        let err = Relay::allocate(&socket, local, &turn, Duration::from_secs(3)).unwrap_err();
+        let took = started.elapsed();
+        assert!(err.contains("refused"), "{err}");
+        assert!(
+            took < Duration::from_millis(500),
+            "took {took:?}, not failing fast"
+        );
+        drop(socket);
+        assert!(
+            refuser.join().unwrap() >= 2,
+            "challenge and the refused retry"
+        );
     }
 }

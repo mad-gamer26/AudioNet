@@ -215,6 +215,28 @@ pub struct IceConfig {
     /// Lifetime of generated TURN credentials.
     #[serde(default = "default_turn_ttl")]
     pub turn_credential_ttl_s: u64,
+    /// How often connected clients get fresh TURN credentials
+    /// (`ice_servers` messages). Unset: half of `turn_credential_ttl_s`, so
+    /// a client's credentials always have at least half their life left.
+    #[serde(default)]
+    pub turn_credential_refresh_s: Option<u64>,
+}
+
+impl IceConfig {
+    /// How often to send fresh TURN credentials, or `None` when there are
+    /// none to send. Never more often than once a second, and always well
+    /// before the credentials expire.
+    pub fn credential_refresh(&self) -> Option<std::time::Duration> {
+        if self.turn_urls.is_empty() || self.turn_secret.is_none() {
+            return None;
+        }
+        let half = (self.turn_credential_ttl_s / 2).max(1);
+        let every = self
+            .turn_credential_refresh_s
+            .unwrap_or(half)
+            .clamp(1, half);
+        Some(std::time::Duration::from_secs(every))
+    }
 }
 
 fn default_bind() -> SocketAddr {
@@ -324,12 +346,12 @@ impl Config {
         }
         self.email.validate()?;
         self.push_gateway.validate()?;
-        if let Some(url) = &self.push_gateway_url {
-            if origin_of(url).is_none() {
-                return Err(format!(
-                    "push_gateway_url must look like https://host[:port]: {url}"
-                ));
-            }
+        if let Some(url) = &self.push_gateway_url
+            && origin_of(url).is_none()
+        {
+            return Err(format!(
+                "push_gateway_url must look like https://host[:port]: {url}"
+            ));
         }
         Ok(())
     }
@@ -356,6 +378,41 @@ pub fn origin_of(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turn_credentials_are_refreshed_before_they_expire() {
+        use std::time::Duration;
+        let ice = |extra: &str| {
+            Config::parse(&format!(
+                "public_url = \"https://a.example\"\n[ice]\nturn_urls = [\"turn:t.example:3478\"]\nturn_secret = \"s\"\n{extra}"
+            ))
+            .unwrap()
+            .ice
+        };
+        // Default: half the lifetime.
+        assert_eq!(
+            ice("").credential_refresh(),
+            Some(Duration::from_secs(1800))
+        );
+        assert_eq!(
+            ice("turn_credential_ttl_s = 604800").credential_refresh(),
+            Some(Duration::from_secs(302400))
+        );
+        // A chosen interval, but never later than half the lifetime.
+        assert_eq!(
+            ice("turn_credential_refresh_s = 60").credential_refresh(),
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(
+            ice("turn_credential_refresh_s = 9999").credential_refresh(),
+            Some(Duration::from_secs(1800))
+        );
+        // Nothing to refresh without TURN.
+        let none = Config::parse("public_url = \"https://a.example\"")
+            .unwrap()
+            .ice;
+        assert_eq!(none.credential_refresh(), None);
+    }
 
     #[test]
     fn minimal_config_and_defaults() {

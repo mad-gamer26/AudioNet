@@ -48,7 +48,7 @@ impl FrameDuration {
     /// duration is not a whole number of samples at that rate.
     pub const fn samples_per_frame(self, sample_rate_hz: u32) -> Option<u32> {
         let product = sample_rate_hz as u64 * self.micros() as u64;
-        if product % 1_000_000 == 0 {
+        if product.is_multiple_of(1_000_000) {
             Some((product / 1_000_000) as u32)
         } else {
             None

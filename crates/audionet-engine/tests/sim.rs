@@ -222,11 +222,10 @@ fn simulate(s: &Scenario) -> Outcome {
         }
 
         if now == t_frame {
-            if let Some(restart) = s.restart_at_s {
-                if frames_sent == restart * 100 {
-                    sender =
-                        SenderCore::new(EncoderConfig::BASELINE, MediaCipher::new(&key)).unwrap();
-                }
+            if let Some(restart) = s.restart_at_s
+                && frames_sent == restart * 100
+            {
+                sender = SenderCore::new(EncoderConfig::BASELINE, MediaCipher::new(&key)).unwrap();
             }
             tone(&mut pcm, frames_sent * 480);
             frames_sent += 1;
