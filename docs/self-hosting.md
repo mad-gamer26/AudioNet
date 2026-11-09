@@ -22,7 +22,7 @@ forwards encrypted packets it cannot read.
 * A Linux server with a public IP address (examples use Ubuntu 22.04+).
 * A DNS name pointing to it, e.g. `audionet.example.com`.
 * A TLS certificate for that name (for example from Let's Encrypt).
-* Rust 1.85+ to build (`rustup` is fine, installed as a normal user), gcc.
+* Rust 1.89+ to build (`rustup` is fine, installed as a normal user), gcc.
 * Firewall openings: TCP 80, 443, 3478, 5349; UDP 3478, 5349 and the relay
   range (default 49160–49359). If you use a cloud provider firewall, open
   them there too.

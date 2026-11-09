@@ -101,7 +101,7 @@ work with any server URL; nothing is tied to the official instance.
 
 ## Build from source
 
-Requires Rust 1.85 or newer (and on Windows the MSVC toolchain and CMake).
+Requires Rust 1.89 or newer (and on Windows the MSVC toolchain and CMake).
 
 ```text
 cargo build --release

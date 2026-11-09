@@ -21,7 +21,7 @@ members = [
 [workspace.package]
 version = "1.2.5"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/mad-gamer26/AudioNet"
 publish = false
@@ -58,7 +58,7 @@ str0m = { version = "0.23.1", default-features = false, features = ["rust-crypto
 axum = { version = "0.8.9", features = ["ws"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 tower-http = { version = "0.7", features = ["fs", "trace"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 argon2 = "0.6"
 toml = "1.1"
 tracing = "0.1"
