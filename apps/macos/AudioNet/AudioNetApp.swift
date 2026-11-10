@@ -9,10 +9,22 @@ struct AudioNetApp: App {
         Window("AudioNet", id: "main") {
             RootView()
                 .environmentObject(model)
-                .frame(minWidth: 560, minHeight: 640)
+                .frame(minWidth: 560, minHeight: 560)
                 .onAppear { delegate.model = model }
         }
         .windowResizability(.contentMinSize)
+        .commands {
+            // The tabs from the keyboard (View menu), as in Finder and
+            // Safari settings: Command-1 to Command-3.
+            CommandGroup(before: .toolbar) {
+                ForEach(Array(MainTab.allCases.enumerated()), id: \.element) { i, tab in
+                    Button(tab.title) { model.tab = tab }
+                        .keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
+                        .disabled(!model.signedIn)
+                }
+                Divider()
+            }
+        }
         .suppressedAtLaunch(AppDelegate.startsInMenuBar)
 
         // The menu bar item keeps AudioNet reachable when its window is
@@ -20,7 +32,7 @@ struct AudioNetApp: App {
         // with VO-M M.
         // Both observe the model themselves: a value handed down from here
         // (or an environment object) is not refreshed in the menu bar item
-        // when AudioNet goes online or offline, above all with no window
+        // when this Mac's visibility changes, above all with no window
         // open.
         MenuBarExtra {
             MenuBarContent(model: model)
@@ -134,17 +146,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// The menu bar icon: filled while sharing (in any account). VoiceOver
-/// reads "AudioNet, sharing" or "AudioNet, not sharing".
+/// The menu bar icon: filled while this Mac is visible (in any account).
+/// VoiceOver reads "AudioNet, visible" or "AudioNet, not visible".
 struct MenuBarLabel: View {
     @ObservedObject var model: AppModel
     let delegate: AppDelegate
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        let sharing = !model.sharingAccounts.isEmpty
-        Label("AudioNet", systemImage: sharing ? "waveform.circle.fill" : "waveform.circle")
-            .accessibilityLabel(sharing ? "AudioNet, sharing" : "AudioNet, not sharing")
+        let visible = !model.visibleAccounts.isEmpty
+        Label("AudioNet", systemImage: visible ? "waveform.circle.fill" : "waveform.circle")
+            .accessibilityLabel(visible ? "AudioNet, visible" : "AudioNet, not visible")
             .onAppear { delegate.openMain = { openWindow(id: "main") } }
     }
 }
@@ -156,7 +168,7 @@ struct MenuBarContent: View {
 
     var body: some View {
         Text(!model.signedIn ? "AudioNet is not signed in"
-             : model.sharingAccounts.isEmpty ? "Online, not sharing this Mac's audio" : "Online, sharing this Mac's audio")
+             : model.visibleAccounts.isEmpty ? "This Mac is hidden from your other devices" : "This Mac is visible to your other devices")
         Button("Open AudioNet") {
             NSApp.setActivationPolicy(.regular)
             openWindow(id: "main")
@@ -164,8 +176,8 @@ struct MenuBarContent: View {
         }
         if model.signedIn {
             // Every account at once.
-            Button(model.sharingAccounts.isEmpty ? "Start Sharing" : "Stop Sharing") {
-                model.toggleSharingEverywhere()
+            Button(model.visibleAccounts.isEmpty ? "Make This Mac Visible" : "Hide This Mac") {
+                model.toggleVisibleEverywhere()
             }
         }
         // With no window and no Dock icon, this is the way to Settings.

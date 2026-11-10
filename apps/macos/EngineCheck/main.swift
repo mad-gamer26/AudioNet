@@ -1,6 +1,6 @@
 // End-to-end check of the macOS app's engine (the same Rust core and Swift
 // bindings the app uses), without the UI:
-//   1. sign in as a test device and go online;
+//   1. sign in as a test device and connect;
 //   2. listen to SOURCE_DEVICE's sound whose name contains SOURCE_MATCH, on
 //      this Mac's output whose name contains PLAY_ON; report diagnostics;
 //   3. send this Mac's default input to SOURCE_DEVICE's output whose name
@@ -82,9 +82,9 @@ do {
 let events = Collector()
 let client = Client(account: account, listener: events)
 client.start()
-check("goes online", events.wait("connected", seconds: 30) { if case .connected = $0 { return true }; return false } != nil)
+check("connects", events.wait("connected", seconds: 30) { if case .connected = $0 { return true }; return false } != nil)
 
-// Find the source device (online, with its sounds listed).
+// Find the source device (visible, with its sounds listed).
 var source: Device?
 _ = events.wait("the source device", seconds: 30) { e in
     let list: [Device]
@@ -93,7 +93,7 @@ _ = events.wait("the source device", seconds: 30) { e in
     case .deviceChanged(let d): list = [d]
     default: return false
     }
-    source = list.first { $0.name == setting("SOURCE_DEVICE") && $0.online && !$0.sources.isEmpty }
+    source = list.first { $0.name == setting("SOURCE_DEVICE") && !$0.sources.isEmpty }
     return source != nil
 }
 guard let src = source else { check("sees the source device", false); exit(1) }

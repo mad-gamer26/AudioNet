@@ -139,113 +139,108 @@ struct SignInView: View {
     }
 }
 
+/// The signed-in window: three tabs (Devices, Streams, Accounts), and
+/// under them a line saying how this Mac is doing and the status log.
+/// Settings are in AudioNet's Settings window (Command-comma), as usual
+/// on the Mac.
 struct MainView: View {
     @EnvironmentObject var model: AppModel
-    @State private var addingAccount = false
-    /// The account Sign Out was chosen for (asked first).
-    @State private var signingOut: Account?
 
-    private var signOutQuestion: String {
-        "Sign out of \(signingOut?.accountName ?? "this account")? This Mac is removed from that account and stops sharing there. To use it there again, sign in again."
+    var body: some View {
+        VStack(spacing: 0) {
+            TabView(selection: $model.tab) {
+                DevicesTab()
+                    .tabItem { Text("Devices") }
+                    .tag(MainTab.devices)
+                StreamsTab()
+                    .tabItem { Text(model.streams.isEmpty ? "Streams" : "Streams (\(model.streams.count))") }
+                    .tag(MainTab.streams)
+                AccountsTab()
+                    .tabItem { Text("Accounts") }
+                    .tag(MainTab.accounts)
+            }
+            .padding([.top, .horizontal], 12)
+            HStack {
+                // The row states its own label and value: LabeledContent's
+                // accessibility value stays at what it was at launch on
+                // macOS.
+                Text(statusText)
+                    .accessibilityLabel("Status")
+                    .accessibilityValue(statusText)
+                    .accessibilityAddTraits(.isStaticText)
+                    .accessibilityIdentifier("status")
+                Spacer()
+                StatusLogButton()
+            }
+            .padding(12)
+        }
     }
+
+    private var statusText: String {
+        if model.accounts.isEmpty { return "Not signed in" }
+        if !model.connected { return "Connecting…" }
+        let visible = model.visibleAccounts.count
+        if model.accounts.count == 1 {
+            return visible == 1 ? "Visible to your other devices" : "Hidden from your other devices"
+        }
+        return "Visible in \(visible) of \(model.accounts.count) accounts"
+    }
+}
+
+/// The account's visible devices, each a disclosure with Listen and Send.
+struct DevicesTab: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        Form {
+            // One section per account (a heading names the account when
+            // there are several).
+            ForEach(model.accounts, id: \.nodeId) { a in
+                Section {
+                    let list = model.devicesByAccount[a.nodeId] ?? []
+                    if !model.connectedAccounts.contains(a.nodeId) {
+                        Text("Connecting…")
+                    } else if !model.devicesLoaded.contains(a.nodeId) {
+                        Text("Looking for your devices…")
+                    } else if list.isEmpty {
+                        Text("No other devices are visible. Devices appear here while AudioNet runs on them with visibility on.")
+                    } else {
+                        // One native disclosure per device: a single line
+                        // until expanded. VoiceOver reads "Studio PC,
+                        // Windows, collapsed, disclosure triangle"; VO-Space
+                        // or the arrow keys open it.
+                        ForEach(list, id: \.nodeId) { d in
+                            DisclosureGroup(isExpanded: model.expansion(d.nodeId)) {
+                                DeviceControls(device: d)
+                            } label: {
+                                // The whole line toggles, not just the arrow.
+                                Text(verbatim: deviceLabel(d))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { model.expansion(d.nodeId).wrappedValue.toggle() }
+                                    // The same for VoiceOver and Full Keyboard Access.
+                                    .accessibilityAction { model.expansion(d.nodeId).wrappedValue.toggle() }
+                            }
+                        }
+                    }
+                } header: {
+                    Text(model.accounts.count > 1 ? "Devices in \(a.accountName)" : "Your devices").font(.headline)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+/// The streams this Mac started: state, stop, mute and volume.
+struct StreamsTab: View {
+    @EnvironmentObject var model: AppModel
 
     var body: some View {
         Form {
             Section {
-                // The row states its own label and value: LabeledContent's
-                // accessibility value stays at what it was at launch on
-                // macOS (VoiceOver kept reading "Offline" while the text on
-                // screen said "Online").
-                LabeledContent("Status") { Text(statusText).foregroundStyle(.primary) }
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityAddTraits(.isStaticText)
-                    .accessibilityLabel("Status")
-                    .accessibilityValue(statusText)
-                    .accessibilityIdentifier("status")
-                // Sharing, per account: online either way while AudioNet
-                // runs; sharing decides whether this Mac sends its audio.
-                ForEach(model.accounts, id: \.nodeId) { a in
-                    let label = model.accounts.count > 1 ? "Share This Mac's Audio in \(a.accountName)" : "Share This Mac's Audio"
-                    Toggle(label, isOn: model.sharing(a.nodeId))
-                        .disabled(model.signingOut.contains(a.nodeId))
-                        // Named on the switch itself: in a grouped form on
-                        // macOS the switch otherwise has no name of its own
-                        // (VoiceOver would say only "switch").
-                        .accessibilityLabel(label)
-                        .accessibilityIdentifier("sharing")
-                }
-            } header: {
-                Text("This Mac").font(.headline)
-            }
-
-            // Every account this Mac is signed in to, each with its own Sign
-            // Out, and another one can be added.
-            Section {
-                ForEach(model.accounts, id: \.nodeId) { a in
-                    HStack {
-                        // Verbatim: an interpolated string would turn the
-                        // address into a link, drawn in a lower-contrast color.
-                        Text(verbatim: "Signed in as \"\(a.deviceName)\" to account \(a.username) on \(a.serverUrl).")
-                        Spacer()
-                        Button(model.signingOut.contains(a.nodeId) ? "Signing Out…" : "Sign Out") { signingOut = a }
-                            .disabled(model.signingOut.contains(a.nodeId))
-                            .accessibilityLabel("Sign Out of \(a.accountName)")
-                            .accessibilityIdentifier("signOut")
-                    }
-                }
-                Button("Add Account…") { addingAccount = true }
-                    .accessibilityIdentifier("addAccount")
-            } header: {
-                Text("Accounts").font(.headline)
-            }
-            .sheet(isPresented: $addingAccount) { SignInView(adding: true) }
-            .confirmationDialog(signOutQuestion, isPresented: Binding(
-                get: { signingOut != nil }, set: { if !$0 { signingOut = nil } }), titleVisibility: .visible) {
-                Button("Sign Out", role: .destructive) {
-                    if let a = signingOut { model.signOut(a) }
-                    signingOut = nil
-                }
-                .accessibilityIdentifier("confirmSignOut")
-                Button("Cancel", role: .cancel) { signingOut = nil }
-            }
-
-            // One section per account (a heading names the account when
-            // there are several).
-            ForEach(model.accounts, id: \.nodeId) { a in
-            Section {
-                let list = model.devicesByAccount[a.nodeId] ?? []
-                if !model.connectedAccounts.contains(a.nodeId) {
-                    Text("Connecting…")
-                } else if !model.devicesLoaded.contains(a.nodeId) {
-                    Text("Looking for your devices…")
-                } else if list.isEmpty {
-                    Text("No other devices yet.")
-                } else {
-                    // One native disclosure per device: a single line until
-                    // expanded. VoiceOver reads "Studio PC: online, collapsed,
-                    // disclosure triangle"; VO-Space or the arrow keys open it.
-                    ForEach(list, id: \.nodeId) { d in
-                        DisclosureGroup(isExpanded: model.expansion(d.nodeId)) {
-                            DeviceControls(device: d)
-                        } label: {
-                            // The whole line toggles, not just the arrow.
-                            Text(verbatim: "\(d.name): \(deviceState(d))")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                                .onTapGesture { model.expansion(d.nodeId).wrappedValue.toggle() }
-                                // The same for VoiceOver and Full Keyboard Access.
-                                .accessibilityAction { model.expansion(d.nodeId).wrappedValue.toggle() }
-                        }
-                    }
-                }
-            } header: {
-                Text(model.accounts.count > 1 ? "Devices in \(a.accountName)" : "Your devices").font(.headline)
-            }
-            }
-
-            Section {
                 if model.streams.isEmpty {
-                    Text("No streams are running.")
+                    Text("No streams are running. Start one from Devices: open a device, then Listen or Send.")
                 } else {
                     ForEach(model.streams) { row in
                         HStack {
@@ -271,20 +266,76 @@ struct MainView: View {
             } header: {
                 Text("Streams this Mac started").font(.headline)
             }
-
-            LogSection()
         }
         .formStyle(.grouped)
     }
+}
 
-    private var statusText: String {
-        if model.accounts.isEmpty { return "Not signed in" }
-        if !model.connected { return "Connecting…" }
-        let sharing = model.sharingAccounts.count
-        if model.accounts.count == 1 {
-            return sharing == 1 ? "Online, sharing its audio" : "Online, not sharing its audio"
+/// The accounts this Mac is signed in to: its visibility in each, Sign
+/// Out, Add Account, and the web client's Manage Devices.
+struct AccountsTab: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.openURL) private var openURL
+    @State private var addingAccount = false
+    /// The account Sign Out was chosen for (asked first).
+    @State private var signingOut: Account?
+
+    private var signOutQuestion: String {
+        "Sign out of \(signingOut?.accountName ?? "this account")? This Mac is removed from that account. To use it there again, sign in again."
+    }
+
+    var body: some View {
+        Form {
+            ForEach(model.accounts, id: \.nodeId) { a in
+                Section {
+                    // Verbatim: an interpolated string would turn the
+                    // address into a link, drawn in a lower-contrast color.
+                    Text(verbatim: "Signed in as \"\(a.deviceName)\" to account \(a.username) on \(a.serverUrl).")
+                    let label = model.accounts.count > 1 ? "Visible to My Other Devices in \(a.accountName)" : "Visible to My Other Devices"
+                    Toggle(label, isOn: model.visibility(a.nodeId))
+                        .disabled(model.signingOut.contains(a.nodeId))
+                        // Named on the switch itself: in a grouped form on
+                        // macOS the switch otherwise has no name of its own.
+                        .accessibilityLabel(label)
+                        .accessibilityIdentifier("visible")
+                    Text(model.isVisible(a.nodeId)
+                         ? "Your other devices see this Mac, and can listen to it and send to it."
+                         : "Your other devices cannot see this Mac or reach it. It can still listen to them and send to them.")
+                    HStack {
+                        Button("Manage Devices…") {
+                            if let url = URL(string: a.serverUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/?manage") {
+                                openURL(url)
+                            }
+                        }
+                        .accessibilityLabel(model.accounts.count > 1 ? "Manage Devices in \(a.accountName)" : "Manage Devices")
+                        .accessibilityIdentifier("manageDevices")
+                        Spacer()
+                        Button(model.signingOut.contains(a.nodeId) ? "Signing Out…" : "Sign Out…") { signingOut = a }
+                            .disabled(model.signingOut.contains(a.nodeId))
+                            .accessibilityLabel("Sign Out of \(a.accountName)")
+                            .accessibilityIdentifier("signOut")
+                    }
+                } header: {
+                    Text(model.accounts.count > 1 ? a.accountName : "Account").font(.headline)
+                }
+            }
+            Section {
+                Button("Add Account…") { addingAccount = true }
+                    .accessibilityIdentifier("addAccount")
+                Text("Renaming and removing your devices is in Manage Devices, in the web client.")
+            }
         }
-        return "Online in \(model.accounts.count) accounts, sharing in \(sharing)"
+        .formStyle(.grouped)
+        .sheet(isPresented: $addingAccount) { SignInView(adding: true) }
+        .confirmationDialog(signOutQuestion, isPresented: Binding(
+            get: { signingOut != nil }, set: { if !$0 { signingOut = nil } }), titleVisibility: .visible) {
+            Button("Sign Out", role: .destructive) {
+                if let a = signingOut { model.signOut(a) }
+                signingOut = nil
+            }
+            .accessibilityIdentifier("confirmSignOut")
+            Button("Cancel", role: .cancel) { signingOut = nil }
+        }
     }
 }
 
@@ -319,39 +370,19 @@ struct DeviceControls: View {
                     items: device.sources.map { ($0.id, sourceLabel($0)) }, selection: model.choice(id, \.listenSource))
         PopUpPicker(label: "Play it on", identifier: "listenOutput",
                     items: model.local.outputs.map { ($0.id, outputLabel($0)) }, selection: model.choice(id, \.listenOutput))
-        if device.online && !device.sharing {
-            Text("\(device.name) is not sharing its audio: it cannot be listened to, but you can send to it.")
-        }
         Button("Listen") { model.listen(device) }
-            .disabled(!model.online || !device.sharing)
+            .disabled(!model.online)
             .accessibilityLabel("Listen to \(device.name)")
             .accessibilityIdentifier("listen")
         PopUpPicker(label: "Send from this Mac", identifier: "sendSource",
                     items: model.local.sources.map { ($0.id, sourceLabel($0)) }, selection: model.choice(id, \.sendSource))
         PopUpPicker(label: "To its output", identifier: "sendOutput",
                     items: device.outputs.map { ($0.id, outputLabel($0)) }, selection: model.choice(id, \.sendOutput))
-        let sharingHere = model.account(of: device).map(model.isSharing) ?? false
-        if !sharingHere {
-            Text("Turn on Share This Mac's Audio to send from this Mac.")
-        }
         Button("Send") { model.send(device) }
-            .disabled(!model.online || !device.online || !sharingHere)
+            .disabled(!model.online)
             .accessibilityLabel("Send to \(device.name)")
             .accessibilityIdentifier("send")
     }
-}
-
-/// A device's state in words: offline, online, or online but not sharing.
-func deviceState(_ d: Device) -> String {
-    !d.online ? "offline" : d.sharing ? "online" : "online, not sharing"
-}
-
-func sourceLabel(_ s: Source) -> String {
-    "\(s.name) (\(s.isInput ? "input" : "what it plays")\(s.isDefault ? ", default" : ""))"
-}
-
-func outputLabel(_ o: Output) -> String {
-    o.isDefault ? "\(o.name) (default)" : o.name
 }
 
 /// A labeled pop-up menu row. AppKit's NSPopUpButton, not a SwiftUI
@@ -412,8 +443,18 @@ struct PopUpButton: NSViewRepresentable {
     }
 }
 
-/// A button that opens the status log in a dialog, so the log does not
-/// fill the window.
+/// "Status Log…": opens the status log in a dialog.
+struct StatusLogButton: View {
+    @State private var showing = false
+
+    var body: some View {
+        Button("Status Log…") { showing = true }
+            .accessibilityIdentifier("openStatusLog")
+            .sheet(isPresented: $showing) { StatusLogDialog() }
+    }
+}
+
+/// A form section with "Status Log…" (the sign-in page's).
 struct LogSection: View {
     @EnvironmentObject var model: AppModel
     @State private var showing = false

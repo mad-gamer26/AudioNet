@@ -23,11 +23,17 @@ struct StreamRow: Identifiable, Equatable {
     var muted = false
 }
 
+/// The signed-in screens' tabs, in order.
+enum MainTab: Hashable {
+    case devices, streams, accounts, settings
+}
+
 /// Everything the screens show, and every action they take.
 ///
 /// The iPhone can be signed in to several AudioNet accounts; it is a
-/// separate device in each, with its own connection (engine client). Going
-/// online or offline applies to all of them.
+/// separate device in each, with its own connection (engine client). While
+/// AudioNet runs it is connected to all of them, visible in each or not as
+/// chosen there.
 @MainActor
 final class AppModel: ObservableObject {
     /// The accounts this iPhone is signed in to (each with this iPhone's
@@ -35,13 +41,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var accounts: [Account] = []
     @Published private(set) var readingAccount = false
     /// Connected to its accounts: while AudioNet runs and is signed in,
-    /// this iPhone is online in every account (sharing or not).
+    /// this iPhone is connected to every account (visible there or not).
     @Published private(set) var online = false
-    /// Accounts in which this iPhone shares its audio (by its device id
-    /// there): others may listen to it and it may send its own. Not
-    /// sharing, it still sees the devices, listens to them and plays what
-    /// they send it. Each account's choice is saved.
-    @Published private(set) var sharingAccounts: Set<String> = []
+    /// Accounts in which this iPhone is visible (by its device id there):
+    /// the account's other devices see it, and can listen to it and send to
+    /// it. Not visible, it is a visitor there: hidden from them and out of
+    /// their reach, but it still sees them, listens to them and sends to
+    /// them. Each account's choice is saved; new accounts start visible.
+    @Published private(set) var visibleAccounts: Set<String> = []
     /// Accounts being signed out of (their device is being removed).
     @Published private(set) var signingOut: Set<String> = []
     /// Accounts whose connection is up (by this iPhone's device id there).
@@ -71,11 +78,9 @@ final class AppModel: ObservableObject {
     @Published var choices: [String: DeviceChoices] = [:]
     /// Devices whose disclosure is open (node ids).
     @Published var expanded: Set<String> = []
+    /// The selected tab.
+    @Published var tab = MainTab.devices
 
-    /// 0.7's "go online when AudioNet opens" (one switch for all accounts):
-    /// read once, to carry that choice over to accounts with no sharing
-    /// choice of their own yet. No longer offered.
-    @AppStorage("startSharing", store: AccountStore.settings) var startSharing = false
     /// "Show Measurements" (Settings, off by default): numbers about streams
     /// and the network, under each stream and in the status log, for
     /// troubleshooting. Off, AudioNet says what happens in words only.
@@ -119,14 +124,13 @@ final class AppModel: ObservableObject {
             return
         }
         readingAccount = true
-        let goOnlineNow = startSharing
         Task.detached {
             let (accounts, problem) = AccountStore.loadAll()
-            await MainActor.run { self.accountsRead(accounts, problem, goOnline: goOnlineNow) }
+            await MainActor.run { self.accountsRead(accounts, problem) }
         }
     }
 
-    private func accountsRead(_ read: [Account], _ problem: String?, goOnline: Bool) {
+    private func accountsRead(_ read: [Account], _ problem: String?) {
         readingAccount = false
         accounts = read
         if let problem { announce(problem) }
@@ -136,11 +140,6 @@ final class AppModel: ObservableObject {
         }
         note("Welcome back. This iPhone is signed in to \(accountList).")
         Notifications.shared.appStarted()
-        // An account with no saved choice yet (0.7 had one switch for all)
-        // shares if 0.7 went online at launch.
-        for a in read where savedSharing(a.nodeId) == nil {
-            AccountStore.settings.set(goOnline, forKey: "sharing-\(a.nodeId)")
-        }
         connectAll()
     }
 
@@ -212,7 +211,7 @@ final class AppModel: ObservableObject {
                 case .success(let account):
                     self.accounts.append(account)
                     if let problem = AccountStore.saveAll(self.accounts) { self.announce(problem) }
-                    self.announce("Signed in as \"\(account.deviceName)\" to \(account.accountName). This iPhone is online there, not sharing its audio: turn on sharing to share it.")
+                    self.announce("Signed in as \"\(account.deviceName)\" to \(account.accountName). This iPhone is visible there: your other devices see it, and can listen to it and send to it.")
                     self.connectAll()
                     self.connect(account)
                     Notifications.shared.accountsChanged()
@@ -226,7 +225,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Signs this iPhone out of one account, sharing or not: its connection
+    /// Signs this iPhone out of one account, visible or not: its connection
     /// stops, then the server removes this iPhone's device from the account
     /// (nothing is left behind). If the server cannot be reached, it says
     /// so and stays signed in there.
@@ -242,7 +241,8 @@ final class AppModel: ObservableObject {
             switch result {
             case .success:
                 self.accounts.removeAll { $0.nodeId == id }
-                self.sharingAccounts.remove(id)
+                self.visibleAccounts.remove(id)
+                AccountStore.settings.removeObject(forKey: "visible-\(id)")
                 AccountStore.settings.removeObject(forKey: "sharing-\(id)")
                 if let problem = AccountStore.saveAll(self.accounts) { self.announce(problem) }
                 Notifications.shared.signedOut(account, remaining: self.accounts)
@@ -299,9 +299,9 @@ final class AppModel: ObservableObject {
             }
         }
         let c = Client(account: account, listener: events)
-        let share = savedSharing(id) ?? false
-        c.setSharing(sharing: share)
-        if share { sharingAccounts.insert(id) } else { sharingAccounts.remove(id) }
+        let visible = savedVisibility(id)
+        c.setVisible(visible: visible)
+        if visible { visibleAccounts.insert(id) } else { visibleAccounts.remove(id) }
         clients[id] = c
         c.start()
     }
@@ -332,11 +332,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Offline: nothing the servers told us is shown any more (devices, their
-    /// open disclosures, streams and measurements).
+    /// Disconnected: nothing the servers told us is shown any more (devices,
+    /// their open disclosures, streams and measurements).
     private func clearOnlineState() {
         online = false
-        sharingAccounts = []
+        visibleAccounts = []
         connectedAccounts = []
         streams = []
         devicesByAccount = [:]
@@ -411,7 +411,7 @@ final class AppModel: ObservableObject {
     }
 
     func listen(_ d: Device) {
-        guard let (account, c) = client(for: d), usable(d), listenable(d) else { return }
+        guard let (account, c) = client(for: d) else { return }
         let ch = choices[d.nodeId] ?? DeviceChoices()
         guard let s = d.sources.first(where: { $0.id == ch.listenSource }),
               let o = local.outputs.first(where: { $0.id == ch.listenOutput }) else {
@@ -424,11 +424,7 @@ final class AppModel: ObservableObject {
     }
 
     func send(_ d: Device) {
-        guard let (account, c) = client(for: d), usable(d) else { return }
-        guard isSharing(account) else {
-            announce("This iPhone is not sharing its audio in \(name(account)). Turn on sharing there to send from it.")
-            return
-        }
+        guard let (account, c) = client(for: d) else { return }
         let ch = choices[d.nodeId] ?? DeviceChoices()
         guard let s = local.sources.first(where: { $0.id == ch.sendSource }),
               let o = d.outputs.first(where: { $0.id == ch.sendOutput }) else {
@@ -442,39 +438,35 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: Sharing
+    // MARK: Visibility
 
-    /// The saved choice for an account, if it was ever made.
-    private func savedSharing(_ id: String) -> Bool? {
-        AccountStore.settings.object(forKey: "sharing-\(id)") as? Bool
+    /// The saved choice for an account: visible unless it was turned off.
+    /// (The sharing choice of versions before 1.3 is not carried over:
+    /// every account starts visible.)
+    private func savedVisibility(_ id: String) -> Bool {
+        AccountStore.settings.object(forKey: "visible-\(id)") as? Bool ?? true
     }
 
-    /// Whether this iPhone shares its audio in that account.
-    func isSharing(_ id: String) -> Bool { sharingAccounts.contains(id) }
+    /// Whether this iPhone is visible in that account.
+    func isVisible(_ id: String) -> Bool { visibleAccounts.contains(id) }
 
-    /// A switch for one account's sharing.
-    func sharing(_ id: String) -> Binding<Bool> {
-        Binding(get: { self.sharingAccounts.contains(id) },
-                set: { self.setSharing(id, $0) })
+    /// A switch for one account's visibility.
+    func visibility(_ id: String) -> Binding<Bool> {
+        Binding(get: { self.visibleAccounts.contains(id) },
+                set: { self.setVisible(id, $0) })
     }
 
-    /// Starts or stops sharing this iPhone's audio in one account, and saves
-    /// the choice. Stopping ends every stream it sends there; what it
-    /// receives goes on.
-    func setSharing(_ id: String, _ on: Bool) {
+    /// Makes this iPhone visible in one account or hides it, and saves the
+    /// choice. Hiding ends the streams other devices have with it; the ones
+    /// it started go on.
+    func setVisible(_ id: String, _ on: Bool) {
         guard accounts.contains(where: { $0.nodeId == id }) else { return }
-        AccountStore.settings.set(on, forKey: "sharing-\(id)")
-        if on { sharingAccounts.insert(id) } else { sharingAccounts.remove(id) }
-        clients[id]?.setSharing(sharing: on)
+        AccountStore.settings.set(on, forKey: "visible-\(id)")
+        if on { visibleAccounts.insert(id) } else { visibleAccounts.remove(id) }
+        clients[id]?.setVisible(visible: on)
         announce(on
-            ? "Sharing this iPhone's audio in \(name(id)): your devices there can listen to it, and it can send its audio."
-            : "Stopped sharing in \(name(id)). This iPhone is still online there: it receives audio, but sends none of its own.")
-    }
-
-    /// Start or stop sharing everywhere (the menu bar's choice).
-    func toggleSharingEverywhere() {
-        let on = sharingAccounts.isEmpty
-        for a in accounts { setSharing(a.nodeId, on) }
+            ? "This iPhone is visible in \(name(id)): your other devices there see it, and can listen to it and send to it."
+            : "This iPhone is no longer visible in \(name(id)): your other devices there cannot see it or reach it. It can still listen to them and send to them.")
     }
 
     func stopStream(_ row: StreamRow) {
@@ -500,23 +492,6 @@ final class AppModel: ObservableObject {
                                                      muted: streams[i].muted)
     }
 
-    private func usable(_ d: Device) -> Bool {
-        guard d.online else {
-            announce("\(d.name) is offline.")
-            return false
-        }
-        return true
-    }
-
-    /// A device that does not share can be sent to, not listened to.
-    private func listenable(_ d: Device) -> Bool {
-        guard d.sharing else {
-            announce("\(d.name) is not sharing its audio, so it cannot be listened to. You can still send to it.")
-            return false
-        }
-        return true
-    }
-
     private func start(account: String, title: String, _ begin: () throws -> String) {
         do {
             let id = try begin()
@@ -538,10 +513,10 @@ final class AppModel: ObservableObject {
         switch event {
         case .connected:
             connectedAccounts.insert(account)
-            let how = isSharing(account) ? "sharing its audio" : "not sharing its audio"
+            let how = isVisible(account) ? "visible to your other devices" : "not visible to your other devices"
             announce(accounts.count > 1
-                ? "Online in \(name(account)), \(how)."
-                : "Online, \(how).")
+                ? "Connected to \(name(account)), \(how)."
+                : "Connected, \(how).")
             refreshLocalAudio()
         case .disconnected(let reason):
             connectedAccounts.remove(account)
@@ -556,18 +531,21 @@ final class AppModel: ObservableObject {
         case .deviceChanged(let device):
             var list = devicesByAccount[account] ?? []
             if let i = list.firstIndex(where: { $0.nodeId == device.nodeId }) {
-                let was = list[i]
                 list[i] = device
-                if was.online != device.online {
-                    announce("\(device.name) is now \(device.online ? "online" : "offline").")
-                } else if device.online && was.sharing != device.sharing {
-                    announce("\(device.name) \(device.sharing ? "started" : "stopped") sharing its audio.")
-                }
             } else {
                 list.append(device)
+                announce("\(device.name) is now visible.")
             }
             devicesByAccount[account] = list
             fillChoices(device)
+        case .deviceGone(let nodeId):
+            var list = devicesByAccount[account] ?? []
+            if let i = list.firstIndex(where: { $0.nodeId == nodeId }) {
+                let gone = list.remove(at: i)
+                devicesByAccount[account] = list
+                expanded.remove(nodeId)
+                announce("\(gone.name) is no longer visible.")
+            }
         case .stream(let id, let state, let detail):
             guard let i = streams.firstIndex(where: { $0.id == id }) else { return }
             let text = state == .active ? "connected" : detail.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()

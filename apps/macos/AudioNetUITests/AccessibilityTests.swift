@@ -127,7 +127,7 @@ final class AccessibilityTests: XCTestCase {
     /// The entries of AudioNet's menu bar menu, read from the accessibility
     /// tree without opening it. (XCTest cannot open the menu of an app
     /// without a Dock icon, nor any menu while the Mac's screen is dark.)
-    /// Every place that says whether AudioNet is online, in words: the
+    /// Every place that says whether this Mac is visible, in words: the
     /// window's Status row and the menu bar item's menu.
     /// The Status row as VoiceOver meets it: the row element's own label
     /// and value, and each text inside it.
@@ -148,7 +148,8 @@ final class AccessibilityTests: XCTestCase {
     }
 
     /// Waits until the window and the menu bar item both say `window` and
-    /// `menu` (for example "Online" and "AudioNet is online").
+    /// `menu` (for example "Visible to your other devices" and "This Mac is
+    /// visible to your other devices").
     private func waitForStatus(_ app: XCUIApplication, window: String, menu: String,
                                file: StaticString = #filePath, line: UInt = #line) {
         let ok = waitUntil(15) {
@@ -283,32 +284,39 @@ final class AccessibilityTests: XCTestCase {
         closeLog(app)
     }
 
-    /// Signed in to two accounts: online at once, not sharing (a switch per
-    /// account); choose a device, listen (to a silent source, on a silent
-    /// output when there is one; receiving needs no sharing), sending
-    /// unavailable until sharing, share, audit every section with a stream
-    /// running, stop, sign out of the second account (asked first).
+    /// Chooses a tab of the main window with its View menu shortcut
+    /// (Command-1 to Command-3), as a keyboard user would.
+    private func showTab(_ app: XCUIApplication, _ number: Int, _ name: String,
+                         file: StaticString = #filePath, line: UInt = #line) {
+        app.typeKey(XCUIKeyboardKey(rawValue: "\(number)"), modifierFlags: .command)
+        let tab = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND (elementType == %d OR elementType == %d)",
+            name, XCUIElement.ElementType.radioButton.rawValue, XCUIElement.ElementType.tab.rawValue)).firstMatch
+        XCTAssertTrue(waitUntil(5) { tab.exists && (tab.value as? Int ?? (tab.isSelected ? 1 : 0)) == 1 },
+                      "the \(name) tab was not chosen", file: file, line: line)
+    }
+
+    /// Signed in to two accounts, visible in both at once (a switch per
+    /// account, on the Accounts tab); the tabs from the keyboard; choose a
+    /// device on Devices, listen (to a silent source, on a silent output
+    /// when there is one), the stream on Streams (volume, mute, audit,
+    /// stop); hide this Mac in one account; sign out of the second account
+    /// (asked first); the visibility choice kept across restarts.
     func testSignedInWindowPassesAccessibilityAudit() throws {
         guard FileManager.default.fileExists(atPath: Self.accountFile) else {
             throw XCTSkip("no test device (run scripts/test/mac_ui_tests.py)")
         }
         let app = launch(signedIn: true)
-        // A checkbox or a switch, depending on the macOS version.
-        let sharing = app.descendants(matching: .any).matching(identifier: "sharing")
-        XCTAssertTrue(sharing.firstMatch.waitForExistence(timeout: 10), "the app did not open signed in")
-        XCTAssertEqual(sharing.count, 2, "one sharing switch per account")
-        let toggle = sharing.firstMatch
-        XCTAssertTrue(toggle.label.hasPrefix("Share This Mac's Audio in "), "switch named \(toggle.label)")
-        func on(_ e: XCUIElement) -> Int? { (e.value as? Int) ?? (e.value as? String).flatMap { Int($0) } }
-        XCTAssertEqual(on(toggle), 0, "a new account starts without sharing")
-        try audit(app)
-        // Online at once in both accounts, sharing in neither (the menu bar
-        // item says so too).
-        waitForStatus(app, window: "Online in 2 accounts, sharing in 0", menu: "Online, not sharing this Mac's audio")
-        dumpStatus(app, "at launch")
-        // Each device is a collapsed disclosure; expand the test source.
+        // Opens on Devices, visible in both accounts (the menu bar item
+        // says so too).
         let source = app.disclosureTriangles.matching(NSPredicate(format: "label BEGINSWITH 'Remote test source'")).firstMatch
         XCTAssertTrue(source.waitForExistence(timeout: 30), "the test source device did not appear as a disclosure")
+        waitForStatus(app, window: "Visible in 2 of 2 accounts", menu: "This Mac is visible to your other devices")
+        dumpStatus(app, "at launch")
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "visible").firstMatch.exists,
+                       "the Accounts tab's switches show on the Devices tab")
+        try audit(app)
+
+        // Each device is a collapsed disclosure; expand the test source.
         XCTAssertEqual(source.value as? Int, 0, "a device should start collapsed")
         XCTAssertFalse(app.popUpButtons["listenSource"].exists, "a collapsed device should not show its controls")
         // A click on the device's line toggles it (VoiceOver presses the
@@ -323,9 +331,7 @@ final class AccessibilityTests: XCTestCase {
         }
         XCTAssertTrue(shown, "expanding the device did not show its controls: \(source.debugDescription)")
         XCTAssertEqual(source.value as? Int, 1, "the device does not report itself expanded")
-
         let listenSource = app.popUpButtons["listenSource"]
-        XCTAssertTrue(listenSource.waitForExistence(timeout: 10))
         listenSource.click()
         app.menuItems.matching(NSPredicate(format: "title BEGINSWITH 'Sound playing on UniMic'")).firstMatch.click()
         let listenOutput = app.popUpButtons["listenOutput"]
@@ -335,29 +341,21 @@ final class AccessibilityTests: XCTestCase {
         // test source is silent, so nothing is heard.
         let quiet = app.menuItems.matching(NSPredicate(format: "title BEGINSWITH 'MacBook Air Speakers'")).firstMatch
         if quiet.exists { quiet.click() } else { app.typeKey(.escape, modifierFlags: []) }
-
-        // Not sharing: sending is unavailable here, and says why.
-        XCTAssertFalse(app.buttons["send"].isEnabled, "sending should need sharing")
-        let hint = app.staticTexts.matching(NSPredicate(format: "value == %@ OR label == %@",
-            "Turn on Share This Mac's Audio to send from this Mac.", "Turn on Share This Mac's Audio to send from this Mac.")).firstMatch
-        XCTAssertTrue(hint.exists, "no word on why sending is unavailable")
-        // Receiving needs no sharing.
+        XCTAssertTrue(app.buttons["send"].isEnabled, "sending should be offered")
+        try audit(app)
         let listenButton = app.buttons["listen"]
         scrollIntoView(app, listenButton)
-        print("LISTEN: \(app.buttons.matching(identifier: "listen").count) buttons, enabled \(listenButton.isEnabled), hittable \(listenButton.isHittable), frame \(listenButton.frame), window \(app.windows.firstMatch.frame)")
         listenButton.click()
+
+        // The stream, on the Streams tab (its title counts the streams).
+        showTab(app, 2, "Streams")
         let stream = app.staticTexts.matching(identifier: "stream").firstMatch
-        for _ in 0..<8 where !stream.exists { app.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: -120) }
         if !stream.waitForExistence(timeout: 10) {
             let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
             shot.name = "no-stream"
             shot.lifetime = .keepAlways
             add(shot)
             openLog(app)
-            let logShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-            logShot.name = "no-stream-log"
-            logShot.lifetime = .keepAlways
-            add(logShot)
             XCTFail("no stream row; status log: \(logText(app).suffix(1500))")
             return
         }
@@ -366,44 +364,43 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [active], timeout: 30), .completed,
                        "stream: \(stream.value ?? "")")
         checkStreamVolume(app)
-        // Share in the first account: the status follows, sending is offered.
-        scrollIntoView(app, toggle)
-        toggle.click()
-        XCTAssertTrue(waitUntil(10) { on(toggle) == 1 }, "sharing did not turn on (\(toggle.value ?? "no value"))")
-        XCTAssertTrue(waitUntil(10) { statusWords(app).window.contains("Online in 2 accounts, sharing in 1") },
-                      "the Status row did not follow: \(statusWords(app).window)")
-        XCTAssertTrue(waitUntil(5) { app.buttons["send"].isEnabled }, "sending should be offered while sharing")
-        // Collapse the device again (so the stream is in view for the audit).
-        source.click()
-        XCTAssertTrue(waitUntil(5) { (source.value as? Int) == 0 }, "the device did not collapse")
-        XCTAssertFalse(app.popUpButtons["listenSource"].exists, "a collapsed device still shows its controls")
-        // The whole stream in view for the audit, down to its Stop button.
-        scrollIntoView(app, app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Stop Listening to'")).firstMatch)
         try audit(app)
-
         let stop = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Stop Listening to'")).firstMatch
         XCTAssertTrue(stop.exists, "the Stop button does not name its stream")
         stop.click()
-        if !app.staticTexts["No streams are running."].waitForExistence(timeout: 15) {
-            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-            shot.name = "stop-failure"
-            shot.lifetime = .keepAlways
-            add(shot)
-            let rows = app.staticTexts.matching(identifier: "stream").allElementsBoundByIndex.map { "\($0.value ?? $0.label)" }
+        let none = app.staticTexts.matching(NSPredicate(format: "value BEGINSWITH 'No streams are running' OR label BEGINSWITH 'No streams are running'")).firstMatch
+        if !none.waitForExistence(timeout: 15) {
             openLog(app)
-            XCTFail("the stream did not end; rows \(rows); log: \(logText(app).suffix(1500))")
+            XCTFail("the stream did not end; log: \(logText(app).suffix(1500))")
             return
         }
-        waitForStatus(app, window: "Online in 2 accounts, sharing in 1", menu: "Online, sharing this Mac's audio")
-        dumpStatus(app, "sharing")
 
-        // Two accounts (the second a temporary one): each listed with its
-        // own Sign Out; signing out of the second leaves the first.
+        // Accounts: a visibility switch per account, on (new accounts start
+        // visible). Hiding in the first account: the status follows.
+        showTab(app, 3, "Accounts")
+        // A checkbox or a switch, depending on the macOS version.
+        let switches = app.descendants(matching: .any).matching(identifier: "visible")
+        XCTAssertTrue(switches.firstMatch.waitForExistence(timeout: 10), "no visibility switch on Accounts")
+        XCTAssertEqual(switches.count, 2, "one visibility switch per account")
+        let toggle = switches.firstMatch
+        XCTAssertTrue(toggle.label.hasPrefix("Visible to My Other Devices in "), "switch named \(toggle.label)")
+        func on(_ e: XCUIElement) -> Int? { (e.value as? Int) ?? (e.value as? String).flatMap { Int($0) } }
+        XCTAssertEqual(on(toggle), 1, "a new account starts visible")
+        XCTAssertTrue(app.buttons["manageDevices"].exists, "no Manage Devices")
+        try audit(app)
+        toggle.click()
+        XCTAssertTrue(waitUntil(10) { on(toggle) == 0 }, "visibility did not turn off (\(toggle.value ?? "no value"))")
+        waitForStatus(app, window: "Visible in 1 of 2 accounts", menu: "This Mac is visible to your other devices")
+        dumpStatus(app, "hidden in one")
+
+        // Two accounts (the second a temporary one): each with its own Sign
+        // Out; signing out of the second leaves the first.
         let signOuts = app.buttons.matching(identifier: "signOut")
         XCTAssertEqual(signOuts.count, 2, "accounts listed: \(signOuts.count)")
         XCTAssertTrue(app.buttons["addAccount"].exists, "no Add Account")
         let second = signOuts.element(boundBy: 1)
         XCTAssertTrue(second.label.hasPrefix("Sign Out of uitest-"), "second account: \(second.label)")
+        scrollIntoView(app, second)
         second.click()
         // Asked first; then this Mac is removed from that account.
         let confirm = app.buttons["confirmSignOut"]
@@ -412,24 +409,26 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertTrue(waitUntil(20) { signOuts.count == 1 }, "still \(signOuts.count) accounts")
         try audit(app)
 
-        // The sharing choice is kept across restarts: the account left
-        // shares (turned on above); quit and open again, then turn it off
-        // and do the same.
+        // The choice is kept across restarts: the account left is hidden
+        // (turned off above); quit and open again, then make it visible and
+        // do the same.
         app.terminate()
         var again = reopen()
-        waitForStatus(again, window: "Online, sharing its audio", menu: "Online, sharing this Mac's audio")
-        let kept = again.descendants(matching: .any).matching(identifier: "sharing").firstMatch
-        XCTAssertTrue(kept.waitForExistence(timeout: 10), "no sharing switch after reopening")
-        XCTAssertEqual(on(kept), 1, "the switch should be on after reopening")
+        waitForStatus(again, window: "Hidden from your other devices", menu: "This Mac is hidden from your other devices")
+        showTab(again, 3, "Accounts")
+        let kept = again.descendants(matching: .any).matching(identifier: "visible").firstMatch
+        XCTAssertTrue(kept.waitForExistence(timeout: 10), "no visibility switch after reopening")
+        XCTAssertEqual(on(kept), 0, "the switch should be off after reopening")
         kept.click()
-        XCTAssertTrue(waitUntil(10) { statusWords(again).window.contains("Online, not sharing its audio") },
-                      "sharing did not turn off: \(statusWords(again).window)")
+        XCTAssertTrue(waitUntil(10) { statusWords(again).window.contains("Visible to your other devices") },
+                      "visibility did not turn on: \(statusWords(again).window)")
         again.terminate()
         again = reopen()
-        waitForStatus(again, window: "Online, not sharing its audio", menu: "Online, not sharing this Mac's audio")
-        let off = again.descendants(matching: .any).matching(identifier: "sharing").firstMatch
-        XCTAssertTrue(off.waitForExistence(timeout: 10), "no sharing switch after reopening")
-        XCTAssertEqual(on(off), 0, "the switch should be off after reopening")
+        waitForStatus(again, window: "Visible to your other devices", menu: "This Mac is visible to your other devices")
+        showTab(again, 3, "Accounts")
+        let still = again.descendants(matching: .any).matching(identifier: "visible").firstMatch
+        XCTAssertTrue(still.waitForExistence(timeout: 10), "no visibility switch after reopening")
+        XCTAssertEqual(on(still), 1, "the switch should be on after reopening")
         again.terminate()
     }
 

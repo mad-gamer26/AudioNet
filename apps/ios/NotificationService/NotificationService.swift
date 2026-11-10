@@ -4,7 +4,7 @@ import Security
 import UserNotifications
 
 /// Opens AudioNet's notifications: the server sealed the title (the account
-/// name) and text ("Studio PC is online.") with this iPhone's key
+/// name) and text ("Studio PC is now visible.") with this iPhone's key
 /// (ChaCha20-Poly1305: nonce, ciphertext and tag, base64 in "e"); the push
 /// gateway and Apple carried only that and a neutral placeholder.
 final class NotificationService: UNNotificationServiceExtension {

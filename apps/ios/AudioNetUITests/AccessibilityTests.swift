@@ -172,23 +172,35 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertTrue(message.waitForExistence(timeout: 5), "the missing server address was not reported")
     }
 
+    /// Chooses a tab in the tab bar.
+    private func showTab(_ app: XCUIApplication, _ name: String, file: StaticString = #filePath, line: UInt = #line) {
+        let tab = app.tabBars.buttons[name]
+        XCTAssertTrue(tab.waitForExistence(timeout: 5), "no \(name) tab", file: file, line: line)
+        tab.tap()
+        XCTAssertTrue(waitUntil(5) { tab.isSelected }, "the \(name) tab was not chosen", file: file, line: line)
+    }
+
     /// Signed in to two accounts (temporary test devices made by
     /// scripts/test/ios_ui_tests.py, passed as TEST_RUNNER_AUDIONET_TEST_ACCOUNT):
-    /// online at once, not sharing (a switch per account); find the test
-    /// source as a collapsed device, listen to it (receiving needs no
-    /// sharing), sending unavailable until sharing, share, audit with the
-    /// stream running, stop, sign out of the second account (asked first).
+    /// visible in both at once; the microphone list; find the test source as
+    /// a collapsed device on Devices, listen to it; the stream on Streams
+    /// (volume, mute, audit, stop); on Accounts a visibility switch per
+    /// account, hide in one; sign out of the second account (asked first);
+    /// the choice kept across restarts.
     func testSignedInScreenPassesAccessibilityAudit() throws {
         guard let account = ProcessInfo.processInfo.environment["AUDIONET_TEST_ACCOUNT"], !account.isEmpty else {
             throw XCTSkip("no test device (run scripts/test/ios_ui_tests.py)")
         }
         let app = launch(account: account)
-        let sharing = app.switches.matching(identifier: "sharing")
-        XCTAssertTrue(sharing.firstMatch.waitForExistence(timeout: 15), "the app did not open signed in")
-        XCTAssertEqual(sharing.count, 2, "one sharing switch per account")
-        let toggle = sharing.firstMatch
-        XCTAssertTrue(toggle.label.hasPrefix("Share This iPhone's Audio in "), "switch named \(toggle.label)")
-        XCTAssertEqual(toggle.value as? String, "0", "a new account starts without sharing")
+        XCTAssertTrue(app.tabBars.buttons["Devices"].waitForExistence(timeout: 15), "the app did not open signed in")
+        XCTAssertEqual(app.tabBars.buttons.allElementsBoundByIndex.map(\.label).prefix(4).map { String($0) },
+                       ["Devices", "Streams", "Accounts", "Settings"])
+        XCTAssertTrue(app.tabBars.buttons["Devices"].isSelected, "should open on Devices")
+        let status = app.descendants(matching: .any).matching(identifier: "status").firstMatch
+        // Visible at once, in both accounts (on a freshly started simulator
+        // the first connections take a while).
+        XCTAssertTrue(waitUntil(40) { (status.value as? String) == "Visible in 2 of 2 accounts" },
+                      "the Status row says \(status.value ?? "")")
         try audit(app)
 
         // The Microphone row opens the list of microphones (like UniMic's
@@ -202,68 +214,38 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertTrue(waitUntil(5) { choice.isSelected }, "the chosen microphone is not marked selected")
         try audit(app)
         app.navigationBars.buttons.firstMatch.tap()
-        XCTAssertTrue(toggle.waitForExistence(timeout: 5), "did not return from the microphone list")
-        let status = app.descendants(matching: .any).matching(identifier: "status").firstMatch
-        // Online at once, in both accounts (on a freshly started simulator
-        // the first connections take a while), sharing in neither.
-        XCTAssertTrue(waitUntil(40) { (status.value as? String) == "Online in 2 accounts, sharing in 0" },
-                      "the Status row says \(status.value ?? "")")
+        XCTAssertTrue(microphone.waitForExistence(timeout: 5), "did not return from the microphone list")
 
-        let source = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Remote test source: online'")).firstMatch
+        let source = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Remote test source'")).firstMatch
         if !source.waitForExistence(timeout: 30) {
-            let any = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Remote test source'")).firstMatch
-            print("DEVICE ELEMENT: \(any.exists ? any.debugDescription : "none")")
             print("SCREEN: \(app.debugDescription)")
             XCTFail("the test source device did not appear")
             return
         }
+        XCTAssertFalse(source.label.contains("online"), "devices carry no state words: \(source.label)")
         XCTAssertFalse(app.buttons["listen"].exists, "a collapsed device should not show its controls")
         source.tap()
         let listen = app.buttons["listen"]
-        // The controls open below the device row: rows exist only once
-        // scrolled to (the sharing switches push the devices down).
         for _ in 0..<6 where !listen.waitForExistence(timeout: 1) { app.swipeUp(velocity: .slow) }
         XCTAssertTrue(listen.exists, "expanding the device did not show its controls")
         XCTAssertEqual(listen.label, "Listen to Remote test source")
-        // Not sharing: sending is unavailable here, and says why.
         let send = app.buttons["send"]
         for _ in 0..<6 where !(send.exists && send.isHittable) { app.swipeUp(velocity: .slow) }
-        XCTAssertTrue(send.exists, "no Send My Microphone button")
-        XCTAssertFalse(send.isEnabled, "sending should need sharing")
-        XCTAssertTrue(app.staticTexts["Turn on Share This iPhone's Audio to send its microphone."].exists,
-                      "no word on why sending is unavailable")
-        // Receiving needs no sharing.
+        XCTAssertTrue(send.exists && send.isEnabled, "Send My Microphone should be offered")
         for _ in 0..<6 where !listen.isHittable { app.swipeDown(velocity: .slow) }
         listen.tap()
+
+        // The stream, on the Streams tab (its badge counts the streams).
+        showTab(app, "Streams")
         let stream = app.staticTexts.matching(identifier: "stream").firstMatch
-        // The streams section is below the expanded device: rows exist only
-        // once scrolled to.
-        for _ in 0..<6 where !stream.waitForExistence(timeout: 2) { app.swipeUp() }
-        if !stream.exists {
+        if !stream.waitForExistence(timeout: 10) {
             print("SCREEN: \(app.debugDescription)")
-            for _ in 0..<8 where !app.buttons["statusLog"].isHittable { app.swipeDown() }
-            app.buttons["statusLog"].tap()
-            _ = app.buttons["copyLog"].waitForExistence(timeout: 5)
-            for _ in 0..<5 { app.swipeUp() }
-            let lines = app.staticTexts.allElementsBoundByIndex.suffix(10).map(\.label)
-            XCTFail("no stream row; status log ends: \(lines)")
+            XCTFail("no stream row")
             return
         }
         XCTAssertTrue(waitUntil(30) { stream.label.hasSuffix(": connected") }, "stream: \(stream.label)")
-        // Share in the first account: the Status row follows, and sending is
-        // offered.
-        for _ in 0..<6 where !toggle.isHittable { app.swipeDown() }
-        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-        XCTAssertTrue(waitUntil(10) { (toggle.value as? String) == "1" }, "sharing did not turn on")
-        XCTAssertTrue(waitUntil(10) { (status.value as? String) == "Online in 2 accounts, sharing in 1" },
-                      "the Status row says \(status.value ?? "")")
-        for _ in 0..<8 where !(send.exists && send.isHittable) { app.swipeUp(velocity: .slow) }
-        XCTAssertTrue(waitUntil(5) { send.isEnabled }, "sending should be offered while sharing")
         // The stream's volume and mute, named after the stream.
         let volume = app.sliders["streamVolume"]
-        // From the top, in slow steps (a fast swipe can skip past the row).
-        for _ in 0..<6 { app.swipeDown() }
-        for _ in 0..<14 where !(volume.exists && volume.isHittable) { app.swipeUp(velocity: .slow) }
         XCTAssertTrue(volume.label.hasPrefix("Volume for Listening to"), "volume named \(volume.label)")
         volume.adjust(toNormalizedSliderPosition: 0.5)
         // XCTest places the slider only roughly (45 or 50 percent).
@@ -275,40 +257,38 @@ final class AccessibilityTests: XCTestCase {
         // The switch itself, at the right end of its row.
         mute.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
         XCTAssertTrue(waitUntil(5) { (volume.value as? String) == "\(set) percent, muted" }, "volume says \(volume.value ?? "")")
-        // Back to the top, where the device row is clear of the navigation bar.
-        for _ in 0..<6 { app.swipeDown() }
-        source.tap() // collapse again
-        XCTAssertTrue(waitUntil(5) { !app.buttons["listen"].exists }, "the device did not collapse")
-        // The audit measures only text it can see whole: bring the stream
-        // row and its measurements onto the screen.
-        let window = app.windows.firstMatch.frame
-        // The whole stream, from its title to its Stop button.
-        let lastRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Stop Listening to'")).firstMatch
-        for _ in 0..<6 where !(stream.exists && window.contains(stream.frame)
-                               && lastRow.exists && window.contains(lastRow.frame)) { app.swipeUp(velocity: .slow) }
         try audit(app)
-
         let stop = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Stop Listening to'")).firstMatch
-        for _ in 0..<6 where !stop.exists { app.swipeUp() }
         XCTAssertTrue(stop.exists, "the Stop button does not name its stream")
         stop.tap()
-        XCTAssertTrue(app.staticTexts["No streams are running."].waitForExistence(timeout: 15))
-        // Two accounts (the second a temporary one): each its own section of
-        // devices while online, the heading naming the account.
-        let secondSection = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Devices in uitest-'")).firstMatch
-        for _ in 0..<6 where !secondSection.exists { app.swipeUp() }
-        XCTAssertTrue(secondSection.exists, "no device section for the second account")
-        for _ in 0..<6 where !app.buttons["Settings"].isHittable { app.swipeDown() }
+        let none = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'No streams are running'")).firstMatch
+        XCTAssertTrue(none.waitForExistence(timeout: 15), "the stream did not end")
 
-        // Settings lists both accounts, each with its own Sign Out; signing
-        // out of the second leaves the first.
-        for _ in 0..<4 where !app.buttons["Settings"].isHittable { app.swipeUp() }
-        app.buttons["Settings"].tap()
+        // Accounts: a visibility switch per account, on (new accounts start
+        // visible); hiding in the first: the Status row follows.
+        showTab(app, "Accounts")
+        let switches = app.switches.matching(identifier: "visible")
+        XCTAssertTrue(switches.firstMatch.waitForExistence(timeout: 5), "no visibility switch")
+        XCTAssertEqual(switches.count, 2, "one visibility switch per account")
+        let toggle = switches.firstMatch
+        XCTAssertTrue(toggle.label.hasPrefix("Visible to My Other Devices in "), "switch named \(toggle.label)")
+        XCTAssertEqual(toggle.value as? String, "1", "a new account starts visible")
+        XCTAssertTrue(app.buttons.matching(identifier: "manageDevices").firstMatch.exists, "no Manage Devices")
+        try audit(app)
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        XCTAssertTrue(waitUntil(10) { (toggle.value as? String) == "0" }, "visibility did not turn off")
+        showTab(app, "Devices")
+        XCTAssertTrue(waitUntil(10) { (status.value as? String) == "Visible in 1 of 2 accounts" },
+                      "the Status row says \(status.value ?? "")")
+
+        // Each account with its own Sign Out; signing out of the second
+        // leaves the first.
+        showTab(app, "Accounts")
         let signOuts = app.buttons.matching(identifier: "signOut")
-        XCTAssertTrue(waitUntil(5) { signOuts.count == 2 }, "Settings lists \(signOuts.count) accounts")
-        XCTAssertTrue(app.buttons["addAccount"].exists, "no Add Account")
+        XCTAssertTrue(waitUntil(5) { signOuts.count == 2 }, "Accounts lists \(signOuts.count) accounts")
         let second = signOuts.element(boundBy: 1)
         XCTAssertTrue(second.label.hasPrefix("Sign Out of uitest-"), "second account: \(second.label)")
+        for _ in 0..<6 where !second.isHittable { app.swipeUp(velocity: .slow) }
         second.tap()
         // Asked first; then this iPhone is removed from that account.
         // iOS lists a confirmation sheet's button twice.
@@ -316,28 +296,27 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "signing out did not ask first")
         confirm.tap()
         XCTAssertTrue(waitUntil(20) { signOuts.count == 1 }, "still \(signOuts.count) accounts")
-        XCTAssertTrue(signOuts.firstMatch.label.hasPrefix("Sign Out of mad-gamer26") || signOuts.firstMatch.label.hasPrefix("Sign Out of"),
-                      "left: \(signOuts.firstMatch.label)")
+        let add = app.buttons["addAccount"]
+        for _ in 0..<4 where !add.exists { app.swipeUp() }
+        XCTAssertTrue(add.exists, "no Add Account")
         try audit(app)
 
-        // The sharing choice is kept across restarts: the account left
-        // shares (turned on above); quit and open again, then turn it off
-        // and do the same.
+        // The choice is kept across restarts: the account left is hidden
+        // (turned off above); quit and open again, make it visible, and do
+        // the same.
         app.terminate()
         var again = reopen()
-        XCTAssertTrue(waitUntil(40) { self.statusText(of: again) == "Online, sharing its audio" },
-                      "after reopening, sharing should be kept: \(self.statusText(of: again))")
-        let kept = again.switches.matching(identifier: "sharing").firstMatch
-        XCTAssertEqual(kept.value as? String, "1", "the switch should be on after reopening")
+        XCTAssertTrue(waitUntil(40) { self.statusText(of: again) == "Hidden from your other devices" },
+                      "after reopening, hidden should be kept: \(self.statusText(of: again))")
+        showTab(again, "Accounts")
+        let kept = again.switches.matching(identifier: "visible").firstMatch
+        XCTAssertEqual(kept.value as? String, "0", "the switch should be off after reopening")
         kept.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-        XCTAssertTrue(waitUntil(10) { self.statusText(of: again) == "Online, not sharing its audio" },
-                      "sharing did not turn off: \(self.statusText(of: again))")
+        XCTAssertTrue(waitUntil(10) { (kept.value as? String) == "1" }, "visibility did not turn on")
         again.terminate()
         again = reopen()
-        XCTAssertTrue(waitUntil(40) { self.statusText(of: again) == "Online, not sharing its audio" },
-                      "after reopening, not sharing should be kept: \(self.statusText(of: again))")
-        XCTAssertEqual(again.switches.matching(identifier: "sharing").firstMatch.value as? String, "0",
-                       "the switch should be off after reopening")
+        XCTAssertTrue(waitUntil(40) { self.statusText(of: again) == "Visible to your other devices" },
+                      "after reopening, visible should be kept: \(self.statusText(of: again))")
     }
 
     /// Opens the app again as it was left (same test profile, no reset, no

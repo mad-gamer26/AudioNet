@@ -2,8 +2,9 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
-/// Notifications about the other devices in this iPhone's accounts: coming
-/// online or going offline, and starting or stopping sharing their audio.
+/// Notifications about the other devices in this iPhone's accounts:
+/// becoming visible, and no longer being visible (visibility turned off, or
+/// AudioNet stopped there).
 /// Off until turned on in Settings. Each server sends them through the push
 /// gateway it names (`push_gateway` in its info); the text is encrypted
 /// with this iPhone's own key and decrypted by the notification extension
@@ -16,10 +17,8 @@ final class Notifications: ObservableObject {
     /// notifications are sealed with.
     static let keyName = "notificationKey"
 
+    /// "Notify me when my devices become visible or hidden".
     @AppStorage("notifyPresence", store: AccountStore.settings) var presence = false {
-        didSet { changed() }
-    }
-    @AppStorage("notifySharing", store: AccountStore.settings) var sharing = false {
         didSet { changed() }
     }
     /// Why notifications cannot come, in words (nil when they can).
@@ -30,7 +29,7 @@ final class Notifications: ObservableObject {
     var note: (String) -> Void = { _ in }
     private var deviceToken: String?
 
-    var wanted: Bool { presence || sharing }
+    var wanted: Bool { presence }
 
     // MARK: When to act
 
@@ -142,8 +141,10 @@ final class Notifications: ObservableObject {
             "gateway": gateway,
             "handle": handle,
             "key": Self.key().base64EncodedString(),
+            // Servers before 1.3 also had sharing notifications; visibility
+            // replaced both, so both follow the one switch.
             "presence": presence,
-            "sharing": sharing,
+            "sharing": presence,
         ])
     }
 

@@ -1,24 +1,53 @@
 import SwiftUI
 import UIKit
 
-/// Sign-in until this iPhone belongs to an account, then the main screen.
+/// Sign-in until this iPhone belongs to an account, then the tabs.
 struct RootView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if model.readingAccount {
-                    Form { Text("Reading this iPhone's AudioNet sign-in…") }
-                } else if !model.signedIn {
-                    SignInView()
-                } else {
-                    MainView()
+        Group {
+            if model.signedIn && !model.readingAccount {
+                MainTabs()
+            } else {
+                NavigationStack {
+                    Group {
+                        if model.readingAccount {
+                            Form { Text("Reading this iPhone's AudioNet sign-in…") }
+                        } else {
+                            SignInView()
+                        }
+                    }
+                    .navigationTitle("AudioNet")
                 }
             }
-            .navigationTitle("AudioNet")
         }
         .tint(accessibleTint)
+    }
+}
+
+/// The signed-in screens: a standard tab bar (VoiceOver reads "Devices,
+/// tab, 1 of 4") with Devices, Streams, Accounts and Settings, each with
+/// its own navigation.
+struct MainTabs: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        TabView(selection: $model.tab) {
+            NavigationStack { DevicesScreen() }
+                .tabItem { Label("Devices", systemImage: "hifispeaker.2") }
+                .tag(MainTab.devices)
+            NavigationStack { StreamsScreen() }
+                .tabItem { Label("Streams", systemImage: "waveform") }
+                .badge(model.streams.count)
+                .tag(MainTab.streams)
+            NavigationStack { AccountsScreen() }
+                .tabItem { Label("Accounts", systemImage: "person.crop.circle") }
+                .tag(MainTab.accounts)
+            NavigationStack { SettingsView() }
+                .tabItem { Label("Settings", systemImage: "gear") }
+                .tag(MainTab.settings)
+        }
     }
 }
 
@@ -140,7 +169,9 @@ struct SignInView: View {
     }
 }
 
-struct MainView: View {
+/// The account's visible devices, each a disclosure with Listen and Send;
+/// above them, how this iPhone is doing and its microphone.
+struct DevicesScreen: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
@@ -155,23 +186,7 @@ struct MainView: View {
                     .accessibilityLabel("Status")
                     .accessibilityValue(statusText)
                     .accessibilityIdentifier("status")
-                // Sharing, per account: online either way while AudioNet
-                // runs; sharing decides whether this iPhone sends its audio.
-                ForEach(model.accounts, id: \.nodeId) { a in
-                    let label = model.accounts.count > 1 ? "Share This iPhone's Audio in \(a.accountName)" : "Share This iPhone's Audio"
-                    Toggle(label, isOn: model.sharing(a.nodeId))
-                        .disabled(model.signingOut.contains(a.nodeId))
-                        // Named on the switch itself: in a grouped form on
-                        // macOS the switch otherwise has no name of its own
-                        // (VoiceOver would say only "switch").
-                        .accessibilityLabel(label)
-                        .accessibilityIdentifier("sharing")
-                }
                 MicrophoneRow(store: model.microphones)
-                // Rows, not navigation-bar buttons: bar buttons do not grow
-                // with Dynamic Type.
-                StatusLogLink()
-                NavigationLink("Settings") { SettingsView() }
             } header: {
                 heading("This iPhone")
             }
@@ -179,37 +194,60 @@ struct MainView: View {
             // One section per account (a heading names the account when
             // there are several).
             ForEach(model.accounts, id: \.nodeId) { a in
-                    Section {
-                        let list = model.devicesByAccount[a.nodeId] ?? []
-                        if !model.connectedAccounts.contains(a.nodeId) {
-                            Text("Connecting…")
-                        } else if !model.devicesLoaded.contains(a.nodeId) {
-                            Text("Looking for your devices…")
-                        } else if list.isEmpty {
-                            Text("No other devices yet.")
-                        } else {
-                            // One native disclosure per device: a single row
-                            // until expanded ("Studio PC: online, collapsed").
-                            ForEach(list, id: \.nodeId) { d in
-                                DisclosureGroup(isExpanded: model.expansion(d.nodeId)) {
-                                    DeviceControls(device: d)
-                                } label: {
-                                    Text(verbatim: "\(d.name): \(deviceState(d))")
-                                }
+                Section {
+                    let list = model.devicesByAccount[a.nodeId] ?? []
+                    if !model.connectedAccounts.contains(a.nodeId) {
+                        Text("Connecting…")
+                    } else if !model.devicesLoaded.contains(a.nodeId) {
+                        Text("Looking for your devices…")
+                    } else if list.isEmpty {
+                        Text("No other devices are visible. Devices appear here while AudioNet runs on them with visibility on.")
+                    } else {
+                        // One native disclosure per device: a single row
+                        // until expanded ("Studio PC, Windows, collapsed").
+                        ForEach(list, id: \.nodeId) { d in
+                            DisclosureGroup(isExpanded: model.expansion(d.nodeId)) {
+                                DeviceControls(device: d)
+                            } label: {
+                                Text(verbatim: deviceLabel(d))
                             }
                         }
-                    } header: {
-                        heading(model.accounts.count > 1 ? "Devices in \(a.accountName)" : "Your devices")
                     }
+                } header: {
+                    heading(model.accounts.count > 1 ? "Devices in \(a.accountName)" : "Your devices")
+                }
             }
+        }
+        .headerProminence(.increased)
+        .navigationTitle("Devices")
+    }
 
-            Section {
-                if model.streams.isEmpty {
-                    Text("No streams are running.")
-                } else {
-                    // Each part of a stream is a row of its own, so every row
-                    // grows with the text size on its own.
-                    ForEach(model.streams) { row in
+    private var statusText: String {
+        if model.accounts.isEmpty { return "Not signed in" }
+        if !model.connected { return "Connecting…" }
+        let visible = model.visibleAccounts.count
+        if model.accounts.count == 1 {
+            return visible == 1 ? "Visible to your other devices" : "Hidden from your other devices"
+        }
+        return "Visible in \(visible) of \(model.accounts.count) accounts"
+    }
+}
+
+/// The streams this iPhone started: state, mute, volume, stop.
+struct StreamsScreen: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        Form {
+            if model.streams.isEmpty {
+                Section {
+                    Text("No streams are running. Start one from Devices: open a device, then Listen or Send.")
+                }
+            } else {
+                // A section per stream; each part a row of its own, so
+                // every row grows with the text size on its own.
+                ForEach(model.streams) { row in
+                    Section {
                         Text("\(row.title): \(row.state)")
                             .accessibilityIdentifier("stream")
                         // Measurements only when "Show Measurements" is on
@@ -222,21 +260,70 @@ struct MainView: View {
                             .accessibilityLabel("Stop \(row.title)")
                     }
                 }
-            } header: {
-                heading("Streams started here")
             }
         }
         .headerProminence(.increased)
+        .navigationTitle("Streams")
     }
+}
 
-    private var statusText: String {
-        if model.accounts.isEmpty { return "Not signed in" }
-        if !model.connected { return "Connecting…" }
-        let sharing = model.sharingAccounts.count
-        if model.accounts.count == 1 {
-            return sharing == 1 ? "Online, sharing its audio" : "Online, not sharing its audio"
+/// The accounts this iPhone is signed in to: its visibility in each, Sign
+/// Out, Manage Devices (in the web client), Add Account.
+struct AccountsScreen: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.openURL) private var openURL
+    /// The account Sign Out was chosen for (asked first).
+    @State private var signingOut: Account?
+
+    var body: some View {
+        Form {
+            ForEach(model.accounts, id: \.nodeId) { a in
+                Section {
+                    Text(verbatim: "Signed in as \"\(a.deviceName)\" to account \(a.username) on \(a.serverUrl).")
+                    let label = model.accounts.count > 1 ? "Visible to My Other Devices in \(a.accountName)" : "Visible to My Other Devices"
+                    // Short on screen (the section names the account); the
+                    // spoken name says which account.
+                    Toggle("Visible to My Other Devices", isOn: model.visibility(a.nodeId))
+                        .disabled(model.signingOut.contains(a.nodeId))
+                        .accessibilityLabel(label)
+                        .accessibilityIdentifier("visible")
+                    Text(model.isVisible(a.nodeId)
+                         ? "Your other devices see this iPhone, and can listen to it and send to it."
+                         : "Your other devices cannot see this iPhone or reach it. It can still listen to them and send to them.")
+                    Button("Manage Devices") {
+                        if let url = URL(string: a.serverUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/?manage") {
+                            openURL(url)
+                        }
+                    }
+                    .accessibilityLabel(model.accounts.count > 1 ? "Manage Devices in \(a.accountName)" : "Manage Devices")
+                    .accessibilityIdentifier("manageDevices")
+                    Button(model.signingOut.contains(a.nodeId) ? "Signing Out…" : "Sign Out", role: .destructive) { signingOut = a }
+                        .disabled(model.signingOut.contains(a.nodeId))
+                        .accessibilityLabel("Sign Out of \(a.accountName)")
+                        .accessibilityIdentifier("signOut")
+                } header: {
+                    heading(model.accounts.count > 1 ? a.accountName : "Account")
+                }
+            }
+            Section {
+                NavigationLink("Add Account") { SignInView(adding: true) }
+                    .accessibilityIdentifier("addAccount")
+                Text("Renaming and removing your devices is in Manage Devices, in the web client.")
+            }
         }
-        return "Online in \(model.accounts.count) accounts, sharing in \(sharing)"
+        .headerProminence(.increased)
+        .navigationTitle("Accounts")
+        .confirmationDialog(
+            "Sign out of \(signingOut?.accountName ?? "this account")? This iPhone is removed from that account. To use it there again, sign in again.",
+            isPresented: Binding(get: { signingOut != nil }, set: { if !$0 { signingOut = nil } }),
+            titleVisibility: .visible) {
+            Button("Sign Out", role: .destructive) {
+                if let a = signingOut { model.signOut(a) }
+                signingOut = nil
+            }
+            .accessibilityIdentifier("confirmSignOut")
+            Button("Cancel", role: .cancel) { signingOut = nil }
+        }
     }
 }
 
@@ -273,11 +360,8 @@ struct DeviceControls: View {
         }
         .pickerStyle(.menu)
         .accessibilityIdentifier("listenSource")
-        if device.online && !device.sharing {
-            Text("\(device.name) is not sharing its audio: it cannot be listened to, but you can send to it.")
-        }
         Button("Listen") { model.listen(device) }
-            .disabled(!model.online || !device.sharing)
+            .disabled(!model.online)
             .accessibilityLabel("Listen to \(device.name)")
             .accessibilityIdentifier("listen")
         Picker("Play my microphone on", selection: model.choice(id, \.sendOutput)) {
@@ -285,28 +369,11 @@ struct DeviceControls: View {
         }
         .pickerStyle(.menu)
         .accessibilityIdentifier("sendOutput")
-        let sharingHere = model.account(of: device).map(model.isSharing) ?? false
-        if !sharingHere {
-            Text("Turn on Share This iPhone's Audio to send its microphone.")
-        }
         Button("Send My Microphone") { model.send(device) }
-            .disabled(!model.online || !device.online || !sharingHere)
+            .disabled(!model.online)
             .accessibilityLabel("Send my microphone to \(device.name)")
             .accessibilityIdentifier("send")
     }
-}
-
-/// A device's state in words: offline, online, or online but not sharing.
-func deviceState(_ d: Device) -> String {
-    !d.online ? "offline" : d.sharing ? "online" : "online, not sharing"
-}
-
-func sourceLabel(_ s: Source) -> String {
-    "\(s.name) (\(s.isInput ? "input" : "what it plays")\(s.isDefault ? ", default" : ""))"
-}
-
-func outputLabel(_ o: Output) -> String {
-    o.isDefault ? "\(o.name) (default)" : o.name
 }
 
 /// The Microphone row: says which microphone records, and opens the list
@@ -408,33 +475,12 @@ struct StatusLogView: View {
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var notifications: Notifications
-    /// The account Sign Out was chosen for (asked first).
-    @State private var signingOut: Account?
 
     var body: some View {
         Form {
-            // Every account this iPhone is signed in to, each with its own
-            // Sign Out, and another one can be added.
             Section {
-                ForEach(model.accounts, id: \.nodeId) { a in
-                    Text(verbatim: "Signed in as \"\(a.deviceName)\" to account \(a.username) on \(a.serverUrl).")
-                    // Short on screen (the line above names the account);
-                    // the spoken name says which account.
-                    Button(model.signingOut.contains(a.nodeId) ? "Signing Out…" : "Sign Out", role: .destructive) { signingOut = a }
-                        .disabled(model.signingOut.contains(a.nodeId))
-                        .accessibilityLabel("Sign Out of \(a.accountName)")
-                        .accessibilityIdentifier("signOut")
-                }
-                NavigationLink("Add Account") { SignInView(adding: true) }
-                    .accessibilityIdentifier("addAccount")
-            } header: {
-                heading("Accounts")
-            }
-            Section {
-                Toggle("Devices Coming Online or Going Offline", isOn: $notifications.presence)
+                Toggle("Devices Becoming Visible or Hidden", isOn: $notifications.presence)
                     .accessibilityIdentifier("notifyPresence")
-                Toggle("Devices Starting or Stopping Sharing", isOn: $notifications.sharing)
-                    .accessibilityIdentifier("notifySharing")
                 Text("About the other devices in your accounts, titled with the account name. They do not appear while AudioNet is open.")
                 if let problem = notifications.problem {
                     Text(problem)
@@ -446,6 +492,9 @@ struct SettingsView: View {
                 Toggle("Show Measurements", isOn: $model.showMeasurements)
                     .accessibilityIdentifier("showMeasurements")
                 Text("Numbers about streams and the network, under each stream and in the status log, for troubleshooting.")
+                StatusLogLink()
+            } header: {
+                heading("Troubleshooting")
             }
             Section {
                 LabeledContent("Version",
@@ -455,16 +504,5 @@ struct SettingsView: View {
         }
         .headerProminence(.increased)
         .navigationTitle("Settings")
-        .confirmationDialog(
-            "Sign out of \(signingOut?.accountName ?? "this account")? This iPhone is removed from that account and stops sharing there. To use it there again, sign in again.",
-            isPresented: Binding(get: { signingOut != nil }, set: { if !$0 { signingOut = nil } }),
-            titleVisibility: .visible) {
-            Button("Sign Out", role: .destructive) {
-                if let a = signingOut { model.signOut(a) }
-                signingOut = nil
-            }
-            .accessibilityIdentifier("confirmSignOut")
-            Button("Cancel", role: .cancel) { signingOut = nil }
-        }
     }
 }

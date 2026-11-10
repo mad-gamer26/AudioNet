@@ -279,9 +279,6 @@ final class Updater: ObservableObject {
         let marker = work.appendingPathComponent("started")
         var relaunch = ["-AudioNetUpdatedFrom", Self.currentVersion, "-AudioNetUpdateExpected", version,
                         "-AudioNetUpdateMarker", marker.path]
-        // Each account's sharing is saved; this matters only to a copy from
-        // before that (which then shares everywhere).
-        if model?.sharingAccounts.isEmpty == false { relaunch += ["-AudioNetGoOnline", "YES"] }
         if !(NSApp.windows.contains { $0.isVisible && $0.identifier?.rawValue.hasPrefix("main") == true }) {
             relaunch += ["-AudioNetStartHidden", "YES"]
         }
