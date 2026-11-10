@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import CoreAudio
 import Foundation
 import ServiceManagement
 import SwiftUI
@@ -126,6 +127,7 @@ final class AppModel: ObservableObject {
 
     init() {
         Updater.reportStarted()
+        watchAudioDevices()
         AccountStore.prepareTestProfile()
         setShowMeasurements(on: showMeasurements)
         setMuteStreamedOutput(on: muteStreamedOutput)
@@ -363,6 +365,36 @@ final class AppModel: ObservableObject {
 
     private func microphoneBlocked() {
         note("Microphone access is off, so this Mac's microphone cannot be sent. To allow it: System Settings, Privacy and Security, Microphone, AudioNet.")
+    }
+
+    /// Keeps this Mac's own sounds and outputs current ("Play it on", "Send
+    /// from this Mac", and what other devices are offered): Core Audio says
+    /// when a device is added or removed (headphones, an interface, AirPlay)
+    /// or the default output or input changes, and the lists are read again
+    /// (once, half a second after a burst of changes). No restart needed.
+    private func watchAudioDevices() {
+        let selectors = [kAudioHardwarePropertyDevices,
+                         kAudioHardwarePropertyDefaultOutputDevice,
+                         kAudioHardwarePropertyDefaultInputDevice]
+        for selector in selectors {
+            var address = AudioObjectPropertyAddress(mSelector: selector,
+                                                     mScope: kAudioObjectPropertyScopeGlobal,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main) { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.audioDevicesChanged() }
+            }
+        }
+    }
+
+    private var pendingAudioRefresh: DispatchWorkItem?
+
+    private func audioDevicesChanged() {
+        pendingAudioRefresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.refreshLocalAudio() }
+        }
+        pendingAudioRefresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     func refreshLocalAudio() {

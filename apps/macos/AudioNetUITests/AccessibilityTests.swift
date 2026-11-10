@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import XCTest
 
 /// Runs Xcode's accessibility audit on AudioNet's windows and checks the
@@ -107,6 +108,29 @@ final class AccessibilityTests: XCTestCase {
             hi = max(hi, l)
         }
         return (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// A temporary output: an aggregate device of this Mac's default output,
+    /// visible to every app (as one made in Audio MIDI Setup is).
+    private func makeTestOutput(named name: String) -> AudioObjectID? {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var device = AudioObjectID(0)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr else { return nil }
+        address.mSelector = kAudioDevicePropertyDeviceUID
+        var uid: Unmanaged<CFString>?
+        size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &uid) == noErr, let sub = uid?.takeRetainedValue() as String? else { return nil }
+        let description: [String: Any] = [
+            kAudioAggregateDeviceNameKey: name,
+            kAudioAggregateDeviceUIDKey: "org.audionet.uitest.output.\(getpid())",
+            kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: sub]],
+            kAudioAggregateDeviceMainSubDeviceKey: sub,
+        ]
+        var created = AudioObjectID(0)
+        return AudioHardwareCreateAggregateDevice(description as CFDictionary, &created) == noErr ? created : nil
     }
 
     /// Opens the status log dialog (it closes with Escape).
@@ -403,8 +427,27 @@ final class AccessibilityTests: XCTestCase {
         // test source is silent, so nothing is heard.
         let quiet = app.menuItems.matching(NSPredicate(format: "title BEGINSWITH 'MacBook Air Speakers'")).firstMatch
         if quiet.exists { quiet.click() } else { app.typeKey(.escape, modifierFlags: []) }
+
         XCTAssertTrue(app.buttons["send"].isEnabled, "sending should be offered")
         try audit(app)
+        // An output added while AudioNet runs appears in "Play it on" without
+        // a restart, and leaves it when removed (a temporary aggregate
+        // device of this Mac's default output, made by the test).
+        func offered() -> Bool {
+            listenOutput.click()
+            let found = app.menuItems.matching(NSPredicate(format: "title BEGINSWITH 'AudioNet Test Output'")).firstMatch.exists
+            app.typeKey(.escape, modifierFlags: [])
+            return found
+        }
+        XCTAssertFalse(offered(), "a test output is already listed")
+        if let added = makeTestOutput(named: "AudioNet Test Output") {
+            let appeared = waitUntil(10) { offered() }
+            AudioHardwareDestroyAggregateDevice(added)
+            XCTAssertTrue(appeared, "an output added while AudioNet runs did not appear in Play it on")
+            XCTAssertTrue(waitUntil(10) { !offered() }, "a removed output stayed in Play it on")
+        } else {
+            XCTFail("the test could not make a temporary output device")
+        }
         let listenButton = app.buttons["listen"]
         scrollIntoView(app, listenButton)
         listenButton.click()
