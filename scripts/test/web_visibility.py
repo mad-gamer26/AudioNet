@@ -95,7 +95,7 @@ try:
     w.until(lambda d: d.find_elements(By.ID, card))
     el = drv.find_element(By.ID, card)
     summary = el.find_element(By.CSS_SELECTOR, ".summary").get_attribute("textContent")
-    check("listed with its sounds, no status", summary == ": Windows, 1 sounds, 1 outputs", summary)
+    check("listed with its sounds, no status", summary == ": Windows, 1 sound, 1 output", summary)
     w.until(lambda d: f"{NAME} is now visible." in log())
     check("announced as now visible", f"{NAME} is now visible." in log())
     check("Listen available", el.find_element(By.CSS_SELECTOR, ".listen button").is_enabled())

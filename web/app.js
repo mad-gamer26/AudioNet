@@ -869,7 +869,8 @@ function renderDevices() {
     const id = el.id;
     const name = el.querySelector(`#${CSS.escape(id)}-name`);
     if (name.textContent !== n.name) name.textContent = n.name;
-    const summary = `: ${platformName(n.platform)}, ${n.sources.length} sounds, ${n.destinations.length} outputs`;
+    const count = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+    const summary = `: ${platformName(n.platform)}, ${count(n.sources.length, "sound", "sounds")}, ${count(n.destinations.length, "output", "outputs")}`;
     const p = el.querySelector(".summary");
     if (p.textContent !== summary) p.textContent = summary;
     const sources = n.sources.map((s) => ({

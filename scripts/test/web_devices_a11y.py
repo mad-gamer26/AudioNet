@@ -2,16 +2,19 @@
 accessibility tree), in headless Chrome:
 
 1. Each device is one collapsed native disclosure (<details>/<summary>),
-   named with the device's name and state, with its controls hidden.
+   named with the device's name and platform (no state: every listed
+   device is visible), with its controls hidden.
 2. Enter on it expands it (expanded state, controls reachable).
 3. When the device list refreshes (another device changes), the expanded
    device stays expanded and keeps the keyboard focus.
 
-Creates two temporary devices through the API (they stay offline) and
-removes them afterwards. Environment: AUDIONET_URL, AUDIONET_USER,
-AUDIONET_PASSWORD. Requires: pip install selenium requests; Chrome.
+Creates two temporary devices through the API, connects them (visible,
+with a sound and an output each) and removes them afterwards.
+Environment: AUDIONET_URL, AUDIONET_USER, AUDIONET_PASSWORD.
+Requires: pip install selenium requests websocket-client; Chrome.
 """
-import os, sys, tempfile, time
+import json, os, sys, tempfile, threading, time
+import websocket
 import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -51,12 +54,40 @@ def ax_for_selector(drv, selector):
     props = {p["name"]: p["value"].get("value") for p in n.get("properties", [])}
     return n["role"]["value"], n.get("name", {}).get("value", ""), props, n.get("ignored", False)
 
+def connect(token, sources):
+    """A device connection, visible, offering `sources` (kept read)."""
+    url = BASE.replace("https://", "wss://").replace("http://", "ws://") + "/api/v1/ws"
+    ws = websocket.create_connection(url, header=[f"Authorization: Bearer {token}"])
+    ws.send(json.dumps({"type": "hello", "protocol_version": {"major": 0, "minor": 1},
+                        "client": {"kind": "node", "software": "web a11y test", "platform": "windows", "visible": True}}))
+    ws.recv()  # welcome
+    send_endpoints(ws, sources)
+    def keep_reading():
+        ws.settimeout(1)
+        while not stop.is_set():
+            try:
+                ws.recv()
+            except websocket.WebSocketTimeoutException:
+                pass
+            except Exception:
+                return
+    threading.Thread(target=keep_reading, daemon=True).start()
+    return ws
+
+def send_endpoints(ws, sources):
+    ws.send(json.dumps({"type": "endpoints",
+                        "sources": [{"id": f"input:{i}", "name": n, "source_type": "input", "is_default": i == 0}
+                                    for i, n in enumerate(sources)],
+                        "destinations": [{"id": "output:speakers", "name": "Test speakers", "is_default": True}]}))
+
+stop = threading.Event()
 remove_devices()
-ids = []
+ids, sockets = [], []
 for name in NAMES:
     r = requests.post(f"{BASE}/api/v1/nodes/sign-in", json={"username": USER, "password": PASSWORD, "name": name, "platform": "windows"})
     r.raise_for_status()
     ids.append(r.json()["node_id"])
+    sockets.append(connect(r.json()["token"], ["Test microphone"]))
 
 opts = webdriver.ChromeOptions()
 for a in ["--headless=new", f"--user-data-dir={tempfile.mkdtemp(prefix='audionet-a11y-')}"]:
@@ -73,8 +104,8 @@ try:
     w.until(lambda d: d.find_element(By.ID, f"device-{ids[0]}"))
     sel = f"#device-{ids[0]} > summary"
     role, name, props, _ = ax_for_selector(drv, sel)
-    check("a device is one disclosure line named with its name and state",
-          role == "DisclosureTriangle" and NAMES[0] in name and "offline" in name, f"{role} {name!r}")
+    check("a device is one disclosure line named with its name and platform",
+          role == "DisclosureTriangle" and name.startswith(f"{NAMES[0]}: Windows") and "online" not in name, f"{role} {name!r}")
     check("...collapsed at first", props.get("expanded") is False, str(props))
     _, _, _, hidden = ax_for_selector(drv, f"#device-{ids[0]}-source")
     check("...with its controls hidden from the screen reader", hidden)
@@ -87,15 +118,18 @@ try:
     _, _, _, hidden = ax_for_selector(drv, f"#device-{ids[0]}-source")
     check("Enter expands it and its controls become reachable", props.get("expanded") is True and not hidden, str(props))
 
-    # Another device changes: the list refreshes (rename through the API).
-    api().patch(f"{BASE}/api/v1/nodes/{ids[1]}", json={"name": "A11y test device renamed"})
-    w.until(lambda d: "A11y test device renamed" in d.find_element(By.ID, "devices").text)
+    # Another device changes: the list refreshes (it now offers two sounds).
+    send_endpoints(sockets[1], ["Test microphone", "Second test sound"])
+    w.until(lambda d: "2 sounds" in d.find_element(By.ID, f"device-{ids[1]}").text)
     time.sleep(0.5)
     open_still = drv.find_element(By.ID, f"device-{ids[0]}").get_attribute("open") is not None
     focused = drv.execute_script("return document.activeElement === document.querySelector(arguments[0])", sel)
     check("after the list refreshes, the device stays expanded and keeps the focus", open_still and focused,
           f"open={open_still} focused={focused}")
 finally:
+    stop.set()
+    for ws in sockets:
+        ws.close()
     drv.quit()
     remove_devices()
 print("web device list accessibility:", "PASS" if all(results) else "FAIL")
