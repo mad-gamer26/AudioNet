@@ -783,6 +783,47 @@ fn refresh(hwnd: HWND) {
     crate::ui::streams_changed(hwnd);
 }
 
+/// This computer's audio devices changed (added, removed, renamed, a new
+/// default): reads them again and refills "Play it on" and "Send from this
+/// computer" if they differ, keeping what was chosen there when it is
+/// still listed (otherwise the default).
+pub fn local_devices_changed(hwnd: HWND) {
+    let Ok((sources, outputs)) = crate::app::local_endpoints() else {
+        return;
+    };
+    let (old_sources, old_outputs) = with(|r| (r.local_sources.clone(), r.local_outputs.clone()));
+    if sources != old_sources {
+        let chosen = selected(hwnd, ID_LOCAL_SOURCE, true)
+            .and_then(|i| old_sources.get(i))
+            .and_then(|s| sources.iter().position(|n| n.id == s.id));
+        fill(
+            hwnd,
+            ID_LOCAL_SOURCE,
+            &sources.iter().map(source_row).collect::<Vec<_>>(),
+            chosen.or(default_index(&sources, |s| {
+                s.is_default && s.source_type == SourceType::Input
+            })),
+            true,
+        );
+    }
+    if outputs != old_outputs {
+        let chosen = selected(hwnd, ID_LOCAL_OUTPUT, true)
+            .and_then(|i| old_outputs.get(i))
+            .and_then(|d| outputs.iter().position(|n| n.id == d.id));
+        fill(
+            hwnd,
+            ID_LOCAL_OUTPUT,
+            &outputs.iter().map(output_row).collect::<Vec<_>>(),
+            chosen.or(default_index(&outputs, |d| d.is_default)),
+            true,
+        );
+    }
+    with(|r| {
+        r.local_sources = sources;
+        r.local_outputs = outputs;
+    });
+}
+
 /// The panel's controls are always enabled: a disabled control drops out of
 /// the Tab order, and one disabled while it has focus leaves focus nowhere
 /// (a screen reader then says nothing). Listen, Send, Stop and the volume

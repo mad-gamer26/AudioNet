@@ -11,6 +11,9 @@ publish.workspace = true
 audionet-protocol.workspace = true
 audionet-audio.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-core.workspace = true
+
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true
 features = [

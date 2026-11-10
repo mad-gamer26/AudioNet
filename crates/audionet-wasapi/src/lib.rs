@@ -8,7 +8,7 @@
 //! # Unsafe code
 //!
 //! All `unsafe` is confined to the `cfg(windows)` modules `capture`, `com`,
-//! `enumerate`, `process` and `render`, and every block carries a `SAFETY:`
+//! `enumerate`, `notify`, `process` and `render`, and every block carries a `SAFETY:`
 //! comment. Parsing of Windows data structures (`waveformat`) is safe Rust
 //! over byte slices so it can be tested deterministically on any platform.
 
@@ -20,6 +20,8 @@ pub mod capture;
 mod com;
 #[cfg(windows)]
 mod enumerate;
+#[cfg(windows)]
+pub mod notify;
 #[cfg(windows)]
 pub mod process;
 #[cfg(windows)]

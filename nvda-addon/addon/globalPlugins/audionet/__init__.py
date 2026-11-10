@@ -138,6 +138,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		if error:
 			self.model.add_log(f"Could not list this computer's sounds and outputs: {error}")
 			return
+		if (result["sources"], result["destinations"]) == (self.model.local_sources, self.model.local_destinations):
+			return
 		self.model.local_sources = result["sources"]
 		self.model.local_destinations = result["destinations"]
 		self._refresh()

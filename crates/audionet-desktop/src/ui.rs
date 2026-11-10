@@ -149,6 +149,10 @@ impl Page {
 /// Update timer: runs the schedule below.
 const TIMER_UPDATE: usize = 1;
 const TIMER_PERIOD_MS: u32 = 15_000;
+/// Audio devices changed: waits this long for more changes (one plug-in
+/// brings several notifications), then reads the devices again.
+const TIMER_DEVICES: usize = 2;
+const DEVICES_SETTLE_MS: u32 = 500;
 const FIRST_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
 const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 const RETRY_AFTER_FAILURE: std::time::Duration = std::time::Duration::from_secs(3600);
@@ -168,6 +172,8 @@ const WM_APP_UPDATE: u32 = WM_APP + 4;
 /// Removing this computer from an account finished (lParam:
 /// Box<(NodeConfig, Result<(), String>)>).
 const WM_APP_SIGNED_OUT: u32 = WM_APP + 6;
+/// This computer's audio devices changed (no lParam).
+const WM_APP_DEVICES: u32 = WM_APP + 7;
 
 /// How the app was started.
 pub struct Launch {
@@ -2022,6 +2028,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             update_tick(hwnd);
             LRESULT(0)
         }
+        WM_APP_DEVICES => {
+            // SAFETY: a one-shot timer owned by our window; setting it again
+            // restarts it, so a burst of changes is read once.
+            unsafe {
+                SetTimer(Some(hwnd), TIMER_DEVICES, DEVICES_SETTLE_MS, None);
+            }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_DEVICES => {
+            // SAFETY: the timer set for WM_APP_DEVICES, on our window.
+            unsafe {
+                let _ = KillTimer(Some(hwnd), TIMER_DEVICES);
+            }
+            crate::remote::local_devices_changed(hwnd);
+            LRESULT(0)
+        }
         WM_CLOSE => {
             close_window(hwnd);
             LRESULT(0)
@@ -2230,6 +2252,23 @@ pub fn run(launch: Launch) {
     unsafe {
         SetTimer(Some(hwnd), TIMER_UPDATE, TIMER_PERIOD_MS, None);
     }
+    // "Play it on" and "Send from this computer" follow device changes
+    // (kept until the message loop ends).
+    let window = hwnd.0 as isize;
+    let _device_watch = audionet_wasapi::notify::watch_devices(move || {
+        // SAFETY: posting a message with no payload to our window; if the
+        // window is gone the post fails harmlessly.
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(window as *mut _)),
+                WM_APP_DEVICES,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
+    })
+    .map_err(|e| log(hwnd, &format!("Audio devices will not be followed: {e}")))
+    .ok();
 
     // SAFETY: standard message loop; IsDialogMessageW supplies keyboard
     // navigation (Tab, arrows, access keys, Enter) for our controls.

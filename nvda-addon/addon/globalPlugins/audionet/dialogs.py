@@ -23,6 +23,9 @@ addonHandler.initTranslation()
 # The GlobalPlugin, set when it starts.
 plugin = None
 
+# How often the open AudioNet window reads this computer's sounds and outputs again.
+LOCAL_AUDIO_EVERY_MS = 3000
+
 VISITOR_NOTE = _(
 	"NVDA joins your account as a visitor, like the web client: it is not added as a device, "
 	"your other devices cannot listen to it, and your password is not kept."
@@ -226,6 +229,12 @@ class MainWindow(wx.Dialog):
 		self.CentreOnScreen()
 		self.refresh()
 		self.owner.refresh_local_audio()
+		# While the window is open, "Play on" and "Send from" follow this
+		# computer's audio devices (added, removed, a new default); the
+		# engine lists them, off NVDA's thread.
+		self._localTimer = wx.Timer(self)
+		self.Bind(wx.EVT_TIMER, lambda e: self.owner.refresh_local_audio(), self._localTimer)
+		self._localTimer.Start(LOCAL_AUDIO_EVERY_MS)
 		(self.tree if self.tree.GetCount() else self.account).SetFocus()
 
 	# ─── what is shown ─────────────────────────────────────────────────────
@@ -466,6 +475,7 @@ class MainWindow(wx.Dialog):
 		gui.mainFrame.popupSettingsDialog(NVDASettingsDialog, AudioNetPanel)
 
 	def onClose(self, evt):
+		self._localTimer.Stop()
 		self.owner.window = None
 		# While the window is destroyed the tree reports its items going
 		# away as selection changes, after the buttons are gone.

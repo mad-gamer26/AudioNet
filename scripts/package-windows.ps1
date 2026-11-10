@@ -72,11 +72,11 @@ audionet.exe          Command-line tools: list devices, direct LAN
                       a window; it tells you how to stop it).
 
 Start: run audionet-desktop.exe, enter your server address, account name
-and password, and press "Sign in". The computer is then online in your
-account while AudioNet runs; press "Start sharing" to let your other
-devices listen to it and to send its audio (each account remembers its
-choice). Tick "Start AudioNet automatically" in Settings to start it at
-sign-in.
+and password, and press "Sign in". While AudioNet runs, the computer is
+visible to your other devices in that account: they can listen to it and
+send audio to it ("Visible to my other devices" on the Accounts tab turns
+that off for an account). Tick "Start AudioNet automatically" in Settings
+to start it at sign-in.
 
 Closing the window keeps AudioNet running in the system tray (Windows+B,
 then the arrow keys). Press Enter on its icon to open the window, or the

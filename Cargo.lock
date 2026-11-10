@@ -467,6 +467,7 @@ dependencies = [
  "audionet-audio",
  "audionet-protocol",
  "windows",
+ "windows-core",
 ]
 
 [[package]]
