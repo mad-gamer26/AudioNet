@@ -399,13 +399,19 @@ linux_version() {
 # The installed program: the one the service runs, the one on the PATH, or
 # the default place; empty when none is AudioNet's.
 linux_find_installed() {
-    for c in "$(sed -n 's/^ExecStart=\([^ ]*\) .*/\1/p' "$UNIT" 2>/dev/null)" \
+    for c in "$(unit_program)" \
         "$(command -v audionet 2>/dev/null)" "$HOME/.local/bin/audionet"; do
         if [ -n "$c" ] && [ -x "$c" ] && [ -n "$(linux_version "$c")" ]; then
             printf '%s' "$c"
             return
         fi
     done
+}
+
+# The program the user service runs (systemd's %h is the home folder), or
+# empty when there is no service.
+unit_program() {
+    sed -n 's/^ExecStart=\([^ ]*\) .*/\1/p' "$UNIT" 2>/dev/null | head -n 1 | sed "s|^%h|$HOME|"
 }
 
 user_systemd() {
@@ -540,7 +546,7 @@ linux_uninstall() {
     if ! linux_close_running "$bin" 'to be uninstalled'; then say 'Nothing was changed.'; return; fi
     remove_data=no
     if ask_yes_no 'Also remove this computer'"'"'s AudioNet sign-in from it?' no; then remove_data=yes; fi
-    if [ -f "$UNIT" ] && grep -qF "$bin node run" "$UNIT"; then
+    if [ -f "$UNIT" ] && [ "$(unit_program)" = "$bin" ]; then
         if user_systemd; then systemctl --user disable audionet.service >/dev/null 2>&1; fi
         rm -f "$UNIT"
         if user_systemd; then systemctl --user daemon-reload; fi
@@ -674,7 +680,7 @@ linux_main() {
         write_unit "$bin"
         systemctl --user enable audionet.service >/dev/null 2>&1
         say 'AudioNet will start when you log in.'
-    elif [ $fresh = no ] && [ -f "$UNIT" ] && ! grep -qF "$bin node run" "$UNIT"; then
+    elif [ $fresh = no ] && [ -f "$UNIT" ] && [ "$(unit_program)" != "$bin" ]; then
         # The service ran a copy elsewhere: it now runs this one.
         write_unit "$bin"
     fi

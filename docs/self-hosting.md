@@ -82,6 +82,8 @@ curl http://127.0.0.1:8740/api/v1/info
 | `web_root` | none | Directory of the web client; omit to serve only the API. |
 | `allowed_origins` | origin of `public_url` | Origins allowed to use browser sessions and the WebSocket. |
 | `allow_registration` | `false` | Let anyone create an account in the web client ("Create an account"). The apps and the command line only sign in to an existing account. |
+| `min_client_version` | none | Refuse apps, devices and the NVDA add-on older than this version (`"1.3"` or `"1.3.0"`) when they connect: they are told which version is needed and stop. The web client is exempt (this server serves it). `check-config` shows it as "Oldest client accepted". The server log names each client's version when it connects, to see who would be refused first. |
+| `client_download_url` | none | Named in that refusal: where to get a new version (for example `https://github.com/mad-gamer26/AudioNet/releases/latest`). |
 | `sign_ups_per_address_per_hour` | `3` | With open sign-up: new accounts one client address may create per hour. |
 | `sign_ups_per_hour` | `30` | With open sign-up: new accounts the whole server accepts per hour. |
 | `client_address_header` | none | Header the reverse proxy sets to the client's address (nginx: `X-Real-IP` from `$remote_addr`, as in the example site). Without it, every request seems to come from the proxy, so the per-address limit acts server-wide. Only name a header the proxy always overwrites. |

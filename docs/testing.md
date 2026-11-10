@@ -313,6 +313,12 @@ Automated accessibility checks:
   out of one account. Temporary devices are removed
   afterwards.
 
+* Oldest client accepted: `crates/audionet-server/src/client_version.rs`
+  (versions and who is refused) and `tests/signaling.rs`
+  (`clients_older_than_the_minimum_are_refused`: a 1.2.5 device and a 1.2.2
+  NVDA visitor told why and closed, 1.3.0 and the web client welcomed).
+  Checked against the real 1.2.5 Linux program, which stops with the
+  sentence instead of reconnecting.
 * Installers: `deploy/official/install.sh` (macOS and Linux) is driven
   through a terminal by `scripts/test/install_sh.py`, answering its
   questions as a person would, also piped into sh:

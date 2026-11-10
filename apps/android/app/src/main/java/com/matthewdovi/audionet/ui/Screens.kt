@@ -36,6 +36,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -55,7 +57,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -309,18 +313,92 @@ fun DevicesScreen(model: AppModel, modifier: Modifier) {
 
 // MARK: Streams
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StreamsScreen(model: AppModel, modifier: Modifier) {
+    // The stream whose sheet is open (it closes by itself when the stream ends).
+    var openId by rememberSaveable { mutableStateOf<String?>(null) }
     LazyColumn(modifier.padding(horizontal = 16.dp)) {
-        item { Heading("Streams started here") }
         if (model.streams.isEmpty()) {
-            item { Text("No streams are running. Start one from Devices: open a device, then Listen or Send.") }
+            item { Text("No streams are running. Start one from Devices: open a device, then Listen or Send.", modifier = Modifier.padding(vertical = 12.dp)) }
         } else {
             for (row in model.streams.toList()) {
-                item(key = "stream-${row.id}") { StreamControls(model, row) }
+                item(key = "stream-${row.id}") { StreamRowItem(model, row) { openId = row.id } }
             }
         }
         item { Spacer(Modifier.heightIn(min = 32.dp)) }
+    }
+    val open = model.streams.firstOrNull { it.id == openId }
+    if (open != null) {
+        // Fully open at once: a half-open sheet can leave Stop and Done
+        // below the screen's edge.
+        ModalBottomSheet(onDismissRequest = { openId = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+            StreamSheet(model, open) { openId = null }
+        }
+    }
+}
+
+/**
+ * A stream's row: what it is and its state, its volume as its state
+ * description, the measurements when shown, and TalkBack actions in this
+ * order: Stop, Decrease Volume, Increase Volume, Mute or Unmute. Increase is
+ * offered only below 100 percent, Decrease only above 0. A tap opens its sheet.
+ */
+@Composable
+fun StreamRowItem(model: AppModel, row: StreamRow, open: () -> Unit) {
+    val actions = buildList {
+        add(CustomAccessibilityAction("Stop") { model.stopStream(row); true })
+        if (model.volumeStep(row.id, up = false) != null) {
+            add(CustomAccessibilityAction("Decrease Volume") { model.stepVolume(row.id, up = false); true })
+        }
+        if (model.volumeStep(row.id, up = true) != null) {
+            add(CustomAccessibilityAction("Increase Volume") { model.stepVolume(row.id, up = true); true })
+        }
+        add(CustomAccessibilityAction(if (row.muted) "Unmute" else "Mute") { model.toggleMute(row.id); true })
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clickable(onClickLabel = "open its controls", role = Role.Button, onClick = open)
+            .semantics(mergeDescendants = true) {
+                stateDescription = "Volume ${model.volumeText(row)}"
+                customActions = actions
+            }
+            .padding(vertical = 12.dp),
+    ) {
+        Text("${row.title}: ${row.state}")
+        // Measurements only when "Show Measurements" is on (Settings); never announced.
+        if (model.showMeasurements) model.diagnostics[row.id]?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+    HorizontalDivider()
+}
+
+/** One stream's sheet: its title as the heading, its state, Mute, Volume, Stop and Done. */
+@Composable
+fun StreamSheet(model: AppModel, row: StreamRow, close: () -> Unit) {
+    Column(Modifier.padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+        Text(
+            row.title,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(bottom = 8.dp).semantics { heading() },
+        )
+        Text(row.state.replaceFirstChar { it.uppercase() }, modifier = Modifier.padding(bottom = 8.dp))
+        SwitchRow("Mute", row.muted) { model.setVolume(row.id, muted = it) }
+        Text("Volume", style = MaterialTheme.typography.labelLarge)
+        Slider(
+            value = row.volume,
+            onValueChange = { model.setVolume(row.id, volume = (it * 20).roundToInt() / 20f) },
+            steps = 19,
+            modifier = Modifier.semantics {
+                contentDescription = "Volume"
+                stateDescription = model.volumeText(row)
+            },
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 8.dp)) {
+            OutlinedButton(onClick = { model.stopStream(row); close() }) { Text("Stop") }
+            Button(onClick = close) { Text("Done") }
+        }
     }
 }
 
@@ -420,29 +498,6 @@ fun DeviceControls(model: AppModel, d: Device) {
             enabled = model.online,
             modifier = Modifier.padding(top = 8.dp).semantics { contentDescription = "Send my microphone to ${d.name}" },
         ) { Text("Send My Microphone") }
-    }
-}
-
-/** A stream: what and its state, measurements (when on), mute, volume and Stop. */
-@Composable
-fun StreamControls(model: AppModel, row: StreamRow) {
-    Column(Modifier.padding(vertical = 8.dp)) {
-        Text("${row.title}: ${row.state}")
-        if (model.showMeasurements) model.diagnostics[row.id]?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-        SwitchRow("Mute ${row.title}", row.muted) { model.setVolume(row.id, muted = it) }
-        val percent = (row.volume * 100).roundToInt()
-        Text("Volume", style = MaterialTheme.typography.labelLarge)
-        Slider(
-            value = row.volume,
-            onValueChange = { model.setVolume(row.id, volume = (it * 20).roundToInt() / 20f) },
-            steps = 19,
-            modifier = Modifier.semantics {
-                contentDescription = "Volume for ${row.title}"
-                stateDescription = if (row.muted) "$percent percent, muted" else "$percent percent"
-            },
-        )
-        OutlinedButton(onClick = { model.stopStream(row) }, modifier = Modifier.semantics { contentDescription = "Stop ${row.title}" }) { Text("Stop") }
-        HorizontalDivider(Modifier.padding(top = 8.dp))
     }
 }
 

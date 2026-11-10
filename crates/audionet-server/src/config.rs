@@ -36,6 +36,15 @@ pub struct Config {
     /// Whether anyone can create an account (web client, apps, CLI).
     #[serde(default)]
     pub allow_registration: bool,
+    /// Clients older than this ("1.3" or "1.3.0") are refused when they
+    /// connect, with a sentence saying so; the web client is exempt (this
+    /// server serves it). Unset: every version.
+    #[serde(default)]
+    pub min_client_version: Option<String>,
+    /// Where people get a new client, named in that refusal (for example
+    /// the releases page). Unset: "Update AudioNet on this device."
+    #[serde(default)]
+    pub client_download_url: Option<String>,
     /// New accounts one client address may create per hour.
     #[serde(default = "default_sign_ups_per_address")]
     pub sign_ups_per_address_per_hour: u32,
@@ -344,6 +353,13 @@ impl Config {
                     .into(),
             );
         }
+        if let Some(v) = &self.min_client_version
+            && crate::client_version::parse(v).is_none()
+        {
+            return Err(format!(
+                "min_client_version must look like 1.3 or 1.3.0: {v}"
+            ));
+        }
         self.email.validate()?;
         self.push_gateway.validate()?;
         if let Some(url) = &self.push_gateway_url
@@ -354,6 +370,13 @@ impl Config {
             ));
         }
         Ok(())
+    }
+
+    /// The oldest client version accepted, if there is one.
+    pub fn min_client(&self) -> Option<crate::client_version::Version> {
+        self.min_client_version
+            .as_deref()
+            .and_then(crate::client_version::parse)
     }
 
     /// Whether cookies must be marked `Secure`.

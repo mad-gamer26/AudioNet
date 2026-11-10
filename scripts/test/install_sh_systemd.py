@@ -112,6 +112,17 @@ try:
     time.sleep(3)
     check("...visible again", "Systemd test" in visible_devices(SERVER, s))
 
+    # A unit written by hand, with systemd's %h for the home folder: an
+    # update keeps it as it is (and restarts it).
+    custom = ("[Unit]\nDescription=AudioNet device (hand-written)\n\n[Service]\nExecStart=%h/.local/bin/audionet node run\n"
+              "Restart=on-failure\n\n[Install]\nWantedBy=default.target\n")
+    as_user(f"cat > {UNIT} <<'EOF'\n{custom}EOF\nsystemctl --user daemon-reload && systemctl --user restart audionet.service")
+    pid3 = svc("show -p MainPID --value")
+    code, out = installer([("Choice, 1 to 3", "2"), ("Stop AudioNet now?", "")])
+    check("a hand-written unit with %h is found, kept and restarted", code == 0
+          and as_user(f"cat {UNIT}") == custom.strip() and svc("is-active") == "active"
+          and svc("show -p MainPID --value") != pid3, out + as_user(f"cat {UNIT}"))
+
     code, out = installer([("Choice, 1 to 3", "3"), ("Uninstall AudioNet?", "y"), ("Stop AudioNet now?", ""),
                            ("Also remove", "y")])
     check("uninstall finishes", code == 0 and "AudioNet was uninstalled." in out, out)

@@ -170,8 +170,14 @@ being moved there by the person who uses it.
 
 The Android app does not update itself: people download each new APK
 (Android asks before installing it over the old one). Its version is the
-workspace's (versionName 1.3.0, versionCode 10300: major × 10000 + minor ×
-100 + patch), so every release installs as an update.
+workspace's (versionName 1.3.0). Its versionCode is major × 1000000 +
+minor × 10000 + patch × 100 + build, where build (`audionetBuild` in
+`apps/android/gradle.properties`) counts app-only rebuilds of one version
+and goes back to 0 with each new version: 1.3.0 build 1 is 1030001, 1.3.1
+is 1030100. (Up to the first 1.3.0 APK the code was major × 10000 + minor
+× 100 + patch, 10300, below every code since.) So every release, and every
+rebuild, installs as an update. An app-only rebuild replaces the APK and
+its `.sha256` on the version's GitHub release.
 
 An update installs only if it is signed with the same key as the copy on
 the phone. Releases are built on the Mac; the release keystore is

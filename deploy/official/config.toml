@@ -4,6 +4,10 @@ bind = "127.0.0.1:8740"
 database = "/var/lib/audionet/audionet.db"
 web_root = "/opt/audionet/web"
 allow_registration = true
+# Clients before 1.3 (sharing instead of visibility, old TURN handling) are
+# refused with this sentence's download address; the web client is exempt.
+min_client_version = "1.3"
+client_download_url = "https://github.com/mad-gamer26/AudioNet/releases/latest"
 # nginx's proxy-common.conf sets X-Real-IP from $remote_addr.
 client_address_header = "X-Real-IP"
 

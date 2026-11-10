@@ -328,8 +328,19 @@ messages) fills is disconnected. When a party disconnects, the other side
 receives `session_end`.
 
 Error codes include `protocol_version`, `wrong_client_kind`,
-`bad_message`, `node_offline`, `no_session`, `duplicate_session`,
-`too_many_sessions`, `invalid`.
+`client_too_old`, `bad_message`, `node_offline`, `no_session`,
+`duplicate_session`, `too_many_sessions`, `invalid`.
+
+**Client versions.** Every client names itself and its version in
+`hello.client.software`, version last ("audionet-desktop 1.3.0",
+"audionet-app 1.3.0", "audionet-nvda 1.3.0", "audionet-visitor (name)
+1.3.0", "audionet-node 1.3.0"). A server with `min_client_version` answers
+the `hello` of an older client (or one whose version cannot be read) with
+`error` `client_too_old`, a sentence saying which version is needed (and,
+with `client_download_url`, where to get it), and closes. Clients stop on an
+error reply to their `hello` (every version since 1.0) instead of
+reconnecting. The web client ("audionet-web …") is exempt: the server
+serves it. Servers log each client's software when it connects.
 
 ## 11. HTTP API
 

@@ -2,7 +2,8 @@
 account on this computer, the audionet command-line agent as a visible
 device offering its sounds, and the Android app (already installed:
 gradlew installDebug) signing in, listening to one of the device's sounds
-on the Devices tab, and stopping it on the Streams tab. Nothing is heard:
+on the Devices tab, and on the Streams tab opening the stream's sheet
+(Mute, Volume, Stop, Done) and stopping it there. Nothing is heard:
 it listens to a sound nothing plays into (SOURCE, default "Sound playing
 on Line 1", the virtual cable on Windows). The microphone is never sent. Runs on Windows,
 macOS or Linux (releases are built and tested on a Mac).
@@ -97,13 +98,23 @@ try:
         adb("shell", "input", "tap", str(streams_tab["x"]), str(streams_tab["y"]))
         time.sleep(1)
         screen = texts()
+        joined = "\n".join(screen)
         stream = next((t for t in screen if t.startswith(f"Listening to {SOURCE}") and ": " in t), "")
-        measured = next((t for t in screen if t.startswith("Receiving:")), "")
-        print("Stream:", stream)
+        m = re.search(r"Receiving: [^\n]*", joined)
+        measured = m.group(0) if m else ""
+        print("Stream:", stream.split("\n")[0])
         print("Measurements:", measured)
-        stop = find(f"Stop Listening to {SOURCE}")
+        # The row says its volume to TalkBack.
+        # A tap opens its sheet: the title as a heading, Mute, Volume, Stop, Done.
+        tap(f"Listening to {SOURCE}")
+        time.sleep(1)
+        sheet = texts()
+        sheet_ok = all(any(t == want for t in sheet) for want in ("Mute", "Volume", "Stop", "Done"))
+        print("Sheet:", [t for t in sheet if t in ("Mute", "Volume", "Stop", "Done")])
+        stop = find("Stop", exact=True)
         adb("shell", "input", "tap", str(stop["x"]), str(stop["y"]))
         time.sleep(3)
+        sheet_closed = "Done" not in texts()
         stopped = any("You stopped it" in t for t in texts())
         signed_out = False
         # Sign out, so the next run starts from the sign-in screen again.
@@ -119,8 +130,8 @@ try:
         signed_out = any("Signed out of tester" in t for t in texts()) and bool(find("Server address", timeout=10))
         print("Signed out:", signed_out)
     packets = int(m[1]) if (m := re.search(r"Receiving: (\d+) packets", measured)) else 0
-    ok = (tabs == ["Devices", "Streams", "Accounts", "Settings"] and stream.endswith(": connected") and packets > 1000
-          and stopped and visible_switch and signed_out)
+    ok = (tabs == ["Devices", "Streams", "Accounts", "Settings"] and ": connected" in stream and packets > 1000
+          and sheet_ok and sheet_closed and stopped and visible_switch and signed_out)
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 finally:

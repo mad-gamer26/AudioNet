@@ -26,6 +26,7 @@ import uniffi.audionet_ffi.EventListener
 import uniffi.audionet_ffi.LocalAudio
 import uniffi.audionet_ffi.StreamState
 import java.util.concurrent.Executors
+import kotlin.math.roundToInt
 
 /** A stream this phone started. */
 data class StreamRow(
@@ -176,6 +177,14 @@ class AppModel(private val context: Context) {
     fun announce(text: String) {
         note(text)
         announcement = text
+    }
+
+    /**
+     * Has TalkBack say it without logging it (a volume step). A zero-width
+     * space alternates so the same words twice in a row are said again.
+     */
+    fun say(text: String) {
+        announcement = if (announcement == text) "$text\u200B" else text
     }
 
     fun reportSignInProblem(text: String) {
@@ -428,6 +437,34 @@ class AppModel(private val context: Context) {
         clients[row.account]?.setStreamVolume(id, row.volume, row.muted)
     }
 
+    /** The volume one 5-percent step up or down (TalkBack's actions), on the 5-percent grid; null at the end of the range. */
+    fun volumeStep(id: String, up: Boolean): Int? {
+        val row = streams.firstOrNull { it.id == id } ?: return null
+        val now = (row.volume * 100).roundToInt()
+        val next = if (up) (now / 5 + 1) * 5 else ((now + 4) / 5 - 1) * 5
+        return next.takeIf { it in 0..100 && it != now }
+    }
+
+    /** Steps a stream's volume by 5 percent and says it ("Volume 95%"), without logging it. */
+    fun stepVolume(id: String, up: Boolean) {
+        val next = volumeStep(id, up) ?: return
+        setVolume(id, volume = next / 100f)
+        say("Volume $next%")
+    }
+
+    /** Mutes or unmutes a stream and says which (not logged). */
+    fun toggleMute(id: String) {
+        val row = streams.firstOrNull { it.id == id } ?: return
+        setVolume(id, muted = !row.muted)
+        say(if (row.muted) "Unmuted" else "Muted")
+    }
+
+    /** A stream's volume in words: "80 percent", "80 percent, muted". */
+    fun volumeText(row: StreamRow): String {
+        val percent = (row.volume * 100).roundToInt()
+        return if (row.muted) "$percent percent, muted" else "$percent percent"
+    }
+
     fun name(account: String): String = accounts.firstOrNull { it.nodeId == account }?.accountName ?: "an account"
 
     // MARK: Engine events
@@ -437,7 +474,9 @@ class AppModel(private val context: Context) {
             is Event.Connected -> {
                 if (!connectedAccounts.contains(account)) connectedAccounts.add(account)
                 val how = if (isVisible(account)) "visible to your other devices" else "not visible to your other devices"
-                announce(if (accounts.size > 1) "Connected to ${name(account)}, $how." else "Connected, $how.")
+                // Logged, not announced: connections come in bursts (at launch,
+                // and when a server restarts), which TalkBack can stumble on.
+                note(if (accounts.size > 1) "Connected to ${name(account)}, $how." else "Connected, $how.")
                 refreshLocalAudio()
             }
             is Event.Disconnected -> {
@@ -458,7 +497,7 @@ class AppModel(private val context: Context) {
                     list[i] = event.device
                 } else {
                     list.add(event.device)
-                    announce("${event.device.name} is now visible.")
+                    note("${event.device.name} is now visible.")
                 }
                 devicesByAccount[account] = list
                 fillChoices(event.device)
@@ -470,7 +509,7 @@ class AppModel(private val context: Context) {
                     val gone = list.removeAt(i)
                     devicesByAccount[account] = list
                     expanded.remove(event.nodeId)
-                    announce("${gone.name} is no longer visible.")
+                    note("${gone.name} is no longer visible.")
                 }
             }
             is Event.Stream -> {

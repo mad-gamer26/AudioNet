@@ -22,6 +22,10 @@ web_root = "/opt/audionet/web"
 # false and create accounts with `audionet-server user add NAME` unless you
 # want open sign-up.
 allow_registration = false
+# Refuse clients older than this version (they are told why, and where to
+# get a new one if client_download_url is set). The web client is exempt.
+# min_client_version = "1.3"
+# client_download_url = "https://github.com/mad-gamer26/AudioNet/releases/latest"
 
 # With open sign-up: new accounts per client address, and for the whole
 # server, per hour.

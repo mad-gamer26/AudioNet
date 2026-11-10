@@ -26,10 +26,15 @@ async fn start_server() -> (String, Arc<AppState>) {
 
 /// `extra_ice`: more `[ice]` settings, one per line.
 async fn start_server_with(extra_ice: &str) -> (String, Arc<AppState>) {
+    start_server_full("", extra_ice).await
+}
+
+/// `top`: more top-level settings, `extra_ice`: more `[ice]` settings.
+async fn start_server_full(top: &str, extra_ice: &str) -> (String, Arc<AppState>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut config = Config::parse(&format!(
-        "public_url = \"http://{addr}\"\n[ice]\nstun_urls = [\"stun:stun.example.com:3478\"]\nturn_urls = [\"turn:turn.example.com:3478\"]\nturn_secret = \"test-secret\"\n{extra_ice}"
+        "public_url = \"http://{addr}\"\n{top}\n[ice]\nstun_urls = [\"stun:stun.example.com:3478\"]\nturn_urls = [\"turn:turn.example.com:3478\"]\nturn_secret = \"test-secret\"\n{extra_ice}"
     ))
     .unwrap();
     config.validate().unwrap();
@@ -520,4 +525,89 @@ async fn connected_clients_get_fresh_turn_credentials_before_they_expire() {
         assert_ne!(fresh[1].credential, ice_servers[1].credential);
         last = e;
     }
+}
+
+/// With `min_client_version`, an older client (device or visitor) is told
+/// why in an error reply to its hello and closed; current clients and the
+/// web client (served by this server) connect.
+#[tokio::test]
+async fn clients_older_than_the_minimum_are_refused() {
+    let (addr, _state) = start_server_full(
+        "min_client_version = \"1.3\"\nclient_download_url = \"https://example.org/releases\"",
+        "",
+    )
+    .await;
+    let origin = format!("http://{addr}");
+    let (_, h, _) = post(
+        &addr,
+        "/api/v1/login",
+        r#"{"username":"alice","password":"correct horse battery"}"#,
+        &[("Origin", &origin)],
+    )
+    .await;
+    let cookie = h.iter().find(|(k, _)| k == "set-cookie").unwrap().1.clone();
+    let cookie = cookie.split(';').next().unwrap().to_owned();
+    let (_, _, body) = post(
+        &addr,
+        "/api/v1/nodes/sign-in",
+        r#"{"username":"alice","password":"correct horse battery","name":"Old PC","platform":"windows"}"#,
+        &[],
+    )
+    .await;
+    let token: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let bearer = format!("Bearer {}", token["token"].as_str().unwrap());
+
+    let try_hello = |kind: ClientKind, software: &'static str| {
+        let addr = addr.clone();
+        let (cookie, origin, bearer) = (cookie.clone(), origin.clone(), bearer.clone());
+        async move {
+            let mut ws = if kind == ClientKind::Node {
+                connect(&addr, &[("Authorization", &bearer)]).await.unwrap()
+            } else {
+                connect(&addr, &[("Cookie", &cookie), ("Origin", &origin)])
+                    .await
+                    .unwrap()
+            };
+            let mut m = hello(kind);
+            if let ClientMessage::Hello { client, .. } = &mut m {
+                client.software = software.into();
+            }
+            send(&mut ws, &m).await;
+            let reply = recv(&mut ws).await;
+            // Refused: the server closes after its reply.
+            let closed = tokio::time::timeout(Duration::from_secs(2), ws.next())
+                .await
+                .map(|m| !matches!(m, Some(Ok(Message::Text(_)))))
+                .unwrap_or(false);
+            (reply, closed)
+        }
+    };
+
+    let (reply, closed) = try_hello(ClientKind::Node, "audionet-desktop 1.2.5").await;
+    match reply {
+        ServerMessage::Error { code, message, .. } => {
+            assert_eq!(code, "client_too_old");
+            assert_eq!(
+                message,
+                "This AudioNet is version 1.2.5, and this server needs version 1.3.0 or later. Download the new version from https://example.org/releases."
+            );
+        }
+        other => panic!("1.2.5 was not refused: {other:?}"),
+    }
+    assert!(closed, "the old client's connection stayed open");
+    let (reply, _) = try_hello(ClientKind::Browser, "audionet-nvda 1.2.2").await;
+    assert!(
+        matches!(reply, ServerMessage::Error { ref code, .. } if code == "client_too_old"),
+        "{reply:?}"
+    );
+    let (reply, _) = try_hello(ClientKind::Node, "audionet-desktop 1.3.0").await;
+    assert!(
+        matches!(reply, ServerMessage::Welcome { .. }),
+        "1.3.0: {reply:?}"
+    );
+    let (reply, _) = try_hello(ClientKind::Browser, "audionet-web 0.1.0").await;
+    assert!(
+        matches!(reply, ServerMessage::Welcome { .. }),
+        "web client: {reply:?}"
+    );
 }

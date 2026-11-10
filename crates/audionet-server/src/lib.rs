@@ -6,6 +6,7 @@
 pub mod api;
 pub mod apns;
 pub mod auth;
+pub mod client_version;
 pub mod config;
 pub mod db;
 pub mod gateway;

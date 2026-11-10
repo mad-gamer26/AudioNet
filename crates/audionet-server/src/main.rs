@@ -286,6 +286,12 @@ fn main() -> ExitCode {
                     "no"
                 }
             );
+            println!(
+                "Oldest client accepted: {}",
+                config
+                    .min_client()
+                    .map_or("any".into(), audionet_server::client_version::show)
+            );
             match (&config.email.from, &config.email.smtp_host) {
                 (Some(from), Some(host)) => {
                     if let Err(e) = Mailer::check_config(&config.email) {

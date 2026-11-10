@@ -15,11 +15,16 @@ fun cargoLockVersion(crate: String): String {
 }
 
 // Every AudioNet part has the workspace's version (Cargo.toml); the version
-// code follows it (1.2.4 is 10204), so each release is an update.
+// code follows it, with room for app-only rebuilds of one version
+// (audionetBuild in gradle.properties): major × 1000000 + minor × 10000 +
+// patch × 100 + build, so 1.3.0 build 1 is 1030001 and 1.3.1 is 1030100.
+// (Up to 1.3.0 the code was major × 10000 + minor × 100 + patch: 1.3.0 was
+// 10300, below every code of this scheme, so each release is still an update.)
 val workspaceVersion: String = rootDir.resolve("../../Cargo.toml").readLines()
     .first { it.startsWith("version = ") }.substringAfter('"').substringBefore('"')
+val appBuild: Int = (project.findProperty("audionetBuild") as String?)?.toInt() ?: 0
 val workspaceVersionCode: Int = workspaceVersion.split(".").map { it.toInt() }
-    .let { (major, minor, patch) -> major * 10000 + minor * 100 + patch }
+    .let { (major, minor, patch) -> major * 1000000 + minor * 10000 + patch * 100 + appBuild }
 
 // Release signing: a keystore kept outside the repository, named in
 // ~/.audionet-release/android-signing.properties (storeFile, storePassword,

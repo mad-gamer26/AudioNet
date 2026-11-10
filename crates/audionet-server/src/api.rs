@@ -1222,21 +1222,38 @@ async fn run_connection(s: Shared, p: Principal, socket: WebSocket) {
     let Ok(Some(Ok(Message::Text(text)))) = hello else {
         return;
     };
-    let (version, kind, visible) = match serde_json::from_str::<ClientMessage>(text.as_str()) {
-        Ok(ClientMessage::Hello {
-            protocol_version,
-            client,
-        }) => (
-            protocol_version,
-            client.kind,
-            client.visible.unwrap_or(true),
-        ),
-        _ => return,
-    };
+    let (version, kind, visible, software) =
+        match serde_json::from_str::<ClientMessage>(text.as_str()) {
+            Ok(ClientMessage::Hello {
+                protocol_version,
+                client,
+            }) => (
+                protocol_version,
+                client.kind,
+                client.visible.unwrap_or(true),
+                client.software,
+            ),
+            _ => return,
+        };
     let reply_err = |m: ServerMessage| serde_json::to_string(&m).expect("serializes");
     if !PROTOCOL_VERSION.is_compatible_with(version) {
         let _ = sink
             .send(Message::Text(reply_err(error_msg("protocol_version", format!("This server speaks AudioNet protocol {PROTOCOL_VERSION}; your client speaks {version}. Update the client."))).into()))
+            .await;
+        return;
+    }
+    // Too old a client: told why, then closed (every client since 1.0 stops
+    // on an error reply to its hello instead of reconnecting).
+    if let Some(why) = crate::client_version::refusal(
+        &software,
+        s.config.min_client(),
+        s.config.client_download_url.as_deref(),
+    ) {
+        tracing::info!(user = %p.username, software = %software, "client refused: too old");
+        let _ = sink
+            .send(Message::Text(
+                reply_err(error_msg("client_too_old", why)).into(),
+            ))
             .await;
         return;
     }
@@ -1260,9 +1277,9 @@ async fn run_connection(s: Shared, p: Principal, socket: WebSocket) {
     if let Some(n) = &p.node {
         let id = n.id.clone();
         let _ = s.db.call(move |c| db::touch_node(c, &id)).await;
-        tracing::info!(conn = %conn_id, node = %n.id, user = %p.username, "device connected");
+        tracing::info!(conn = %conn_id, node = %n.id, user = %p.username, software = %software, "device connected");
     } else {
-        tracing::info!(conn = %conn_id, user = %p.username, "browser connected");
+        tracing::info!(conn = %conn_id, user = %p.username, software = %software, "browser connected");
     }
     let welcome = ServerMessage::Welcome {
         protocol_version: PROTOCOL_VERSION,
