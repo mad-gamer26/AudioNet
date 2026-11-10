@@ -19,10 +19,10 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 
 /**
- * Keeps AudioNet online, and its streams playing and recording, with the
+ * Keeps AudioNet connected, and its streams playing and recording, with the
  * screen off or another app in front: a foreground service, running while
- * this phone is signed in and online, with the notification Android
- * requires ("AudioNet: online in alice on audionet.example.com, 1 stream").
+ * this phone is signed in and connected, with the notification Android
+ * requires ("Connected to alice on audionet.example.com, visible, 1 stream.").
  *
  * While a stream runs it also keeps the CPU awake and Wi-Fi in its low
  * latency mode, and lets multicast in (finding devices on this network);
@@ -32,7 +32,7 @@ class OnlineService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val text = intent?.getStringExtra(EXTRA_TEXT) ?: "Online."
+        val text = intent?.getStringExtra(EXTRA_TEXT) ?: "Connected."
         val types = if (microphoneAllowed(this)) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         } else {
@@ -81,7 +81,7 @@ class OnlineService : Service() {
                     ContextCompat.startForegroundService(context, Intent(context, OnlineService::class.java).putExtra(EXTRA_TEXT, text))
                 }.onFailure {
                     running = false
-                    model.note("AudioNet could not stay online in the background: ${it.message}")
+                    model.note("AudioNet could not stay connected in the background: ${it.message}")
                 }
             } else {
                 val manager = context.getSystemService(NotificationManager::class.java)
@@ -92,14 +92,18 @@ class OnlineService : Service() {
         /** The service's state in words. */
         private fun describe(model: AppModel): String {
             val where = if (model.accounts.size == 1) model.accounts[0].accountName else "${model.accounts.size} accounts"
-            val sharing = if (model.sharingAccounts.isEmpty()) "not sharing" else "sharing"
+            val visible = when {
+                model.visibleAccounts.isEmpty() -> "hidden"
+                model.visibleAccounts.size == model.accounts.size -> "visible"
+                else -> "visible in ${model.visibleAccounts.size}"
+            }
             val streams = when (model.engineStreams) {
                 0 -> "no streams"
                 1 -> "1 stream"
                 else -> "${model.engineStreams} streams"
             }
-            val state = if (model.connected) "Online" else "Connecting"
-            return "$state in $where, $sharing, $streams."
+            val state = if (model.connected) "Connected to" else "Connecting to"
+            return "$state $where, $visible, $streams."
         }
 
         private fun notification(context: Context, text: String): Notification {

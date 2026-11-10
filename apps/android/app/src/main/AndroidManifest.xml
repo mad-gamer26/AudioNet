@@ -5,11 +5,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Sending this phone's microphone, only when chosen. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <!-- Keeps AudioNet online and its streams playing with the screen off. -->
+    <!-- Keeps AudioNet connected and its streams playing with the screen off. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <!-- The "AudioNet is online" notification the service must show. -->
+    <!-- The "Connected to …" notification the service must show. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Direct connections to devices on the same network. -->

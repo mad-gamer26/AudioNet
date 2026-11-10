@@ -56,8 +56,9 @@ data class DeviceChoices(
  *
  * The phone can be signed in to several AudioNet accounts; it is a separate
  * device in each, with its own connection (engine client). While AudioNet
- * runs and is signed in, the phone is online in all of them (OnlineService
- * keeps it so with the screen off).
+ * runs and is signed in, the phone is connected to all of them
+ * (OnlineService keeps it so with the screen off), visible in each or not
+ * as chosen there.
  *
  * All state changes happen on the main thread: engine events arrive on
  * engine threads and are posted here; blocking engine calls (sign-in,
@@ -71,8 +72,14 @@ class AppModel(private val context: Context) {
     val accounts = mutableStateListOf<Account>()
     var readingAccount by mutableStateOf(false); private set
     var online by mutableStateOf(false); private set
-    /** Accounts in which this phone shares its audio (by its device id there). */
-    val sharingAccounts = mutableStateListOf<String>()
+    /**
+     * Accounts in which this phone is visible (by its device id there): the
+     * account's other devices see it, and can listen to it and send to it.
+     * Not visible, it is a visitor there: hidden from them and out of their
+     * reach, but it still sees them, listens to them and sends to them. Each
+     * account's choice is saved; new accounts start visible.
+     */
+    val visibleAccounts = mutableStateListOf<String>()
     val signingOut = mutableStateListOf<String>()
     val connectedAccounts = mutableStateListOf<String>()
     var signingIn by mutableStateOf(false); private set
@@ -202,7 +209,7 @@ class AppModel(private val context: Context) {
                 result.onSuccess { account ->
                     accounts.add(account)
                     store.saveAll(accounts)?.let { announce(it) }
-                    announce("Signed in as \"${account.deviceName}\" to ${account.accountName}. This phone is online there, not sharing its audio: turn on sharing to share it.")
+                    announce("Signed in as \"${account.deviceName}\" to ${account.accountName}. This phone is visible there: your other devices see it, and can listen to it and send to it.")
                     connectAll()
                     connect(account)
                     done(true)
@@ -233,8 +240,8 @@ class AppModel(private val context: Context) {
                 signingOut.remove(id)
                 result.onSuccess {
                     accounts.removeAll { it.nodeId == id }
-                    sharingAccounts.remove(id)
-                    store.settings.edit().remove("sharing-$id").apply()
+                    visibleAccounts.remove(id)
+                    store.settings.edit().remove("visible-$id").remove("sharing-$id").apply()
                     store.saveAll(accounts)?.let { announce(it) }
                     if (accounts.isEmpty()) disconnectAll()
                     announce("Signed out of ${account.accountName}: this phone was removed from that account.")
@@ -248,7 +255,7 @@ class AppModel(private val context: Context) {
 
     // MARK: Connections
 
-    /** Connects every account: while AudioNet runs, this phone is online in all of them. */
+    /** Connects every account: while AudioNet runs, this phone is connected to all of them. */
     fun connectAll() {
         if (accounts.isEmpty() || online) return
         uniffi.audionet_ffi.setAudioUseListener(audioUse)
@@ -269,9 +276,11 @@ class AppModel(private val context: Context) {
             }
         }
         val client = Client(account, listener)
-        val share = store.settings.getBoolean("sharing-$id", false)
-        client.setSharing(share)
-        if (share) { if (!sharingAccounts.contains(id)) sharingAccounts.add(id) } else sharingAccounts.remove(id)
+        // Visible unless turned off (the sharing choice of versions before
+        // 1.3 is not carried over: every account starts visible).
+        val visible = store.settings.getBoolean("visible-$id", true)
+        client.setVisible(visible)
+        if (visible) { if (!visibleAccounts.contains(id)) visibleAccounts.add(id) } else visibleAccounts.remove(id)
         clients[id] = client
         client.start()
     }
@@ -294,7 +303,7 @@ class AppModel(private val context: Context) {
 
     private fun clearOnlineState() {
         online = false
-        sharingAccounts.clear()
+        visibleAccounts.clear()
         connectedAccounts.clear()
         streams.clear()
         devicesByAccount.clear()
@@ -354,8 +363,6 @@ class AppModel(private val context: Context) {
 
     fun listen(d: Device) {
         val (account, client) = connection(d) ?: return
-        if (!d.online) return announce("${d.name} is offline.")
-        if (!d.sharing) return announce("${d.name} is not sharing its audio, so it cannot be listened to. You can still send to it.")
         fillChoices(d)
         val ch = choices[d.nodeId] ?: DeviceChoices()
         val s = d.sources.firstOrNull { it.id == ch.listenSource } ?: return announce("Choose the sound to listen to.")
@@ -365,8 +372,6 @@ class AppModel(private val context: Context) {
 
     fun send(d: Device) {
         val (account, client) = connection(d) ?: return
-        if (!d.online) return announce("${d.name} is offline.")
-        if (!sharingAccounts.contains(account)) return announce("This phone is not sharing its audio in ${name(account)}. Turn on sharing there to send from it.")
         if (!microphoneAllowed) return announce("Microphone access is off for AudioNet. Allow it when asked, or in Settings, Apps, AudioNet, Permissions.")
         fillChoices(d)
         val ch = choices[d.nodeId] ?: DeviceChoices()
@@ -392,17 +397,23 @@ class AppModel(private val context: Context) {
         }
     }
 
-    // MARK: Sharing and streams
+    // MARK: Visibility and streams
 
-    fun isSharing(account: String) = sharingAccounts.contains(account)
+    fun isVisible(account: String) = visibleAccounts.contains(account)
 
-    fun setSharing(account: String, on: Boolean) {
+    /**
+     * Makes this phone visible in one account or hides it, and saves the
+     * choice. Hiding ends the streams other devices have with it; the ones
+     * it started go on.
+     */
+    fun setVisible(account: String, on: Boolean) {
         if (accounts.none { it.nodeId == account }) return
-        store.settings.edit().putBoolean("sharing-$account", on).apply()
-        if (on) { if (!sharingAccounts.contains(account)) sharingAccounts.add(account) } else sharingAccounts.remove(account)
-        clients[account]?.setSharing(on)
-        announce(if (on) "Sharing this phone's audio in ${name(account)}: your devices there can listen to it, and it can send its audio."
-                 else "Stopped sharing in ${name(account)}. This phone is still online there: it receives audio, but sends none of its own.")
+        store.settings.edit().putBoolean("visible-$account", on).apply()
+        if (on) { if (!visibleAccounts.contains(account)) visibleAccounts.add(account) } else visibleAccounts.remove(account)
+        clients[account]?.setVisible(on)
+        announce(if (on) "This phone is visible in ${name(account)}: your other devices there see it, and can listen to it and send to it."
+                 else "This phone is no longer visible in ${name(account)}: your other devices there cannot see it or reach it. It can still listen to them and send to them.")
+        OnlineService.update(context, this)
     }
 
     fun stopStream(row: StreamRow) {
@@ -425,8 +436,8 @@ class AppModel(private val context: Context) {
         when (event) {
             is Event.Connected -> {
                 if (!connectedAccounts.contains(account)) connectedAccounts.add(account)
-                val how = if (isSharing(account)) "sharing its audio" else "not sharing its audio"
-                announce(if (accounts.size > 1) "Online in ${name(account)}, $how." else "Online, $how.")
+                val how = if (isVisible(account)) "visible to your other devices" else "not visible to your other devices"
+                announce(if (accounts.size > 1) "Connected to ${name(account)}, $how." else "Connected, $how.")
                 refreshLocalAudio()
             }
             is Event.Disconnected -> {
@@ -444,18 +455,23 @@ class AppModel(private val context: Context) {
                 val list = devicesByAccount[account].orEmpty().toMutableList()
                 val i = list.indexOfFirst { it.nodeId == event.device.nodeId }
                 if (i >= 0) {
-                    val was = list[i]
                     list[i] = event.device
-                    if (was.online != event.device.online) {
-                        announce("${event.device.name} is now ${if (event.device.online) "online" else "offline"}.")
-                    } else if (event.device.online && was.sharing != event.device.sharing) {
-                        announce("${event.device.name} ${if (event.device.sharing) "started" else "stopped"} sharing its audio.")
-                    }
                 } else {
                     list.add(event.device)
+                    announce("${event.device.name} is now visible.")
                 }
                 devicesByAccount[account] = list
                 fillChoices(event.device)
+            }
+            is Event.DeviceGone -> {
+                val list = devicesByAccount[account].orEmpty().toMutableList()
+                val i = list.indexOfFirst { it.nodeId == event.nodeId }
+                if (i >= 0) {
+                    val gone = list.removeAt(i)
+                    devicesByAccount[account] = list
+                    expanded.remove(event.nodeId)
+                    announce("${gone.name} is no longer visible.")
+                }
             }
             is Event.Stream -> {
                 val i = streams.indexOfFirst { it.id == event.sessionId }

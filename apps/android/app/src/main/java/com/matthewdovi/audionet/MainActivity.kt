@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity() {
             AudioNetTheme {
                 Root(model)
                 // Once signed in: the microphone (to send it, when chosen)
-                // and notifications (the "AudioNet is online" one), asked
+                // and notifications (the "Connected to …" one), asked
                 // once per launch until answered.
                 LaunchedEffect(model.signedIn) {
                     if (model.signedIn && !asked) {

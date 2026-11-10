@@ -7,6 +7,11 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -27,6 +32,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -45,6 +53,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -65,21 +74,29 @@ import uniffi.audionet_ffi.Account
 import uniffi.audionet_ffi.Device
 import kotlin.math.roundToInt
 
-/** Where the person is: the main screen, or one opened from it. */
-enum class Screen { Main, Settings, StatusLog, AddAccount }
+/** The signed-in tabs (the bottom navigation bar), in order. */
+enum class Tab(val title: String) { Devices("Devices"), Streams("Streams"), Accounts("Accounts"), Settings("Settings") }
 
-/** Sign-in until this phone belongs to an account, then the main screen. */
+/** A screen opened from a tab (Back returns to the tab). */
+enum class Sub { None, StatusLog, AddAccount }
+
+/**
+ * Sign-in until this phone belongs to an account; then a standard bottom
+ * navigation bar with Devices, Streams, Accounts and Settings (TalkBack:
+ * "Devices, tab, 1 of 4, selected").
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun Root(model: AppModel) {
-    var screen by rememberSaveable { mutableStateOf(Screen.Main) }
-    if (screen != Screen.Main) BackHandler { screen = Screen.Main }
+    var tab by rememberSaveable { mutableStateOf(Tab.Devices) }
+    var sub by rememberSaveable { mutableStateOf(Sub.None) }
+    if (sub != Sub.None) BackHandler { sub = Sub.None }
+    val tabs = model.signedIn && !model.readingAccount
     val title = when {
-        !model.signedIn && !model.readingAccount -> "AudioNet"
-        screen == Screen.Settings -> "Settings"
-        screen == Screen.StatusLog -> "Status Log"
-        screen == Screen.AddAccount -> "Add Account"
-        else -> "AudioNet"
+        !tabs -> "AudioNet"
+        sub == Sub.StatusLog -> "Status Log"
+        sub == Sub.AddAccount -> "Add Account"
+        else -> tab.title
     }
     Scaffold(
         topBar = {
@@ -87,8 +104,8 @@ fun Root(model: AppModel) {
                 TopAppBar(
                     title = { Text(title, modifier = Modifier.semantics { heading() }) },
                     navigationIcon = {
-                        if (screen != Screen.Main && model.signedIn) {
-                            TextButton(onClick = { screen = Screen.Main }) { Text("Back") }
+                        if (sub != Sub.None && tabs) {
+                            TextButton(onClick = { sub = Sub.None }) { Text("Back") }
                         }
                     },
                 )
@@ -106,17 +123,42 @@ fun Root(model: AppModel) {
                 }
             }
         },
+        bottomBar = {
+            if (tabs) {
+                NavigationBar {
+                    for (t in Tab.entries) {
+                        val label = if (t == Tab.Streams && model.streams.isNotEmpty()) "Streams (${model.streams.size})" else t.title
+                        NavigationBarItem(
+                            selected = tab == t && sub == Sub.None,
+                            onClick = { tab = t; sub = Sub.None },
+                            // Decorative: the label names the tab.
+                            icon = { Icon(t.icon(), contentDescription = null) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+            }
+        },
     ) { padding ->
         val modifier = Modifier.padding(padding).fillMaxSize()
         when {
             model.readingAccount -> Column(modifier.padding(16.dp)) { Text("Reading this phone's AudioNet sign-in…") }
             !model.signedIn -> SignInScreen(model, adding = false, modifier = modifier) {}
-            screen == Screen.Settings -> SettingsScreen(model, modifier) { screen = it }
-            screen == Screen.StatusLog -> StatusLogScreen(model, modifier)
-            screen == Screen.AddAccount -> SignInScreen(model, adding = true, modifier = modifier) { screen = Screen.Settings }
-            else -> MainScreen(model, modifier) { screen = it }
+            sub == Sub.StatusLog -> StatusLogScreen(model, modifier)
+            sub == Sub.AddAccount -> SignInScreen(model, adding = true, modifier = modifier) { sub = Sub.None }
+            tab == Tab.Devices -> DevicesScreen(model, modifier)
+            tab == Tab.Streams -> StreamsScreen(model, modifier)
+            tab == Tab.Accounts -> AccountsScreen(model, modifier) { sub = Sub.AddAccount }
+            else -> SettingsScreen(model, modifier) { sub = Sub.StatusLog }
         }
     }
+}
+
+private fun Tab.icon(): ImageVector = when (this) {
+    Tab.Devices -> Icons.Filled.Home
+    Tab.Streams -> Icons.Filled.PlayArrow
+    Tab.Accounts -> Icons.Filled.Person
+    Tab.Settings -> Icons.Filled.Settings
 }
 
 /** A section heading. */
@@ -133,7 +175,7 @@ fun Heading(text: String) {
     )
 }
 
-/** A switch with its label, one control for TalkBack ("Share This Phone's Audio, switch, on"). */
+/** A switch with its label, one control for TalkBack ("Visible to My Other Devices, switch, on"). */
 @Composable
 fun SwitchRow(label: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
     Row(
@@ -234,20 +276,14 @@ fun SignInScreen(model: AppModel, adding: Boolean, modifier: Modifier, done: () 
     }
 }
 
-// MARK: Main screen
+// MARK: Devices
 
 @Composable
-fun MainScreen(model: AppModel, modifier: Modifier, open: (Screen) -> Unit) {
+fun DevicesScreen(model: AppModel, modifier: Modifier) {
     LazyColumn(modifier.padding(horizontal = 16.dp)) {
         item { Heading("This phone") }
         item {
             Text("Status: ${statusText(model)}", modifier = Modifier.padding(vertical = 8.dp))
-        }
-        for (a in model.accounts.toList()) {
-            item(key = "share-${a.nodeId}") {
-                val label = if (model.accounts.size > 1) "Share This Phone's Audio in ${a.accountName}" else "Share This Phone's Audio"
-                SwitchRow(label, model.isSharing(a.nodeId), enabled = !model.signingOut.contains(a.nodeId)) { model.setSharing(a.nodeId, it) }
-            }
         }
         if (model.microphones.isNotEmpty()) {
             item {
@@ -257,25 +293,28 @@ fun MainScreen(model: AppModel, modifier: Modifier, open: (Screen) -> Unit) {
                     onSelect = { model.chooseMicrophone(it) })
             }
         }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 8.dp)) {
-                OutlinedButton(onClick = { open(Screen.StatusLog) }) { Text("Status Log") }
-                OutlinedButton(onClick = { open(Screen.Settings) }) { Text("Settings") }
-            }
-        }
         for (a in model.accounts.toList()) {
             item(key = "head-${a.nodeId}") { Heading(if (model.accounts.size > 1) "Devices in ${a.accountName}" else "Your devices") }
             val list = model.devicesByAccount[a.nodeId].orEmpty()
             when {
                 !model.connectedAccounts.contains(a.nodeId) -> item { Text("Connecting…") }
                 !model.devicesLoaded.contains(a.nodeId) -> item { Text("Looking for your devices…") }
-                list.isEmpty() -> item { Text("No other devices yet.") }
+                list.isEmpty() -> item { Text("No other devices are visible. Devices appear here while AudioNet runs on them with visibility on.") }
                 else -> deviceItems(model, list)
             }
         }
+        item { Spacer(Modifier.heightIn(min = 32.dp)) }
+    }
+}
+
+// MARK: Streams
+
+@Composable
+fun StreamsScreen(model: AppModel, modifier: Modifier) {
+    LazyColumn(modifier.padding(horizontal = 16.dp)) {
         item { Heading("Streams started here") }
         if (model.streams.isEmpty()) {
-            item { Text("No streams are running.") }
+            item { Text("No streams are running. Start one from Devices: open a device, then Listen or Send.") }
         } else {
             for (row in model.streams.toList()) {
                 item(key = "stream-${row.id}") { StreamControls(model, row) }
@@ -285,14 +324,64 @@ fun MainScreen(model: AppModel, modifier: Modifier, open: (Screen) -> Unit) {
     }
 }
 
+// MARK: Accounts
+
+@Composable
+fun AccountsScreen(model: AppModel, modifier: Modifier, addAccount: () -> Unit) {
+    val context = LocalContext.current
+    var signingOut by remember { mutableStateOf<Account?>(null) }
+    LazyColumn(modifier.padding(horizontal = 16.dp)) {
+        for (a in model.accounts.toList()) {
+            item(key = a.nodeId) {
+                Heading(if (model.accounts.size > 1) a.accountName else "Account")
+                Text("Signed in as \"${a.deviceName}\" to account ${a.username} on ${a.serverUrl}.", modifier = Modifier.padding(bottom = 8.dp))
+                val label = if (model.accounts.size > 1) "Visible to My Other Devices in ${a.accountName}" else "Visible to My Other Devices"
+                SwitchRow(label, model.isVisible(a.nodeId), enabled = !model.signingOut.contains(a.nodeId)) { model.setVisible(a.nodeId, it) }
+                Text(
+                    if (model.isVisible(a.nodeId)) "Your other devices see this phone, and can listen to it and send to it."
+                    else "Your other devices cannot see this phone or reach it. It can still listen to them and send to them.",
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(
+                        onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(a.serverUrl.trimEnd('/') + "/?manage"))) },
+                        modifier = Modifier.semantics { contentDescription = if (model.accounts.size > 1) "Manage Devices in ${a.accountName}" else "Manage Devices" },
+                    ) { Text("Manage Devices") }
+                    OutlinedButton(
+                        onClick = { signingOut = a },
+                        enabled = !model.signingOut.contains(a.nodeId),
+                        modifier = Modifier.semantics { contentDescription = "Sign Out of ${a.accountName}" },
+                    ) { Text(if (model.signingOut.contains(a.nodeId)) "Signing Out…" else "Sign Out") }
+                }
+            }
+        }
+        item {
+            Column(Modifier.padding(top = 20.dp)) {
+                OutlinedButton(onClick = addAccount) { Text("Add Account") }
+                Text("Renaming and removing your devices is in Manage Devices, in the web client.", modifier = Modifier.padding(top = 8.dp))
+            }
+        }
+        item { Spacer(Modifier.heightIn(min = 32.dp)) }
+    }
+    signingOut?.let { a ->
+        AlertDialog(
+            onDismissRequest = { signingOut = null },
+            title = { Text("Sign Out") },
+            text = { Text("Sign out of ${a.accountName}? This phone is removed from that account. To use it there again, sign in again.") },
+            confirmButton = { TextButton(onClick = { model.signOut(a); signingOut = null }) { Text("Sign Out") } },
+            dismissButton = { TextButton(onClick = { signingOut = null }) { Text("Cancel") } },
+        )
+    }
+}
+
 private fun LazyListScope.deviceItems(model: AppModel, list: List<Device>) {
     for (d in list) {
         item(key = "dev-${d.nodeId}") {
             val open = model.expanded.contains(d.nodeId)
-            // One row per device, opening its controls: "Studio PC: online,
-            // collapsed, double-tap to expand".
+            // One row per device, opening its controls: "Studio PC,
+            // Windows, collapsed, double-tap to expand".
             Text(
-                "${d.name}: ${deviceState(d)}",
+                deviceLabel(d),
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
@@ -316,10 +405,9 @@ fun DeviceControls(model: AppModel, d: Device) {
                 label = { s -> "${s.name} (${if (s.isInput) "input" else "what it plays"}${if (s.isDefault) ", default" else ""})" },
                 onSelect = { s -> model.choose(d.nodeId) { it.copy(listenSource = s.id) } })
         }
-        if (d.online && !d.sharing) Text("${d.name} is not sharing its audio: it cannot be listened to, but you can send to it.")
         Button(
             onClick = { model.listen(d) },
-            enabled = model.online && d.online && d.sharing,
+            enabled = model.online,
             modifier = Modifier.padding(top = 8.dp).semantics { contentDescription = "Listen to ${d.name}" },
         ) { Text("Listen") }
         if (d.outputs.isNotEmpty()) {
@@ -327,11 +415,9 @@ fun DeviceControls(model: AppModel, d: Device) {
                 label = { o -> if (o.isDefault) "${o.name} (default)" else o.name },
                 onSelect = { o -> model.choose(d.nodeId) { it.copy(sendOutput = o.id) } })
         }
-        val sharingHere = model.accountOf(d)?.let { model.isSharing(it) } ?: false
-        if (!sharingHere) Text("Turn on Share This Phone's Audio to send its microphone.")
         Button(
             onClick = { model.send(d) },
-            enabled = model.online && d.online && sharingHere,
+            enabled = model.online,
             modifier = Modifier.padding(top = 8.dp).semantics { contentDescription = "Send my microphone to ${d.name}" },
         ) { Text("Send My Microphone") }
     }
@@ -360,14 +446,27 @@ fun StreamControls(model: AppModel, row: StreamRow) {
     }
 }
 
-fun deviceState(d: Device): String = if (!d.online) "offline" else if (d.sharing) "online" else "online, not sharing"
+/** A device's platform in words, or empty when unknown. */
+fun platformName(p: String): String = when (p) {
+    "windows" -> "Windows"
+    "macos" -> "Mac"
+    "ios" -> "iPhone"
+    "android" -> "Android"
+    "linux" -> "Linux"
+    "web" -> "Web browser"
+    "" -> ""
+    else -> p.replaceFirstChar { it.uppercase() }
+}
+
+/** A device in a list: "Studio PC, Windows". Every listed device is visible. */
+fun deviceLabel(d: Device): String = platformName(d.platform).let { if (it.isEmpty()) d.name else "${d.name}, $it" }
 
 private fun statusText(model: AppModel): String {
     if (model.accounts.isEmpty()) return "Not signed in"
     if (!model.connected) return "Connecting…"
-    val sharing = model.sharingAccounts.size
-    if (model.accounts.size == 1) return if (sharing == 1) "Online, sharing its audio" else "Online, not sharing its audio"
-    return "Online in ${model.accounts.size} accounts, sharing in $sharing"
+    val visible = model.visibleAccounts.size
+    if (model.accounts.size == 1) return if (visible == 1) "Visible to your other devices" else "Hidden from your other devices"
+    return "Visible in $visible of ${model.accounts.size} accounts"
 }
 
 // MARK: Status log and settings
@@ -389,35 +488,14 @@ fun StatusLogScreen(model: AppModel, modifier: Modifier) {
 }
 
 @Composable
-fun SettingsScreen(model: AppModel, modifier: Modifier, open: (Screen) -> Unit) {
-    var signingOut by remember { mutableStateOf<Account?>(null) }
+fun SettingsScreen(model: AppModel, modifier: Modifier, openLog: () -> Unit) {
     LazyColumn(modifier.padding(horizontal = 16.dp)) {
-        item { Heading("Accounts") }
-        for (a in model.accounts.toList()) {
-            item(key = a.nodeId) {
-                Text("Signed in as \"${a.deviceName}\" to account ${a.username} on ${a.serverUrl}.", modifier = Modifier.padding(top = 8.dp))
-                OutlinedButton(
-                    onClick = { signingOut = a },
-                    enabled = !model.signingOut.contains(a.nodeId),
-                    modifier = Modifier.semantics { contentDescription = "Sign Out of ${a.accountName}" },
-                ) { Text(if (model.signingOut.contains(a.nodeId)) "Signing Out…" else "Sign Out") }
-            }
-        }
-        item { OutlinedButton(onClick = { open(Screen.AddAccount) }, modifier = Modifier.padding(top = 8.dp)) { Text("Add Account") } }
         item { Heading("Troubleshooting") }
         item { SwitchRow("Show Measurements", model.showMeasurements) { model.changeShowMeasurements(it) } }
         item { Text("Numbers about streams and the network, under each stream and in the status log, for troubleshooting.") }
+        item { OutlinedButton(onClick = openLog, modifier = Modifier.padding(top = 8.dp)) { Text("Status Log") } }
         item { Heading("About") }
         item { Text("Version: ${BuildConfig.VERSION_NAME}") }
         item { Text("Engine version: ${uniffi.audionet_ffi.engineVersion()}") }
-    }
-    signingOut?.let { a ->
-        AlertDialog(
-            onDismissRequest = { signingOut = null },
-            title = { Text("Sign Out") },
-            text = { Text("Sign out of ${a.accountName}? This phone is removed from that account and stops sharing there. To use it there again, sign in again.") },
-            confirmButton = { TextButton(onClick = { model.signOut(a); signingOut = null }) { Text("Sign Out") } },
-            dismissButton = { TextButton(onClick = { signingOut = null }) { Text("Cancel") } },
-        )
     }
 }
