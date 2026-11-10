@@ -332,6 +332,12 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertTrue(source.waitForExistence(timeout: 30), "the test source device did not appear as a disclosure")
         waitForStatus(app, window: "Visible in 2 of 2 accounts", menu: "This Mac is visible to your other devices")
         dumpStatus(app, "at launch")
+        // The second account has no visible devices: no section, no
+        // heading, no "no devices" line (the first account has some).
+        let emptyHeading = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Devices in uitest-' OR value BEGINSWITH 'Devices in uitest-'")).firstMatch
+        XCTAssertTrue(waitUntil(15) { !emptyHeading.exists }, "an account without visible devices still has a heading")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'No other devices' OR value BEGINSWITH 'No other devices'")).firstMatch.exists,
+                       "says no devices while another account has some")
         XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "visible").firstMatch.exists,
                        "the Accounts tab's switches show on the Devices tab")
         try audit(app)
@@ -403,7 +409,14 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertTrue(switches.firstMatch.waitForExistence(timeout: 10), "no visibility switch on Accounts")
         XCTAssertEqual(switches.count, 2, "one visibility switch per account")
         let toggle = switches.firstMatch
-        XCTAssertTrue(toggle.label.hasPrefix("Visible to My Other Devices in "), "switch named \(toggle.label)")
+        // Named plainly: the account's heading says which account, and
+        // nothing under it repeats the account name.
+        XCTAssertEqual(toggle.label, "Visible to My Other Devices", "switch named \(toggle.label)")
+        let repeating = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS ' on ' AND label BEGINSWITH 'Visible' OR label BEGINSWITH 'Sign Out of' OR label BEGINSWITH 'Manage Devices in'"))
+        XCTAssertEqual(repeating.count, 0, "controls repeat the account: \(repeating.allElementsBoundByIndex.map(\.label))")
+        let secondHeading = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'uitest-' OR value BEGINSWITH 'uitest-'")).firstMatch
+        if !secondHeading.exists { print("ACCOUNTS TAB: \(app.windows.firstMatch.debugDescription)") }
+        XCTAssertTrue(secondHeading.exists, "the second account's heading names it")
         func on(_ e: XCUIElement) -> Int? { (e.value as? Int) ?? (e.value as? String).flatMap { Int($0) } }
         XCTAssertEqual(on(toggle), 1, "a new account starts visible")
         XCTAssertTrue(app.buttons["manageDevices"].exists, "no Manage Devices")
@@ -419,7 +432,7 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertEqual(signOuts.count, 2, "accounts listed: \(signOuts.count)")
         XCTAssertTrue(app.buttons["addAccount"].exists, "no Add Account")
         let second = signOuts.element(boundBy: 1)
-        XCTAssertTrue(second.label.hasPrefix("Sign Out of uitest-"), "second account: \(second.label)")
+        XCTAssertTrue(second.label.hasPrefix("Sign Out"), "second account: \(second.label)")
         scrollIntoView(app, second)
         second.click()
         // Asked first; then this Mac is removed from that account.

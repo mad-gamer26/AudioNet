@@ -193,17 +193,16 @@ struct DevicesTab: View {
 
     var body: some View {
         Form {
-            // One section per account (a heading names the account when
-            // there are several).
-            ForEach(model.accounts, id: \.nodeId) { a in
+            // One section per account with visible devices (a heading names
+            // the account when there are several; nothing else repeats it).
+            // An account with none has no section at all.
+            ForEach(model.accounts.filter(showsSection), id: \.nodeId) { a in
                 Section {
                     let list = model.devicesByAccount[a.nodeId] ?? []
                     if !model.connectedAccounts.contains(a.nodeId) {
                         Text("Connecting…")
                     } else if !model.devicesLoaded.contains(a.nodeId) {
                         Text("Looking for your devices…")
-                    } else if list.isEmpty {
-                        Text("No other devices are visible. Devices appear here while AudioNet runs on them with visibility on.")
                     } else {
                         // One native disclosure per device: a single line
                         // until expanded. VoiceOver reads "Studio PC,
@@ -225,10 +224,24 @@ struct DevicesTab: View {
                     }
                 } header: {
                     Text(model.accounts.count > 1 ? "Devices in \(a.accountName)" : "Your devices").font(.headline)
+                        .accessibilityAddTraits(.isHeader)
+                }
+            }
+            if model.accounts.allSatisfy({ !showsSection($0) }) {
+                Section {
+                    Text("No other devices are visible. Devices appear here while AudioNet runs on them with visibility on.")
                 }
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// An account's section shows while it connects and looks, and then
+    /// only when it has visible devices.
+    private func showsSection(_ a: Account) -> Bool {
+        let id = a.nodeId
+        return !model.connectedAccounts.contains(id) || !model.devicesLoaded.contains(id)
+            || !(model.devicesByAccount[id] ?? []).isEmpty
     }
 }
 
@@ -290,13 +303,13 @@ struct AccountsTab: View {
                 Section {
                     // Verbatim: an interpolated string would turn the
                     // address into a link, drawn in a lower-contrast color.
-                    Text(verbatim: "Signed in as \"\(a.deviceName)\" to account \(a.username) on \(a.serverUrl).")
-                    let label = model.accounts.count > 1 ? "Visible to My Other Devices in \(a.accountName)" : "Visible to My Other Devices"
-                    Toggle(label, isOn: model.visibility(a.nodeId))
+                    // The heading names the account; nothing else repeats it.
+                    Text(verbatim: "This Mac's name here: \(a.deviceName)")
+                    Toggle("Visible to My Other Devices", isOn: model.visibility(a.nodeId))
                         .disabled(model.signingOut.contains(a.nodeId))
                         // Named on the switch itself: in a grouped form on
                         // macOS the switch otherwise has no name of its own.
-                        .accessibilityLabel(label)
+                        .accessibilityLabel("Visible to My Other Devices")
                         .accessibilityIdentifier("visible")
                     Text(model.isVisible(a.nodeId)
                          ? "Your other devices see this Mac, and can listen to it and send to it."
@@ -307,16 +320,16 @@ struct AccountsTab: View {
                                 openURL(url)
                             }
                         }
-                        .accessibilityLabel(model.accounts.count > 1 ? "Manage Devices in \(a.accountName)" : "Manage Devices")
                         .accessibilityIdentifier("manageDevices")
                         Spacer()
                         Button(model.signingOut.contains(a.nodeId) ? "Signing Out…" : "Sign Out…") { signingOut = a }
                             .disabled(model.signingOut.contains(a.nodeId))
-                            .accessibilityLabel("Sign Out of \(a.accountName)")
                             .accessibilityIdentifier("signOut")
                     }
                 } header: {
-                    Text(model.accounts.count > 1 ? a.accountName : "Account").font(.headline)
+                    // Verbatim: the server address is not a link.
+                    Text(verbatim: a.accountName).font(.headline)
+                        .accessibilityAddTraits(.isHeader)
                 }
             }
             Section {

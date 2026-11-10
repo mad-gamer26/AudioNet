@@ -53,6 +53,14 @@ final class AccessibilityTests: XCTestCase {
                 print("dynamic type finding with no element overruled: \(issue.compactDescription)")
                 return true
             }
+            // The Accounts tab's Manage Devices and Sign Out: standard Form
+            // buttons, which the audit reports like the lowest text; the
+            // signed-in test measures both growing at an accessibility size
+            // (and fails if they do not).
+            if issue.auditType == .dynamicType, let e = issue.element, ["manageDevices", "signOut"].contains(e.identifier) {
+                print("dynamic type finding on '\(e.identifier)' overruled (measured in testSignedInScreenPassesAccessibilityAudit)")
+                return true
+            }
             if issue.auditType == .dynamicType, let e = issue.element, e.elementType == .staticText {
                 print("dynamic type finding on text '\(e.label.prefix(40))' overruled (see testTextGrowsWithDynamicType)")
                 return true
@@ -223,6 +231,12 @@ final class AccessibilityTests: XCTestCase {
             return
         }
         XCTAssertFalse(source.label.contains("online"), "devices carry no state words: \(source.label)")
+        // The second account has no visible devices: no section, no
+        // heading, no "no devices" line (the first account has some).
+        let emptyHeading = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Devices in uitest-' OR value BEGINSWITH 'Devices in uitest-'")).firstMatch
+        XCTAssertTrue(waitUntil(15) { !emptyHeading.exists }, "an account without visible devices still has a heading")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'No other devices' OR value BEGINSWITH 'No other devices'")).firstMatch.exists,
+                       "says no devices while another account has some")
         XCTAssertFalse(app.buttons["listen"].exists, "a collapsed device should not show its controls")
         source.tap()
         let listen = app.buttons["listen"]
@@ -271,7 +285,14 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertTrue(switches.firstMatch.waitForExistence(timeout: 5), "no visibility switch")
         XCTAssertEqual(switches.count, 2, "one visibility switch per account")
         let toggle = switches.firstMatch
-        XCTAssertTrue(toggle.label.hasPrefix("Visible to My Other Devices in "), "switch named \(toggle.label)")
+        // Named plainly: the account's heading says which account, and
+        // nothing under it repeats the account name.
+        XCTAssertEqual(toggle.label, "Visible to My Other Devices", "switch named \(toggle.label)")
+        let repeating = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS ' on ' AND label BEGINSWITH 'Visible' OR label BEGINSWITH 'Sign Out of' OR label BEGINSWITH 'Manage Devices in'"))
+        XCTAssertEqual(repeating.count, 0, "controls repeat the account: \(repeating.allElementsBoundByIndex.map(\.label))")
+        let secondHeading = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'uitest-' OR value BEGINSWITH 'uitest-'")).firstMatch
+        if !secondHeading.exists { print("ACCOUNTS TAB: \(app.windows.firstMatch.debugDescription)") }
+        XCTAssertTrue(secondHeading.exists, "the second account's heading names it")
         XCTAssertEqual(toggle.value as? String, "1", "a new account starts visible")
         XCTAssertTrue(app.buttons.matching(identifier: "manageDevices").firstMatch.exists, "no Manage Devices")
         // Audited below, with one account: with two, the list runs under
@@ -291,7 +312,7 @@ final class AccessibilityTests: XCTestCase {
         for _ in 0..<6 where signOuts.count < 2 { app.swipeUp(velocity: .slow) }
         XCTAssertTrue(waitUntil(5) { signOuts.count == 2 }, "Accounts lists \(signOuts.count) accounts")
         let second = signOuts.element(boundBy: 1)
-        XCTAssertTrue(second.label.hasPrefix("Sign Out of uitest-"), "second account: \(second.label)")
+        XCTAssertTrue(second.label.hasPrefix("Sign Out"), "second account: \(second.label)")
         for _ in 0..<6 where !second.isHittable { app.swipeUp(velocity: .slow) }
         second.tap()
         // Asked first; then this iPhone is removed from that account.
@@ -321,6 +342,31 @@ final class AccessibilityTests: XCTestCase {
         again = reopen()
         XCTAssertTrue(waitUntil(40) { self.statusText(of: again) == "Visible to your other devices" },
                       "after reopening, visible should be kept: \(self.statusText(of: again))")
+
+        // The Accounts tab's buttons grow with Dynamic Type: their height at
+        // the standard size, then at an accessibility size.
+        func buttonHeights(_ app: XCUIApplication) -> [String: CGFloat] {
+            showTab(app, "Accounts")
+            var h: [String: CGFloat] = [:]
+            for id in ["manageDevices", "signOut"] {
+                let b = app.buttons[id]
+                for _ in 0..<4 where !(b.exists && b.isHittable) { app.swipeUp(velocity: .slow) }
+                h[id] = b.exists ? b.frame.height : 0
+            }
+            return h
+        }
+        let standard = buttonHeights(again)
+        again.terminate()
+        let large = XCUIApplication()
+        large.launchArguments = ["-AudioNetProfile", "uitest", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"]
+        large.launch()
+        XCTAssertTrue(large.tabBars.buttons["Accounts"].waitForExistence(timeout: 15))
+        let grown = buttonHeights(large)
+        for id in ["manageDevices", "signOut"] {
+            XCTAssertGreaterThan(grown[id] ?? 0, (standard[id] ?? 0) * 1.3,
+                                 "\(id) did not grow with Dynamic Type (\(standard[id] ?? 0) -> \(grown[id] ?? 0) points)")
+        }
+        large.terminate()
     }
 
     /// Opens the app again as it was left (same test profile, no reset, no

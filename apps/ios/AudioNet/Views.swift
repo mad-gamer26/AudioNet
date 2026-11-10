@@ -53,6 +53,15 @@ struct MainTabs: View {
 
 /// The accent color, at WCAG AA contrast (4.5:1 or more) on iOS's grouped
 /// backgrounds in both appearances; the system blue falls just short.
+/// Red for Sign Out at WCAG AA contrast (4.5:1 or more) on grouped
+/// backgrounds in both appearances; the system red falls short (about
+/// 3.6:1 on white).
+let accessibleDestructive = Color(uiColor: UIColor { traits in
+    traits.userInterfaceStyle == .dark
+        ? UIColor(red: 1.0, green: 0.45, blue: 0.42, alpha: 1)    // #FF736B
+        : UIColor(red: 0.70, green: 0.11, blue: 0.09, alpha: 1)   // #B31C17
+})
+
 let accessibleTint = Color(uiColor: UIColor { traits in
     traits.userInterfaceStyle == .dark
         ? UIColor(red: 0.45, green: 0.68, blue: 1.0, alpha: 1)    // #73ADFF
@@ -191,17 +200,16 @@ struct DevicesScreen: View {
                 heading("This iPhone")
             }
 
-            // One section per account (a heading names the account when
-            // there are several).
-            ForEach(model.accounts, id: \.nodeId) { a in
+            // One section per account with visible devices (a heading names
+            // the account when there are several; nothing else repeats it).
+            // An account with none has no section at all.
+            ForEach(model.accounts.filter(showsSection), id: \.nodeId) { a in
                 Section {
                     let list = model.devicesByAccount[a.nodeId] ?? []
                     if !model.connectedAccounts.contains(a.nodeId) {
                         Text("Connecting…")
                     } else if !model.devicesLoaded.contains(a.nodeId) {
                         Text("Looking for your devices…")
-                    } else if list.isEmpty {
-                        Text("No other devices are visible. Devices appear here while AudioNet runs on them with visibility on.")
                     } else {
                         // One native disclosure per device: a single row
                         // until expanded ("Studio PC, Windows, collapsed").
@@ -217,9 +225,22 @@ struct DevicesScreen: View {
                     heading(model.accounts.count > 1 ? "Devices in \(a.accountName)" : "Your devices")
                 }
             }
+            if model.accounts.allSatisfy({ !showsSection($0) }) {
+                Section {
+                    Text("No other devices are visible. Devices appear here while AudioNet runs on them with visibility on.")
+                }
+            }
         }
         .headerProminence(.increased)
         .navigationTitle("Devices")
+    }
+
+    /// An account's section shows while it connects and looks, and then
+    /// only when it has visible devices.
+    private func showsSection(_ a: Account) -> Bool {
+        let id = a.nodeId
+        return !model.connectedAccounts.contains(id) || !model.devicesLoaded.contains(id)
+            || !(model.devicesByAccount[id] ?? []).isEmpty
     }
 
     private var statusText: String {
@@ -279,13 +300,10 @@ struct AccountsScreen: View {
         Form {
             ForEach(model.accounts, id: \.nodeId) { a in
                 Section {
-                    Text(verbatim: "Signed in as \"\(a.deviceName)\" to account \(a.username) on \(a.serverUrl).")
-                    let label = model.accounts.count > 1 ? "Visible to My Other Devices in \(a.accountName)" : "Visible to My Other Devices"
-                    // Short on screen (the section names the account); the
-                    // spoken name says which account.
+                    // The heading names the account; nothing else repeats it.
+                    Text(verbatim: "This iPhone's name here: \(a.deviceName)")
                     Toggle("Visible to My Other Devices", isOn: model.visibility(a.nodeId))
                         .disabled(model.signingOut.contains(a.nodeId))
-                        .accessibilityLabel(label)
                         .accessibilityIdentifier("visible")
                     Text(model.isVisible(a.nodeId)
                          ? "Your other devices see this iPhone, and can listen to it and send to it."
@@ -295,14 +313,15 @@ struct AccountsScreen: View {
                             openURL(url)
                         }
                     }
-                    .accessibilityLabel(model.accounts.count > 1 ? "Manage Devices in \(a.accountName)" : "Manage Devices")
                     .accessibilityIdentifier("manageDevices")
-                    Button(model.signingOut.contains(a.nodeId) ? "Signing Out…" : "Sign Out", role: .destructive) { signingOut = a }
+                    Button(role: .destructive) { signingOut = a } label: {
+                        Text(model.signingOut.contains(a.nodeId) ? "Signing Out…" : "Sign Out")
+                            .foregroundStyle(accessibleDestructive)
+                    }
                         .disabled(model.signingOut.contains(a.nodeId))
-                        .accessibilityLabel("Sign Out of \(a.accountName)")
                         .accessibilityIdentifier("signOut")
                 } header: {
-                    heading(model.accounts.count > 1 ? a.accountName : "Account")
+                    heading(a.accountName)
                 }
             }
             Section {
