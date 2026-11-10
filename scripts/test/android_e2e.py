@@ -1,9 +1,11 @@
 """End to end on an Android emulator: a throwaway AudioNet server and
-account on this computer, the audionet command-line agent as a device
-sharing its sounds, and the Android app (already installed: gradlew
-installDebug) signing in, listening to one of the device's sounds, and
-stopping. Nothing is heard: it listens to a virtual cable ("Line 1") that
-nothing plays into. The microphone is never sent.
+account on this computer, the audionet command-line agent as a visible
+device offering its sounds, and the Android app (already installed:
+gradlew installDebug) signing in, listening to one of the device's sounds
+on the Devices tab, and stopping it on the Streams tab. Nothing is heard:
+it listens to a sound nothing plays into (SOURCE, default "Sound playing
+on Line 1", the virtual cable on Windows). The microphone is never sent. Runs on Windows,
+macOS or Linux (releases are built and tested on a Mac).
 
 The emulator reaches the server through `adb reverse` (the app sees it at
 http://127.0.0.1, so plain http is allowed); the audio itself goes over the
@@ -16,17 +18,22 @@ accessibility services are paused while it taps and types, and put back.
 
 Needs: debug builds of the server and the agent (cargo build -p
 audionet-server -p audionet-cli), the app installed (its data is cleared
-first: use a test emulator), and
-"Line 1 (Virtual Audio Cable)" on this computer.
+first: use a test emulator), and SOURCE: the name of a sound this
+computer offers that is silent (default "Sound playing on Line 1", the
+Virtual Audio Cable on Windows).
 """
 import os, re, subprocess, sys, tempfile, time, urllib.request
 
-from android_ui import adb, find, nodes, paused_accessibility, scroll_to, scroll_to_top, tap, texts, type_into
+from android_ui import adb, find, nodes, paused_accessibility, scroll_to, tap, texts, type_into
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-SERVER = os.path.join(ROOT, "target", "debug", "audionet-server.exe")
-CLI = os.path.join(ROOT, "target", "debug", "audionet.exe")
+EXE = ".exe" if sys.platform == "win32" else ""
+SERVER = os.path.join(ROOT, "target", "debug", "audionet-server" + EXE)
+CLI = os.path.join(ROOT, "target", "debug", "audionet" + EXE)
+SOURCE = os.environ.get("SOURCE", "Sound playing on Line 1")
+# How the app lists this computer: name and platform.
+DEVICE = "PC test device, " + {"win32": "Windows", "darwin": "Mac"}.get(sys.platform, "Linux")
 PORT = 18741
 PASSWORD = "android-test-pass"  # a throwaway account on a throwaway server
 APP = "com.matthewdovi.audionet"
@@ -72,32 +79,37 @@ try:
             target = prompt[0] if mic else find("Allow", exact=True, timeout=3)
             adb("shell", "input", "tap", str(target["x"]), str(target["y"]))
             time.sleep(1.5)
-        find("PC test device, Windows", timeout=30)
+        # Signed in: the tabs, on Devices.
+        tabs = [t for t in ("Devices", "Streams", "Accounts", "Settings") if any(n["text"] == t for n in nodes())]
+        print("Tabs:", tabs)
+        find(DEVICE, timeout=30)
         tap("Settings", exact=True)
         tap("Show Measurements", exact=True)
-        adb("shell", "input", "keyevent", "4")
+        tap("Devices", exact=True)
         time.sleep(1)
-        tap("PC test device, Windows")
-        tap("Sound playing on Line 1")
+        tap(DEVICE)
+        tap(SOURCE)
         n = scroll_to("Listen to PC test device")
         adb("shell", "input", "tap", str(n["x"]), str(n["y"]))
         time.sleep(30)
-        scroll_to("Streams started here")
-        adb("shell", "input", "swipe", "540", "1700", "540", "900", "300")
+        # The stream is on the Streams tab, whose title counts it.
+        streams_tab = find("Streams (1)", exact=True, timeout=5)
+        adb("shell", "input", "tap", str(streams_tab["x"]), str(streams_tab["y"]))
         time.sleep(1)
         screen = texts()
-        stream = next((t for t in screen if t.startswith("Listening to Sound playing on Line 1") and ": " in t), "")
+        stream = next((t for t in screen if t.startswith(f"Listening to {SOURCE}") and ": " in t), "")
         measured = next((t for t in screen if t.startswith("Receiving:")), "")
         print("Stream:", stream)
         print("Measurements:", measured)
-        stop = find("Stop Listening to Sound playing on Line 1")
+        stop = find(f"Stop Listening to {SOURCE}")
         adb("shell", "input", "tap", str(stop["x"]), str(stop["y"]))
         time.sleep(3)
         stopped = any("You stopped it" in t for t in texts())
         signed_out = False
         # Sign out, so the next run starts from the sign-in screen again.
-        scroll_to_top()
-        tap("Settings", exact=True)
+        tap("Accounts", exact=True)
+        visible_switch = any(n["text"] == "Visible to My Other Devices" for n in nodes())
+        print("Accounts tab has the visibility switch:", visible_switch)
         tap("Sign Out of tester", exact=False)
         # The dialog's confirm button: the last "Sign Out" on screen (the
         # dialog's title says the same).
@@ -107,7 +119,8 @@ try:
         signed_out = any("Signed out of tester" in t for t in texts()) and bool(find("Server address", timeout=10))
         print("Signed out:", signed_out)
     packets = int(m[1]) if (m := re.search(r"Receiving: (\d+) packets", measured)) else 0
-    ok = stream.endswith(": connected") and packets > 1000 and stopped and signed_out
+    ok = (tabs == ["Devices", "Streams", "Accounts", "Settings"] and stream.endswith(": connected") and packets > 1000
+          and stopped and visible_switch and signed_out)
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 finally:

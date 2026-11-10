@@ -15,7 +15,15 @@ Environment: ADB (default: the Android SDK's adb), ANDROID_SERIAL.
 import contextlib, os, re, subprocess, sys, time
 import xml.etree.ElementTree as ET
 
-ADB = os.environ.get("ADB") or os.path.join(os.environ.get("LOCALAPPDATA", ""), "Android", "Sdk", "platform-tools", "adb.exe")
+def _default_adb():
+    if sys.platform == "win32":
+        return os.path.join(os.environ.get("LOCALAPPDATA", ""), "Android", "Sdk", "platform-tools", "adb.exe")
+    sdk = os.environ.get("ANDROID_HOME") or os.path.expanduser(
+        "~/Library/Android/sdk" if sys.platform == "darwin" else "~/Android/Sdk")
+    return os.path.join(sdk, "platform-tools", "adb")
+
+
+ADB = os.environ.get("ADB") or _default_adb()
 
 
 def adb(*args, check=True):
