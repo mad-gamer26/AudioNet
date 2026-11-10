@@ -217,11 +217,11 @@ server refuses gives up on the relay at once and says so in its status log
 1. `https://audionet.example.com/api/v1/info` returns JSON with `"name":"AudioNet"`.
 2. Sign in to `https://audionet.example.com/`; the page says "Connected to the server."
 3. Sign a Windows PC in: in the AudioNet desktop app enter the server
-   address, your account name and password and press **Sign in**, then
-   **Start**. Or from a terminal:
+   address, your account name and password and press **Sign in**. Or from
+   a terminal:
    `audionet node sign-in --server https://audionet.example.com --user YOUR-NAME`
-   (it asks for the password), then `audionet node run`. The PC appears as
-   online.
+   (it asks for the password), then `audionet node run`. The PC appears in
+   the device list (it is visible).
 4. Choose a sound source and press **Listen**.
 5. Test the relay: open `https://audionet.example.com/?ice=relay` and
    listen again. The diagnostics should say "through the TURN relay".

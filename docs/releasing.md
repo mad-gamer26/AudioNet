@@ -20,7 +20,7 @@ update themselves.
    program (plain file names only), and the downloaded zip is deleted.
 4. When no one is listening or talking through the computer, each program
    file is renamed aside and the new one moved into place. The new copy is
-   started with the window and sharing as they were; if it does not report
+   started with the window as it was (each account's visibility is saved); if it does not report
    within 20 seconds that it runs, every file is put back and the old copy
    keeps running. The new copy deletes the renamed old files and says
    "AudioNet was updated from version X to Y" (a Windows notification when
@@ -93,8 +93,7 @@ The Mac app uses the same key and the same checks. It reads
 configured `latest.json`. After downloading, it also requires the
 unpacked app to have AudioNet's bundle identifier, the signed version and
 a valid code signature. It installs when no stream is running: a helper
-swaps the app bundles after AudioNet quits and starts the new copy,
-online again if it was. If that copy does not report within 20 seconds,
+swaps the app bundles after AudioNet quits and starts the new copy. If that copy does not report within 20 seconds,
 the old one is put back and the version is not offered again. The app
 must be somewhere it may replace itself, such as Applications, after
 being moved there by the person who uses it.

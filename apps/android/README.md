@@ -9,11 +9,15 @@ What it does today, like the iPhone app:
 * Sign in with an account name and password (used once; the phone keeps a
   revocable device token, encrypted with a key in the Android Keystore).
   Several accounts at once; sign out removes the phone from the account.
-* Online in every account while it runs; "Share This Phone's Audio" per
-  account.
-* The account's devices, each a row that expands ("Studio PC: online,
-  collapsed"): choose a sound and Listen, choose an output and Send My
-  Microphone.
+* Connected to every account while it runs; "Visible to My Other Devices"
+  per account (Accounts tab): visible, the account's other devices see the
+  phone and can listen to it and send to it; hidden, it is a visitor that
+  still listens and sends. Every account starts visible.
+* A bottom navigation bar: Devices, Streams (with a count), Accounts,
+  Settings.
+* The account's visible devices, each a row that expands ("Studio PC,
+  Windows, collapsed"): choose a sound and Listen, choose an output and
+  Send My Microphone.
 * Microphone: "Phone default" (Android's choice, a headset's microphone
   while one is connected) or one of the phone's microphones by name
   ("Built-in microphone (bottom)", "Bluetooth headset microphone:
@@ -23,11 +27,12 @@ What it does today, like the iPhone app:
   Bluetooth", which Android routes.
 * Streams started here: state in words, Mute, Volume, Stop; measurements
   when "Show Measurements" is on (Settings).
-* A status log (Copy), Settings (accounts, Add Account, Show Measurements,
-  versions).
-* Stays online with the screen off: a foreground service with the
-  notification Android requires, saying the state in words ("Online in
-  alice on audionet.example.com, sharing, 1 stream."). While a stream runs
+* Accounts: each with its visibility switch, Manage Devices (the web
+  client, to rename or remove devices) and Sign Out; Add Account.
+* Settings: Show Measurements, the status log (Copy), versions.
+* Stays connected with the screen off: a foreground service with the
+  notification Android requires, saying the state in words ("Connected to
+  alice on audionet.example.com, visible, 1 stream."). While a stream runs
   it keeps the CPU awake and Wi-Fi in low-latency mode.
 
 Android 8.0 (API 26) and later; built for Android 17 (API 37). Phones
@@ -35,19 +40,21 @@ Android 8.0 (API 26) and later; built for Android 17 (API 37). Phones
 the workspace's, like every AudioNet part; releases are signed APKs on
 GitHub (see [releasing](../../docs/releasing.md#the-android-app)).
 
-## Building (Windows)
+## Building (macOS, Linux or Windows)
 
 Needs Rust with `aarch64-linux-android` and `x86_64-linux-android`,
 `cargo-ndk`, the Android SDK with an NDK (r28 or later) and platform 37,
-and JDK 17 or later.
+and JDK 17 or later. Releases are built on a Mac.
 
 ```
-powershell -ExecutionPolicy Bypass -File apps\android\build-core.ps1   # engine + Kotlin bindings
-cd apps\android
-gradlew assembleDebug                                                # or installDebug
+apps/android/build-core.sh                  # engine + Kotlin bindings (macOS, Linux)
+cd apps/android
+./gradlew assembleDebug                     # or installDebug
 ```
 
-`build-core.ps1 -EmulatorOnly` builds only the x86_64 engine (faster).
+On Windows: `powershell -ExecutionPolicy Bypass -File apps\android\build-core.ps1`,
+then `gradlew assembleDebug`. `build-core.sh --emulator-only` (or
+`build-core.ps1 -EmulatorOnly`) builds only the x86_64 engine (faster).
 `local.properties` names the SDK (`sdk.dir=C:/Users/.../Android/Sdk`, with
 forward slashes). Official builds may pre-fill the sign-in server with
 `-PaudionetDefaultServer=https://...`; nothing depends on a particular
@@ -55,7 +62,8 @@ server.
 
 ## Accessibility
 
-Built for TalkBack: headings for each section, every switch a single
+Built for TalkBack: a standard navigation bar ("Devices, tab, 1 of 4,
+selected"), headings for each section, every switch a single
 control with its label, sound and output choices as radio buttons in a
 group, device rows as buttons that say whether they are expanded, buttons
 named for what they act on ("Listen to Studio PC", "Stop Listening to

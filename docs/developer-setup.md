@@ -82,9 +82,9 @@ xcodebuild -scheme AudioNet -configuration Release build
 `Generated/`, `build/` and the Xcode project are generated, not committed.
 The app signs in with the account name and password (only the device
 token is kept, in a file only the user can read, like the Windows app's
-settings), is online in its accounts while it runs, shares this Mac's
-microphone and outputs in each account where sharing is on, lists the
-account's devices, and listens to them or sends to them. It stays in the
+settings), is connected to its accounts while it runs, visible in each
+where visibility is on (others can then listen to this Mac's microphones
+and outputs and send to it), lists the account's visible devices, and listens to them or sends to them. It stays in the
 menu bar when its window is closed (without a Dock icon), can start in
 the menu bar, and can start at login. Launch it with
 `-AudioNetProfile NAME` to keep a test account apart from yours.
@@ -129,9 +129,9 @@ xcodebuild -project AudioNet.xcodeproj -scheme AudioNet \
 
 The app signs in with the account name and password (only the device
 token is kept, in a file only the app can read; with several accounts,
-one token each in `accounts.json`, shared code in `apps/shared`), shares the iPhone's
-microphone and output while online, lists the account's devices (each a
-disclosure), and listens to them or sends the microphone to them. It
+one token each in `accounts.json`, shared code in `apps/shared`), offers
+the iPhone's microphone and output where it is visible, lists the
+account's visible devices (each a disclosure), and listens to them or sends the microphone to them. It
 mixes with other apps' audio and never lowers or stops it. The Microphone
 row opens a list like UniMic's Input Source: a section per input (the
 built-in microphone, a wired headset) and a row per source (bottom, front,

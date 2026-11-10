@@ -124,7 +124,7 @@ AUDIONET_URL=https://audionet.example.com AUDIONET_USER=… AUDIONET_PASSWORD=�
 
 `scripts/test/mac_ui_tests.py` (run on Windows) runs
 `apps/macos/AudioNetUITests` on the Mac with `xcodebuild test`. It puts a
-temporary source device online on the PC and creates a temporary Mac
+temporary source device on the PC and creates a temporary Mac
 device through the server API. Only that device's token goes to the Mac,
 in a file only its user can read, which the app deletes on reading. It
 removes both devices afterwards. The app runs in a separate test profile
@@ -207,22 +207,29 @@ Automated accessibility checks:
 
 * Web client: `scripts/test/browser_e2e.py` (real Chrome via Selenium).
 * Windows desktop app: `scripts/test/desktop_uia.py` (UI Automation names,
-  roles and the sign-in/start flow) and `scripts/test/desktop_tray.py` (system
-  tray: close to tray, Enter on the icon, the tray menu, a second start,
-  start in tray, clean exit; no server needed, preferences restored).
-  `desktop_uia.py` also checks sharing as the server sees it: online at
-  once after signing in, not sharing; Start and Stop sharing; the choice
-  kept across a restart; exiting while sharing asks first; Sign out
-  (while sharing) removing the device from the account. Both run the app under
+  roles and focus on the sign-in page and on every tab; Ctrl+Tab,
+  Ctrl+Shift+Tab and Ctrl+Page Down/Up between tabs) and
+  `scripts/test/desktop_tray.py` (system tray: unavailable items before
+  signing in, the Settings tab, close to tray, Enter on the icon, the tray
+  menu, Exit asking while visible, a second start, start in tray,
+  Settings… opening the Settings tab, clean exit; preferences restored).
+  `desktop_uia.py` also checks visibility as the server sees it (through a
+  browser connection, `scripts/test/visibility.py`): visible at once after
+  signing in; the Visible checkbox hiding and showing the computer, which
+  stays in the account; the choice kept across a restart; exiting while
+  visible asks first; Sign out removing the device from the account and
+  returning to the sign-in page. Both need a server (AUDIONET_URL, …);
+  they run in the signed-in Windows session (keyboard input is sent).
+  Both run the app under
   `AUDIONET_TEST_PROFILE`, which gives it its own window class and
   preferences key, so they never touch a copy of AudioNet you are running
   or your settings.
 * Several accounts: `scripts/test/second_account.py` creates a temporary
   second account on the server with its administration command over SSH
   (random password, never printed) and deletes it with its devices
-  afterwards. `desktop_remote.py` adds it in the Windows app with the
-  sign-in fields, checks the Accounts list, both connections, a tree item
-  per account, and signing out of it; the Mac and iPhone UI tests sign in
+  afterwards. `desktop_remote.py` adds it in the Windows app (Accounts
+  tab, Add account…), hides the computer in it, checks the Accounts list,
+  both connections, a tree item per account, and signing out of it; the Mac and iPhone UI tests sign in
   to both and check the per-account device sections and signing out of
   one.
 * Stream volume and mute:
@@ -236,20 +243,20 @@ Automated accessibility checks:
     measured inside the page);
   * Mac and iPhone: the signed-in UI tests set the slider and mute and
     check what VoiceOver reads.
-* Sharing: `crates/audionet-server/tests/native_devices.rs`
-  (`a_device_that_does_not_share_receives_but_does_not_send`): two real
-  devices through a real server; the one not sharing is seen online but
-  not sharing, cannot be listened to or send, plays what the other sends
-  and listens to it; sharing, it is heard; stopping ends that stream on
-  both sides. The hub test checks who may send and what ends.
-  `scripts/test/web_sharing.py` (live server, headless Chrome): a device
-  that does not share is listed "online, not sharing its audio" with no
-  sounds offered and Listen unavailable, Send still available; when it
-  starts sharing that is announced and its sounds appear.
-  The Mac and iPhone UI tests (`testSignedIn...`) end by quitting and
-  reopening the app twice: an account left sharing comes back sharing,
-  and after turning it off it comes back not sharing (the Mac's menu bar
-  item says so too).
+* Visibility: `crates/audionet-server/tests/native_devices.rs`
+  (`a_device_that_is_not_visible_is_a_visitor`): two real devices through
+  a real server; the hidden one is listed to no one and cannot be reached,
+  but listens to the visible one and sends to it (with real audio);
+  hiding ends the sessions others have with it. The hub tests check who is
+  listed and reachable and what ends; `push.rs` the "now visible" / "no
+  longer visible" notifications. `scripts/test/web_visibility.py` (live
+  server, headless Chrome): a hidden device is not listed but is in Manage
+  devices; becoming visible and hidden again is announced, with no state
+  words anywhere; renaming and removing in Manage devices.
+  The Mac and iPhone UI tests (`testSignedIn...`) hide this device in one
+  account and end by quitting and reopening the app twice: the account
+  left hidden comes back hidden, and after turning it on it comes back
+  visible (the Mac's menu bar item says so too, when macOS shows it).
 * Creating an account: `crates/audionet-server/tests/sign_up.rs` (closed
   by default, reserved names, passwords containing the name, taken names,
   the per-address and server-wide limits including a spoofed header being
@@ -300,9 +307,10 @@ Automated accessibility checks:
   Xcode's accessibility audit on the sign-in screen and on the signed-in
   screen with a stream running and on the Status Log screen, an empty
   sign-in naming what is missing, a heading and a log row growing with
-  Dynamic Type, a Microphone choice, and going online, expanding a
-  temporary source device on this PC, listening until connected,
-  collapsing, stopping and going offline. Temporary devices are removed
+  Dynamic Type, a Microphone choice, the tab bar, expanding a temporary
+  source device on this PC, listening until connected, the stream on the
+  Streams tab, the visibility switches on the Accounts tab, and signing
+  out of one account. Temporary devices are removed
   afterwards.
 
 See [accessibility.md](accessibility.md) for the manual screen-reader test

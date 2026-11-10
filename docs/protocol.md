@@ -254,8 +254,9 @@ pings every 20 seconds.
 
 | `type` | Fields | Sent by |
 | --- | --- | --- |
-| `hello` | `protocol_version`, `client { kind: "node" \| "browser", software, platform }` | everyone, first |
-| `sharing` | `sharing: bool` | devices, right after `hello` and whenever it changes: whether the device shares its audio. Until a device says, the server takes it as sharing (0.7 devices connected only to share) |
+| `hello` | `protocol_version`, `client { kind: "node" \| "browser", software, platform, visible }` | everyone, first. `visible` (devices): whether the device is visible from the moment it connects; `null` or absent (clients before 1.3) means visible |
+| `visibility` | `visible: bool` | devices, whenever it changes: turns this device's visibility on or off (see **Visibility** below) |
+| `sharing` | `sharing: bool` | devices before 1.3: the same as `visibility` (sharing on meant visible) |
 | `endpoints` | `sources: [SourceInfo]`, `destinations: [DestinationInfo]` | devices, whenever they change |
 | `list_nodes` | none | browsers |
 | `session_offer` | `session_id`, `node_id`, `media`, `sdp` | the side starting a session: a browser, or a device (native apps listen to and talk to other devices of the same account) |
@@ -271,7 +272,7 @@ pings every 20 seconds.
 | `welcome` | `protocol_version`, `connection_id`, `username`, `node_id` (devices; otherwise `null`), `ice_servers: [{urls, username, credential}]` |
 | `ice_servers` | `ice_servers: [{urls, username, credential}]`: fresh TURN credentials, sent every `[ice] turn_credential_refresh_s` (half their lifetime by default) so a client connected longer than `turn_credential_ttl_s` keeps a working relay. Clients use the newest for every later session. Clients that predate it ignore it. |
 | `nodes` | `nodes: [NodeSummary]` |
-| `node_update` | `node: NodeSummary` (a device came online or offline, started or stopped sharing, or its endpoints changed); sent to browsers and to the account's other devices |
+| `node_update` | `node: NodeSummary`: a device became visible or changed (name, endpoints), with `online: true`; or it is no longer visible (visibility turned off, or disconnected), with `online: false`: remove it. Sent to browsers and to the account's other devices |
 | `session_offer` | `session_id`, `from` (offerer connection id), `media`, `sdp` |
 | `session_answer`, `session_status`, `session_end` | as sent by the other side |
 | `error` | `code`, `message` (plain language, suitable for users), `session_id` (the session a refused `session_offer` would have started, so the offerer can end it with the reason; otherwise `null`) |
@@ -289,16 +290,20 @@ example "Warning: the microphone is sending only digital silence. …") is
 announced once, as is the next `active` detail after it (such as "Sound is
 now arriving from the microphone.").
 
-**Sharing.** `NodeSummary.sharing` says whether an online device shares
-its audio (always false offline; older servers leave it out, meaning
-"sharing whenever online"). A device that does not share stays online:
-it can be sent to (`speak`) and can listen to others, but the server
-refuses `listen` to it and refuses its own `speak` offers to others
-(`not_sharing`, in words, for example `"Laptop" is not sharing its audio.`), and
-the device refuses them too. When a device stops sharing, the server
-ends every session in which it sends, telling both sides (`"Laptop"
-stopped sharing its audio.`); what it receives goes on. Progress or an
-end for a session that is already over is ignored.
+**Visibility.** A device connected with visibility on is *visible*: it is
+listed to the account's browsers and other devices (`nodes`,
+`node_update`), and they may listen to it and send to it. A device that
+is not connected, or connected with visibility off, is a *visitor*, like
+a browser: it is listed nowhere and no one can start a session with it
+(`node_offline`, in words: `That device is not visible.`), but it can
+still list the account's visible devices, listen to them and send to
+them. Turning visibility off ends the sessions others have with the
+device, telling both sides (`"Laptop" is no longer visible.`); the
+sessions it started go on. `nodes` lists only visible devices, so
+`NodeSummary.online` and `NodeSummary.sharing` are both `true` there;
+`sharing` stays for apps before 1.3 (servers before sharing existed left
+it out, meaning "sharing whenever online"). Progress or an end for a
+session that is already over is ignored.
 
 Types:
 
@@ -307,7 +312,7 @@ Types:
   "source_type": "loopback", "is_default": true }                    // SourceInfo
 { "id": "output:{0.0.0.00000000}.{…}", "name": "Speakers", "is_default": true }   // DestinationInfo
 { "node_id": "node_…", "name": "Studio PC", "platform": "windows", "online": true,
-  "sources": [ … ], "destinations": [ … ] }                           // NodeSummary
+  "sharing": true, "sources": [ … ], "destinations": [ … ] }          // NodeSummary
 { "kind": "listen", "source_id": "…" }                                // media: device sends audio
 { "kind": "speak", "destination_id": "…" }                            // media: device plays received audio
 ```
@@ -316,7 +321,7 @@ Types:
 destination ids are opaque; Windows devices use `input:`, `loopback:` and
 `output:` prefixes on WASAPI endpoint ids.
 
-Rules enforced by the server: a session can only be offered to an online
+Rules enforced by the server: a session can only be offered to a visible
 device owned by the same account; only the device answers; at most 16
 sessions per offering connection; a client whose outgoing queue (128
 messages) fills is disconnected. When a party disconnects, the other side
@@ -345,7 +350,7 @@ All bodies are JSON. Errors: HTTP status plus
 | `POST /api/v1/password/forgot` | none (Origin checked if present) | `{account}` (username or email address) → always `{"requested": true}`, so it does not reveal whether the account exists; emails a reset link only to a confirmed address. `503 email_unavailable` without email settings; `429 reset_limit` after 10 requests from one client address in an hour |
 | `POST /api/v1/password/reset` | none (the link's token) | `{token, password}`: sets the password (the link works once, for 1 hour, and only while the address it went to is still the confirmed one), signs out every browser session, and signs this browser in like login. Device tokens stay valid. A rejected password (`400 bad_password`) does not use up the link |
 | `POST /api/v1/nodes/sign-in` | account password (throttled like sign-in) | `{username, password, name, platform}` → `{node_id, token, username}`; the only way to add a device to an account; the password is not kept on the device |
-| `GET /api/v1/nodes` | session | `{nodes: [NodeSummary]}` |
+| `GET /api/v1/nodes` | session | `{nodes: [{node_id, name, platform}]}`: every device signed in to the account, visible or not (to rename or remove them: the web client's Manage devices). Whether a device is visible is only in the WebSocket's `nodes` |
 | `PATCH /api/v1/nodes/{id}` | session | `{name}` renames a device |
 | `DELETE /api/v1/nodes/{id}` | session | removes a device and revokes its token |
 
@@ -356,25 +361,25 @@ exponential backoff.
 
 | Method and path | Auth | Purpose |
 | --- | --- | --- |
-| `PUT /api/v1/push/pusher` | device | `{gateway, handle, key, presence, sharing}`: this device (a phone) wants notifications about its account's other devices: `presence` (online, offline), `sharing` (started, stopped sharing). `gateway` must be this server's `push_gateway` (from `/api/v1/info`); `handle` comes from that gateway; `key` is 32 bytes, base64. Both false removes it |
+| `PUT /api/v1/push/pusher` | device | `{gateway, handle, key, presence, sharing}`: this device (a phone) wants notifications about its account's other devices becoming visible and no longer being visible. Either flag asks for them (they were separate before 1.3: presence, and sharing). `gateway` must be this server's `push_gateway` (from `/api/v1/info`); `handle` comes from that gateway; `key` is 32 bytes, base64. Both false removes it |
 | `DELETE /api/v1/push/pusher` | device | no more notifications for this device |
 | `POST /push/v1/register` | none (rate limited) | on a push gateway: `{apns_token, sandbox}` → `{handle}` |
 | `POST /push/v1/send` | the handle | on a push gateway: `{handle, payload, collapse_id}`; `410` when the device no longer receives notifications (the server then drops the pusher) |
 | `POST /push/v1/unregister` | the handle | on a push gateway: forget the handle |
 
-A notification's title is the account name and its body one of "NAME is
-online.", "NAME is offline.", "NAME started sharing its audio.", "NAME
-stopped sharing its audio." The server seals `{"title", "body",
-"node_id", "device", "event", "sharing"}` (all strings: `event` is
-`online`, `offline`, `sharing` or `not_sharing`; `sharing`, whether the
-device shares its audio now, is `true`, `false` or `unknown`) with
-ChaCha20-Poly1305 and the device's key (base64 of nonce, ciphertext and
-tag), so the gateway and Apple see only a placeholder and ciphertext; the
-app's notification extension opens it. "Offline" is sent only after a device
-has stayed away 30 seconds, "online" only after an "offline" or a longer
-absence, never for devices reconnecting just after the server starts, and
-it waits up to 2 seconds for the sharing the device reports on connecting;
-sharing only for changes while online.
+A notification's title is the account name and its body "NAME is now
+visible." or "NAME is no longer visible." The server seals `{"title",
+"body", "node_id", "device", "event", "sharing"}` (all strings: `event`
+is `online` (now visible) or `offline` (no longer visible), and `sharing`
+is whether the device is visible now, `true` or `false`: the names apps
+before 1.3 read) with ChaCha20-Poly1305 and the device's key (base64 of
+nonce, ciphertext and tag), so the gateway and Apple see only a
+placeholder and ciphertext; the app's notification extension opens it.
+"No longer visible" is sent only after a device has stayed so 30
+seconds; "now visible" only after a "no longer visible" or a longer
+absence, never for devices reconnecting just after the server starts,
+and after waiting 2 seconds, so a device that hides again at once (an app
+before 1.3 that was not sharing) is never announced.
 
 An account has at most a confirmed address (unique) and one waiting for
 confirmation, which does not keep anyone else from using the address and
