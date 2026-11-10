@@ -132,6 +132,19 @@ fn sound_server_appeared(host: &cpal::Host) -> bool {
     false
 }
 
+/// Whether a device is one of the private aggregate devices this process
+/// makes on macOS while it streams: cpal's for recording what an output
+/// plays ("Cpal loopback aggregate PID.N") and AudioNet's own for muting an
+/// output (`audionet-coreaudio`, "AudioNet output mute"). Core Audio lists a
+/// private aggregate to the process that made it, so without this they
+/// would be offered as sources and outputs while a stream runs.
+fn is_own_aggregate(uid: &str, name: &str) -> bool {
+    uid.starts_with("com.cpal.LoopbackRecordAggregateDevice.")
+        || uid.starts_with("org.audionet.output-mute.")
+        || name.starts_with("Cpal loopback aggregate")
+        || name == "AudioNet output mute"
+}
+
 fn device_name(d: &cpal::Device) -> String {
     d.description()
         .map(|desc| desc.name().to_owned())
@@ -543,6 +556,9 @@ impl NodeAudio for CpalNodeAudio {
         for d in devices {
             let Ok(id) = d.id() else { continue };
             let name = device_name(&d);
+            if is_own_aggregate(id.id(), &name) {
+                continue;
+            }
             let (input_name, output_name) = if cfg!(target_os = "ios") {
                 (IOS_NAMES.0.to_owned(), IOS_NAMES.1.to_owned())
             } else {
@@ -752,7 +768,32 @@ impl NodeAudio for CpalNodeAudio {
 
 #[cfg(test)]
 mod tests {
-    use super::linux_monitor;
+
+    #[test]
+    fn own_aggregate_devices_are_not_offered() {
+        // cpal's recording aggregate and AudioNet's mute aggregate.
+        assert!(is_own_aggregate(
+            "com.cpal.LoopbackRecordAggregateDevice.4242.0",
+            "Cpal loopback aggregate 4242.0"
+        ));
+        assert!(is_own_aggregate(
+            "org.audionet.output-mute.4242.3",
+            "AudioNet output mute"
+        ));
+        // By name alone too (an id cpal could not read).
+        assert!(is_own_aggregate("", "Cpal loopback aggregate 7.1"));
+        assert!(is_own_aggregate("", "AudioNet output mute"));
+        // Real devices, an aggregate the person made among them.
+        for (uid, name) in [
+            ("BuiltInSpeakerDevice", "MacBook Air Speakers"),
+            ("~:AMS2_Aggregate:0", "Studio Aggregate"),
+            ("AudioNet-Virtual", "AudioNet Speakers"),
+        ] {
+            assert!(!is_own_aggregate(uid, name), "{name}");
+        }
+    }
+
+    use super::{is_own_aggregate, linux_monitor};
 
     #[test]
     fn a_linux_monitor_is_the_sound_its_output_plays() {
