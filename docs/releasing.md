@@ -40,7 +40,9 @@ are not secret).
 
 * **Back it up** somewhere safe and offline. If it is lost, installed
   copies cannot be updated past it: people would have to download a build
-  with a new key once, by hand.
+  with a new key once, by hand. (This happened at 1.3.0: the key used up
+  to 1.2.5 was lost, so 1.3.0 is signed with a new one, and copies of
+  1.2.5 and earlier must be updated to 1.3.0 by hand, once.)
 * **Never commit it**, and never copy it to the web server. A compromised
   web server then cannot push anything the app will run.
 
@@ -153,28 +155,32 @@ being moved there by the person who uses it.
 
 The Android app does not update itself: people download each new APK
 (Android asks before installing it over the old one). Its version is the
-workspace's (versionName 1.2.4, versionCode 10204: major × 10000 + minor ×
+workspace's (versionName 1.3.0, versionCode 10300: major × 10000 + minor ×
 100 + patch), so every release installs as an update.
 
 An update installs only if it is signed with the same key as the copy on
-the phone. The release keystore is
-`%USERPROFILE%\.audionet-release\android-release.jks`, named with its
-passwords in `android-signing.properties` beside it (`storeFile`,
-`storePassword`, `keyAlias`, `keyPassword`); neither is ever committed.
-Keep a backup: without that key no later APK installs over an existing
-one, and people would have to uninstall first (losing their sign-in).
-Without the properties file, release builds come out unsigned.
+the phone. Releases are built on the Mac; the release keystore is
+`~/.audionet-release/android-release.jks` there, named with its passwords
+in `android-signing.properties` beside it (`storeFile`, `storePassword`,
+`keyAlias`, `keyPassword`; the folder and files readable only by that
+user); neither is ever committed. Keep a backup: without that key no
+later APK installs over an existing one, and people would have to
+uninstall first (losing their sign-in). Without the properties file,
+release builds come out unsigned. (The keystore used up to 1.2.5 was
+lost: 1.3.0 has a new one, so a phone with 1.2.5 must uninstall it before
+installing 1.3.0.)
 
-1. Build the engine for phones and the emulator, then the APK:
+1. On the Mac, build the engine for phones and the emulator, then the APK:
 
    ```sh
-   powershell -ExecutionPolicy Bypass -File apps\android\build-core.ps1
-   cd apps\android
-   gradlew assembleRelease -PaudionetDefaultServer=https://audionet.mad-gamer.com
+   apps/android/build-core.sh
+   cd apps/android
+   ./gradlew assembleRelease -PaudionetDefaultServer=https://audionet.mad-gamer.com
    ```
 
-   It is `app/build/outputs/apk/release/app-release.apk`, for arm64 phones
-   and the x86_64 emulator, with 16 KB-aligned libraries.
+   (`JAVA_HOME` a JDK 17 or later, `ANDROID_HOME` the SDK.) It is
+   `app/build/outputs/apk/release/app-release.apk`, for arm64 phones and
+   the x86_64 emulator, with 16 KB-aligned libraries.
 2. Attach it to the same GitHub release as
    `audionet-android-<version>.apk`, with its `.sha256`.
 
