@@ -108,8 +108,12 @@ function showSignIn() {
 // link's token leaves the address bar (and the history) at once.
 function takeLinkFromAddress() {
   const params = new URLSearchParams(location.search);
-  const link = { verify: params.get("verify"), reset: params.get("reset"), forgot: params.has("forgot") };
-  if (link.verify || link.reset || link.forgot) history.replaceState(null, "", location.pathname);
+  const link = {
+    verify: params.get("verify"), reset: params.get("reset"), forgot: params.has("forgot"),
+    // The apps' "Manage devices": opens that tab once signed in.
+    manage: params.has("manage"),
+  };
+  if (link.verify || link.reset || link.forgot || link.manage) history.replaceState(null, "", location.pathname);
   return link;
 }
 
@@ -126,6 +130,7 @@ async function start() {
     return;
   }
   if (link.verify) await verifyEmail(link.verify);
+  state.openManage = link.manage;
   try {
     const me = await api("GET", "/api/v1/me");
     signedIn(me, false);
@@ -149,9 +154,56 @@ function signedIn(me, moveFocus) {
   if ("email" in me) setEmailState(me.email, me.pending_email);
   else loadEmailState();
   loadManagedDevices();
-  if (moveFocus) $("devices-heading").focus();
+  if (state.openManage) {
+    // From an app's "Manage devices" (also after signing in first).
+    state.openManage = false;
+    showTab("manage", true);
+  } else {
+    showTab("devices", moveFocus);
+  }
   connect();
   refreshMicrophones();
+}
+
+// ─── tabs ───────────────────────────────────────────────────────────────────
+
+const TABS = ["devices", "streams", "manage", "account"];
+const TAB_HEADINGS = { devices: "devices-heading", streams: "streams-heading", manage: "manage-heading", account: "email-heading" };
+
+// Shows one tab's panel; with `focusHeading`, focus goes to its heading
+// (the tab keeps focus otherwise, as the tabs pattern expects).
+function showTab(name, focusHeading) {
+  for (const t of TABS) {
+    const tab = $(`tab-${t}`);
+    const on = t === name;
+    tab.setAttribute("aria-selected", on ? "true" : "false");
+    tab.tabIndex = on ? 0 : -1;
+    $(`panel-${t}`).hidden = !on;
+  }
+  if (focusHeading) $(TAB_HEADINGS[name]).focus();
+}
+
+function currentTab() {
+  return TABS.find((t) => $(`tab-${t}`).getAttribute("aria-selected") === "true") || "devices";
+}
+
+for (const t of TABS) {
+  $(`tab-${t}`).addEventListener("click", () => showTab(t, false));
+  $(`tab-${t}`).addEventListener("keydown", (e) => {
+    const i = TABS.indexOf(t);
+    const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: TABS.length - 1 }[e.key];
+    if (next === undefined) return;
+    e.preventDefault();
+    const to = TABS[(next + TABS.length) % TABS.length];
+    showTab(to, false);
+    $(`tab-${to}`).focus();
+  });
+}
+
+// The Streams tab says how many streams are running.
+function updateStreamsTab() {
+  const n = state.sessions.size;
+  $("tab-streams").textContent = n ? `Streams (${n})` : "Streams";
 }
 
 // ─── managing devices ───────────────────────────────────────────────────────
@@ -289,6 +341,7 @@ function setEmailState(email, pending) {
 
 function openEmailForm() {
   clearError();
+  showTab("account", false);
   $("email-form").hidden = false;
   $("change-email").setAttribute("aria-expanded", "true");
   $("email-address").value = state.pendingEmail || state.email || "";
@@ -349,7 +402,7 @@ $("banner-send-link").addEventListener("click", async () => {
     setEmailState(r.email, r.pending_email);
     if (!r.pending_email) {
       announce("The email address is already confirmed.");
-      $("email-heading").focus();
+      showTab("account", true);
     } else {
       announce(`AudioNet emailed a new link to ${r.pending_email}; it works for 7 days. Earlier links no longer work.`);
     }
@@ -985,6 +1038,7 @@ async function openSession({ nodeId, media, title, localStream, stereo }) {
     announcedActive: false,
   };
   state.sessions.set(s.id, s);
+  updateStreamsTab();
   s.el = sessionElement(s);
   setSessionText(s, "Starting…");
   announce(`Starting: ${s.title}.`);
@@ -1102,6 +1156,7 @@ function stopSession(s, reason, notifyServer) {
   const hadFocus = s.el.contains(document.activeElement);
   s.el.remove();
   $("no-streams").hidden = state.sessions.size > 0;
+  updateStreamsTab();
   announce(`Stopped: ${s.title}. ${reason}`);
   if (hadFocus) $("streams-heading").setAttribute("tabindex", "-1"), $("streams-heading").focus();
   updateDiagnostics();

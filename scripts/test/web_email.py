@@ -223,7 +223,7 @@ try:
     check("...the token leaves the address bar", "verify=" not in drv.current_url, drv.current_url)
     time.sleep(0.3)
     check("...the banner is gone", not shown(drv, "email-banner"))
-    state = drv.find_element(By.ID, "email-state").text
+    state = drv.find_element(By.ID, "email-state").get_attribute("textContent")
     check("...the Email address part says confirmed", "listener@example.com, confirmed" in state, state)
 
     # 4. Forgot the password.
@@ -317,6 +317,7 @@ try:
     w.until(lambda d: shown(d, "app-section"))
     status_text(drv, "confirmed")
     time.sleep(0.3)
+    drv.find_element(By.ID, "tab-account").click()
     drv.find_element(By.ID, "change-email").click()
     field = drv.find_element(By.ID, "email-address")
     field.clear()
@@ -326,7 +327,7 @@ try:
     status = status_text(drv, "changes when you open it")
     check("changing announces that the old address stays until confirmed",
           "veteran.new@example.com" in status and "still go to veteran@example.com" in status, status)
-    state = drv.find_element(By.ID, "email-state").text
+    state = drv.find_element(By.ID, "email-state").get_attribute("textContent")
     check("...the Email address part says both", "veteran@example.com, confirmed. Changing to veteran.new@example.com" in state, state)
     banner = drv.find_element(By.ID, "email-banner-text").text
     check("...the banner asks to confirm the new one", shown(drv, "email-banner") and "still go to veteran@example.com" in banner, banner)

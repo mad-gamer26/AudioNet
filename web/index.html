@@ -13,6 +13,7 @@
     <h1>AudioNet</h1>
     <p id="account" hidden>
       Signed in as <span id="account-name"></span>.
+      <button type="button" id="open-status-log">Status log</button>
       <button type="button" id="sign-out">Sign out</button>
     </p>
   </header>
@@ -135,68 +136,84 @@
       </p>
     </section>
 
-    <section id="app-section" aria-labelledby="devices-heading" hidden>
-      <h2 id="devices-heading" tabindex="-1">Visible devices</h2>
+    <!-- Signed in: four tabs (the WAI-ARIA tabs pattern). The arrow keys,
+         Home and End move between them; Tab moves into the selected panel.
+         Only the selected panel is shown. -->
+    <section id="app-section" aria-label="Your devices" hidden>
       <p id="connection-state">Connecting to the server…</p>
-      <p class="hint">Your devices that are running AudioNet with visibility on. A device with
-        visibility off can still listen and send, but is not listed and cannot be reached.</p>
-      <p><button type="button" id="open-status-log">Status log</button></p>
-      <div id="devices"></div>
-      <p id="no-devices" hidden>
-        None of your devices is visible right now. A device appears here while AudioNet runs on it
-        with visibility on. To sign in a new one, see "Add a device" below.
-      </p>
+      <div role="tablist" id="tabs" aria-label="AudioNet">
+        <button type="button" role="tab" id="tab-devices" aria-controls="panel-devices" aria-selected="true">Devices</button>
+        <button type="button" role="tab" id="tab-streams" aria-controls="panel-streams" aria-selected="false" tabindex="-1">Streams</button>
+        <button type="button" role="tab" id="tab-manage" aria-controls="panel-manage" aria-selected="false" tabindex="-1">Manage devices</button>
+        <button type="button" role="tab" id="tab-account" aria-controls="panel-account" aria-selected="false" tabindex="-1">Account</button>
+      </div>
 
-      <h2 id="streams-heading">Active streams</h2>
-      <p id="no-streams">No streams are running.</p>
-      <ul id="streams" aria-labelledby="streams-heading"></ul>
+      <div role="tabpanel" id="panel-devices" aria-labelledby="tab-devices">
+        <h2 id="devices-heading" tabindex="-1">Visible devices</h2>
+        <p class="hint">Your devices that are running AudioNet with visibility on. A device with
+          visibility off can still listen and send, but is not listed and cannot be reached.</p>
+        <div id="devices"></div>
+        <p id="no-devices" hidden>
+          None of your devices is visible right now. A device appears here while AudioNet runs on it
+          with visibility on. To sign in a new one, see "Add a device" in Manage devices.
+        </p>
+      </div>
 
-      <h2 id="add-heading">Add a device</h2>
-      <p>
-        Install AudioNet on the device and sign in there with your account
-        name and password. Use this server address:
-        <code id="server-address"></code>
-      </p>
-      <p id="download">
-        Need AudioNet on the device first?
-        <a id="download-link" href="https://github.com/mad-gamer26/AudioNet/releases/latest">Download AudioNet for Windows or Mac</a>
-        (from AudioNet's releases on GitHub).
-      </p>
-      <p>
-        On a computer without a screen, sign in from a terminal (it asks for
-        the password):
-      </p>
-      <pre id="sign-in-command" tabindex="0"></pre>
-      <p><button type="button" id="copy-sign-in">Copy the command</button></p>
+      <div role="tabpanel" id="panel-streams" aria-labelledby="tab-streams" hidden>
+        <h2 id="streams-heading" tabindex="-1">Active streams</h2>
+        <p id="no-streams">No streams are running. Start one from Devices: Listen or Send on a device.</p>
+        <ul id="streams" aria-labelledby="streams-heading"></ul>
+      </div>
 
-      <h2 id="email-heading" tabindex="-1">Email address</h2>
-      <p id="email-state"></p>
-      <p><button type="button" id="change-email" aria-expanded="false" aria-controls="email-form">Change the email address</button></p>
-      <form id="email-form" novalidate hidden>
+      <div role="tabpanel" id="panel-manage" aria-labelledby="tab-manage" hidden>
+        <h2 id="manage-heading" tabindex="-1">Manage devices</h2>
+        <p>Every device signed in to this account, whether it is visible or not. Removing one signs it
+          out: it will need to sign in again.</p>
+        <ul id="managed-devices" aria-labelledby="manage-heading"></ul>
+        <p id="no-managed-devices" hidden>No devices are signed in to this account yet.</p>
+
+        <h2 id="add-heading">Add a device</h2>
         <p>
-          <label for="email-address">Email address</label>
-          <input id="email-address" name="email" type="email" autocomplete="email" required
-                 maxlength="254" aria-describedby="email-address-hint">
-          <span id="email-address-hint" class="hint">Used only to reset your password if you forget it. AudioNet emails a link to confirm it.</span>
+          Install AudioNet on the device and sign in there with your account
+          name and password. Use this server address:
+          <code id="server-address"></code>
+        </p>
+        <p id="download">
+          Need AudioNet on the device first?
+          <a id="download-link" href="https://github.com/mad-gamer26/AudioNet/releases/latest">Download AudioNet for Windows or Mac</a>
+          (from AudioNet's releases on GitHub).
         </p>
         <p>
-          <label for="email-password">Your password</label>
-          <input id="email-password" name="password" type="password" autocomplete="current-password" required
-                 aria-describedby="email-password-hint">
-          <span id="email-password-hint" class="hint">Needed to change where password-reset links go.</span>
+          On a computer without a screen, sign in from a terminal (it asks for
+          the password):
         </p>
-        <p>
-          <button type="submit">Save the email address</button>
-          <button type="button" id="email-cancel">Cancel</button>
-        </p>
-      </form>
+        <pre id="sign-in-command" tabindex="0"></pre>
+        <p><button type="button" id="copy-sign-in">Copy the command</button></p>
+      </div>
 
-      <h2 id="manage-heading" tabindex="-1">Manage devices</h2>
-      <p>Every device signed in to this account, whether it is visible or not. Removing one signs it
-        out: it will need to sign in again.</p>
-      <ul id="managed-devices" aria-labelledby="manage-heading"></ul>
-      <p id="no-managed-devices" hidden>No devices are signed in to this account yet.</p>
-
+      <div role="tabpanel" id="panel-account" aria-labelledby="tab-account" hidden>
+        <h2 id="email-heading" tabindex="-1">Email address</h2>
+        <p id="email-state"></p>
+        <p><button type="button" id="change-email" aria-expanded="false" aria-controls="email-form">Change the email address</button></p>
+        <form id="email-form" novalidate hidden>
+          <p>
+            <label for="email-address">Email address</label>
+            <input id="email-address" name="email" type="email" autocomplete="email" required
+                   maxlength="254" aria-describedby="email-address-hint">
+            <span id="email-address-hint" class="hint">Used only to reset your password if you forget it. AudioNet emails a link to confirm it.</span>
+          </p>
+          <p>
+            <label for="email-password">Your password</label>
+            <input id="email-password" name="password" type="password" autocomplete="current-password" required
+                   aria-describedby="email-password-hint">
+            <span id="email-password-hint" class="hint">Needed to change where password-reset links go.</span>
+          </p>
+          <p>
+            <button type="submit">Save the email address</button>
+            <button type="button" id="email-cancel">Cancel</button>
+          </p>
+        </form>
+      </div>
     </section>
 
     <!-- The status log: every announcement, and (only when "Show

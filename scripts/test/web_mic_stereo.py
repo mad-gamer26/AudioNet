@@ -97,6 +97,7 @@ def send(drv, w, card, voice):
     dest = Select(card.find_element(By.CSS_SELECTOR, "select[id$='-dest']"))
     dest.select_by_visible_text(next(o.text for o in dest.options if OUTPUT in o.text))
     card.find_element(By.CSS_SELECTOR, "form.speak button").click()
+    drv.find_element(By.ID, "tab-streams").click()
     w.until(lambda d: "Connected" in d.find_element(By.CSS_SELECTOR, "#streams li .state").text)
     time.sleep(2)
 

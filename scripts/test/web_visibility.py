@@ -109,7 +109,8 @@ try:
     check("removed when no longer visible", not drv.find_elements(By.ID, card))
     check("announced as no longer visible", f"{NAME} is no longer visible." in log())
 
-    # 4. Manage devices: rename, then remove.
+    # 4. Manage devices (its own tab): rename, then remove.
+    drv.find_element(By.ID, "tab-manage").click()
     item = next(li for li in drv.find_elements(By.CSS_SELECTOR, "#managed-devices li") if NAME in li.text)
     rename = item.find_element(By.XPATH, ".//button[text()='Rename']")
     check("Rename has the device's name", rename.get_attribute("aria-label") == f"Rename {NAME}")

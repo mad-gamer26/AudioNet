@@ -97,7 +97,7 @@ try:
     procs.append(subprocess.Popen([sys.executable, os.path.join(HERE, "tone_stream.py"), SOURCE, "90"],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
     card = w.until(lambda d: next((c for c in d.find_elements(By.CSS_SELECTOR, ".device")
-                                   if DEVICE_NAME in c.text and ": online" in c.text), None))
+                                   if DEVICE_NAME in c.text), None))
     if not card.get_attribute("open"):
         card.find_element(By.TAG_NAME, "summary").click()
 
@@ -105,6 +105,7 @@ try:
     src = Select(card.find_element(By.CSS_SELECTOR, "select[id$='-source']"))
     src.select_by_visible_text(next(o.text for o in src.options if SOURCE in o.text))
     card.find_element(By.CSS_SELECTOR, "form.listen button").click()
+    drv.find_element(By.ID, "tab-streams").click()
     w.until(lambda d: "Connected" in d.find_element(By.CSS_SELECTOR, "#streams li .state").text)
     li = drv.find_element(By.CSS_SELECTOR, "#streams li")
     role, name, props = ax(drv, "#streams li .volume")
@@ -128,9 +129,11 @@ try:
     w.until(lambda d: not d.find_elements(By.CSS_SELECTOR, "#streams li"))
 
     # 2. Sending the (fake) microphone.
+    drv.find_element(By.ID, "tab-devices").click()
     out = Select(card.find_element(By.CSS_SELECTOR, "form.speak select"))
     out.select_by_index(0)
     card.find_element(By.CSS_SELECTOR, "form.speak button").click()
+    drv.find_element(By.ID, "tab-streams").click()
     w.until(lambda d: "Connected" in d.find_element(By.CSS_SELECTOR, "#streams li .state").text)
     li = drv.find_element(By.CSS_SELECTOR, "#streams li")
     full = sent_peak(drv)

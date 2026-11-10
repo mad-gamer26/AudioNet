@@ -32,7 +32,7 @@ try:
     drv.find_element(By.CSS_SELECTOR, "#sign-in-form button[type=submit]").click()
     w.until(lambda d: "Connected" in d.find_element(By.ID, "connection-state").text)
     card = w.until(lambda d: next((c for c in d.find_elements(By.CSS_SELECTOR, ".device")
-                                   if cfg["DEVICE"] in c.text and ": online" in c.text), None))
+                                   if cfg["DEVICE"] in c.text), None))
     # Devices are collapsed disclosures: expand this one (as Enter would).
     if not card.get_attribute("open"):
         card.find_element(By.TAG_NAME, "summary").click()
@@ -40,6 +40,7 @@ try:
     src.select_by_visible_text(next(o.text for o in src.options if cfg["SOURCE"] in o.text))
     card.find_element(By.CSS_SELECTOR, "form.listen button").click()
     try:
+        drv.find_element(By.ID, "tab-streams").click()
         w.until(lambda d: "Connected" in d.find_element(By.CSS_SELECTOR, "#streams li .state").text)
         time.sleep(float(cfg.get("SECONDS", "8")))
     except Exception:

@@ -87,12 +87,13 @@ def sign_in(drv, url):
 def start_listening(drv):
     w = WebDriverWait(drv, 40)
     card = w.until(lambda d: next((c for c in d.find_elements(By.CSS_SELECTOR, ".device")
-                                   if DEVICE_NAME in c.text and ": online" in c.text), None))
+                                   if DEVICE_NAME in c.text), None))
     if not card.get_attribute("open"):
         card.find_element(By.TAG_NAME, "summary").click()
     src = Select(card.find_element(By.CSS_SELECTOR, "select[id$='-source']"))
     src.select_by_visible_text(next(o.text for o in src.options if SOURCE in o.text))
     card.find_element(By.CSS_SELECTOR, "form.listen button").click()
+    drv.find_element(By.ID, "tab-streams").click()
     w.until(lambda d: "Connected" in d.find_element(By.CSS_SELECTOR, "#streams li .state").text)
 
 
