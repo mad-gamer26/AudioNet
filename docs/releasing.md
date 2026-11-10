@@ -184,6 +184,33 @@ installing 1.3.0.)
 2. Attach it to the same GitHub release as
    `audionet-android-<version>.apk`, with its `.sha256`.
 
+## The iPhone app
+
+The iPhone app is distributed through TestFlight. Its version stays 1.0
+(the App Store version being prepared); each upload raises
+`CURRENT_PROJECT_VERSION` in `apps/ios/project.yml` (the engine inside
+reports the workspace version). On the Mac, with the maintainer signed in
+to Xcode (Settings, Accounts), which signs for distribution through
+Apple's cloud signing:
+
+```sh
+apps/ios/build-core.sh && (cd apps/ios && xcodegen generate)
+xcodebuild archive -project apps/ios/AudioNet.xcodeproj -scheme AudioNet \
+  -destination generic/platform=iOS -archivePath /tmp/audionet-ios.xcarchive \
+  DEVELOPMENT_TEAM=5NJK4F832Z CODE_SIGN_STYLE=Automatic \
+  AUDIONET_DEFAULT_SERVER=https://audionet.mad-gamer.com -allowProvisioningUpdates
+apps/macos/in-session.sh xcodebuild -exportArchive -archivePath /tmp/audionet-ios.xcarchive \
+  -exportOptionsPlist EXPORT_OPTIONS -exportPath /tmp/audionet-ios-export -allowProvisioningUpdates
+```
+
+`EXPORT_OPTIONS` is a property list with `method` `app-store-connect`,
+`destination` `upload`, `teamID` and `signingStyle` `automatic`. Run the
+export through `in-session.sh` (over SSH Xcode's account is not
+available). The App Store Connect API keys on the Mac (for notarization)
+may not use cloud signing, so the export uses Xcode's account, not
+`-authenticationKey…`. The build then appears in App Store Connect,
+TestFlight, after Apple's processing.
+
 ## Testing
 
 `scripts/test/update_e2e.py` builds a test copy with a throwaway key and a
