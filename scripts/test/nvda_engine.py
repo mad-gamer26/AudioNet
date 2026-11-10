@@ -5,7 +5,7 @@ AudioNet device on this computer (real WASAPI audio) to listen and send to:
 
 1. The engine answers, and lists this computer's sounds and outputs.
 2. Signing in returns a web session (ans_), with no device added.
-3. Connected as a visitor, it sees the device online, and not itself.
+3. Connected as a visitor, it sees the (visible) device, and not itself.
 4. Listening to the device connects, and audio packets arrive.
 5. Volume and mute are accepted; stopping ends the stream.
 6. Sending this computer's source to the device's output connects.
@@ -130,7 +130,7 @@ try:
 		return None
 
 	pc = wait_for(device)
-	check("...and sees the device online", pc is not None)
+	check("...and sees the device (visible)", pc is not None)
 	all_devices = next(e["devices"] for e in events if e.get("event") == "devices")
 	check("...and not itself", all(d["name"] == "Test PC" for d in all_devices), [d["name"] for d in all_devices])
 

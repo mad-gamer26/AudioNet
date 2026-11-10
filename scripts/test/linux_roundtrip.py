@@ -5,7 +5,7 @@ own PulseAudio or PipeWire, and whatever plays or records there, is never
 used) has two virtual outputs, "Share" and "Play". A throwaway AudioNet
 server and account run on localhost. Then:
 
-* `audionet node run` signs in as "Linux test device" and shares what
+* `audionet node run` signs in as "Linux test device" (visible) and offers what
   "Share" plays (its monitor: "Sound playing on Share");
 * a 997 Hz tone at -12 dBFS plays into "Share";
 * `audionet-visitor` (the NVDA add-on's engine, here only a listener)
@@ -154,7 +154,7 @@ try:
         found = m.get("devices") or [m.get("device")]
         device = next((d for d in found if d and d.get("name") == "Linux test device" and d.get("online")), None)
     if device is None:
-        raise SystemExit("FAIL: the Linux device never came online")
+        raise SystemExit("FAIL: the Linux device never became visible")
     print("Its sources, as the listener sees them:", ", ".join(s["name"] for s in device["sources"]))
     source = next(s for s in device["sources"] if s["name"] == "Sound playing on Share")
     local = ask("local_audio")["result"]
