@@ -1082,17 +1082,21 @@ async fn reset_password(
     sign_in(&s, user.username).await
 }
 
+/// Every device signed in to the account, to rename or remove them: its id,
+/// name and platform, and nothing about whether it is connected or visible.
 async fn list_nodes(State(s): State<Shared>, p: Principal) -> ApiResult<Json<serde_json::Value>> {
     let rows = s.db.call(move |c| db::nodes_for_user(c, p.user_id)).await?;
-    let metas: Vec<NodeMeta> = rows
+    let nodes: Vec<serde_json::Value> = rows
         .into_iter()
-        .map(|r| NodeMeta {
-            platform: platform_from(r.platform.as_deref()),
-            id: r.id,
-            name: r.name,
+        .map(|r| {
+            json!({
+                "node_id": r.id,
+                "name": r.name,
+                "platform": platform_from(r.platform.as_deref()),
+            })
         })
         .collect();
-    Ok(Json(json!({ "nodes": s.hub.summaries(&metas) })))
+    Ok(Json(json!({ "nodes": nodes })))
 }
 
 async fn remove_node(
@@ -1218,11 +1222,15 @@ async fn run_connection(s: Shared, p: Principal, socket: WebSocket) {
     let Ok(Some(Ok(Message::Text(text)))) = hello else {
         return;
     };
-    let (version, kind) = match serde_json::from_str::<ClientMessage>(text.as_str()) {
+    let (version, kind, visible) = match serde_json::from_str::<ClientMessage>(text.as_str()) {
         Ok(ClientMessage::Hello {
             protocol_version,
             client,
-        }) => (protocol_version, client.kind),
+        }) => (
+            protocol_version,
+            client.kind,
+            client.visible.unwrap_or(true),
+        ),
         _ => return,
     };
     let reply_err = |m: ServerMessage| serde_json::to_string(&m).expect("serializes");
@@ -1248,7 +1256,7 @@ async fn run_connection(s: Shared, p: Principal, socket: WebSocket) {
     let conn_id = format!("c_{}", &new_token("")[..12]);
     let (tx, mut rx) = mpsc::channel::<ServerMessage>(QUEUE_DEPTH);
     s.hub
-        .register(&conn_id, p.user_id, p.node.clone(), tx.clone());
+        .register(&conn_id, p.user_id, p.node.clone(), visible, tx.clone());
     if let Some(n) = &p.node {
         let id = n.id.clone();
         let _ = s.db.call(move |c| db::touch_node(c, &id)).await;
@@ -1316,7 +1324,9 @@ async fn handle(s: &Shared, p: &Principal, conn_id: &str, text: &str) -> Option<
     let result = match msg {
         ClientMessage::Hello { .. } => Ok(()),
         ClientMessage::Ping { nonce } => return Some(ServerMessage::Pong { nonce }),
-        ClientMessage::Sharing { sharing } => s.hub.set_sharing(conn_id, sharing),
+        ClientMessage::Visibility { visible } => s.hub.set_visible(conn_id, visible),
+        // Devices that predate visibility: sharing meant visible.
+        ClientMessage::Sharing { sharing } => s.hub.set_visible(conn_id, sharing),
         ClientMessage::Endpoints {
             sources,
             destinations,
@@ -1344,7 +1354,7 @@ async fn handle(s: &Shared, p: &Principal, conn_id: &str, text: &str) -> Option<
                 })
                 .collect();
             return Some(ServerMessage::Nodes {
-                nodes: s.hub.summaries(&metas),
+                nodes: s.hub.visible_summaries(&metas),
             });
         }
         ClientMessage::SessionOffer {

@@ -142,11 +142,6 @@ pub struct Output {
 pub struct Device {
     pub node_id: String,
     pub name: String,
-    /// Its AudioNet is running and connected.
-    pub online: bool,
-    /// It shares its audio: it can be listened to. An online device that
-    /// does not share can still be sent to.
-    pub sharing: bool,
     /// "windows", "macos", "ios", … or empty when unknown.
     pub platform: String,
     pub sources: Vec<Source>,
@@ -171,7 +166,8 @@ pub enum StreamState {
 /// Everything the app hears from the engine.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum Event {
-    /// Online: signed in to the server; this device is shared.
+    /// Signed in to the server (visible to the account's other devices, or
+    /// not, as set with `set_visible`).
     Connected,
     /// Lost the server; the engine reconnects by itself.
     Disconnected {
@@ -181,13 +177,19 @@ pub enum Event {
     Status {
         text: String,
     },
-    /// The account's other devices (this device is left out).
+    /// The account's other visible devices (this device is left out). Only
+    /// visible devices are ever listed.
     Devices {
         devices: Vec<Device>,
     },
-    /// One device changed (online, offline, or its sounds and outputs).
+    /// A visible device appeared, or changed (its name, sounds or outputs).
     DeviceChanged {
         device: Device,
+    },
+    /// A device is no longer visible (it turned visibility off, or
+    /// disconnected): remove it.
+    DeviceGone {
+        node_id: String,
     },
     /// Progress of a stream this app started.
     Stream {
@@ -414,8 +416,6 @@ fn device(n: NodeSummary) -> Device {
     Device {
         node_id: n.node_id.as_str().to_owned(),
         name: n.name,
-        online: n.online,
-        sharing: n.sharing,
         platform: n.platform.map(platform_name).unwrap_or_default(),
         sources: n.sources.iter().map(source).collect(),
         outputs: n.destinations.iter().map(output).collect(),
@@ -469,9 +469,9 @@ pub struct Client {
     running: Mutex<Option<Running>>,
     /// This device's id, to leave it out of the device list.
     me: Arc<Mutex<Option<String>>>,
-    /// Whether this device shares its audio in this account (see
-    /// `set_sharing`); read on every connection.
-    sharing: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether this device is visible in this account (see `set_visible`);
+    /// read on every connection.
+    visible: Arc<std::sync::atomic::AtomicBool>,
     /// A visitor, not a device (see [`Client::visitor`]).
     visitor: bool,
 }
@@ -502,7 +502,7 @@ impl Client {
             listener,
             running: Mutex::new(None),
             me: Arc::new(Mutex::new(None)),
-            sharing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            visible: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             visitor: false,
         })
     }
@@ -528,30 +528,31 @@ impl Client {
             listener,
             running: Mutex::new(None),
             me: Arc::new(Mutex::new(None)),
-            sharing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            visible: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             visitor: true,
         })
     }
 
-    /// Whether this device shares its audio in this account: others may
-    /// listen to it, and it may send its own. Not sharing, it stays online:
-    /// it sees the devices, listens to them and plays what they send it.
-    /// Set it before `start` (the app keeps the choice); changing it while
-    /// running tells the server at once, which ends every stream this
-    /// device sends.
-    pub fn set_sharing(&self, sharing: bool) {
-        self.sharing.store(sharing, Relaxed);
+    /// Whether this device is visible to the account's other devices
+    /// (on by default): listed to them, and they may listen to it and send
+    /// to it. Not visible, it is a visitor: listed nowhere and reachable by
+    /// no one, but it still sees the visible devices, listens to them and
+    /// sends to them. Set it before `start` (the app keeps the choice);
+    /// changing it while running tells the server at once, which ends the
+    /// streams other devices have with this one.
+    pub fn set_visible(&self, visible: bool) {
+        self.visible.store(visible, Relaxed);
         if self.is_running() {
-            let _ = self.command(Command::SetSharing { sharing });
+            let _ = self.command(Command::SetVisibility { visible });
         }
     }
 
-    pub fn is_sharing(&self) -> bool {
-        self.sharing.load(Relaxed)
+    pub fn is_visible(&self) -> bool {
+        self.visible.load(Relaxed)
     }
 
-    /// Connects this device to its account: online (sharing or not, as
-    /// set), with the remote. Does nothing if already running.
+    /// Connects this device to its account (visible or not, as set), with
+    /// the remote. Does nothing if already running.
     pub fn start(&self) {
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         if running.is_some() {
@@ -586,6 +587,9 @@ impl Client {
                         device: device(node),
                     }
                 }
+                AppEvent::DeviceGone { node_id } => Event::DeviceGone {
+                    node_id: node_id.as_str().to_owned(),
+                },
                 AppEvent::Session {
                     session_id,
                     state,
@@ -634,7 +638,7 @@ impl Client {
             relay_only: false,
             visitor: self.visitor,
             measurements_in_status: Arc::clone(&MEASUREMENTS),
-            sharing: Arc::clone(&self.sharing),
+            visible: Arc::clone(&self.visible),
         };
         let ended = Arc::clone(&self.listener);
         let thread = std::thread::Builder::new()
@@ -831,9 +835,9 @@ mod tests {
             "This account is not connected yet. Try again in a moment."
         );
         assert_eq!(c.active_streams(), 0);
-        // Sharing is chosen before connecting (off until the app says).
-        assert!(!c.is_sharing());
-        c.set_sharing(true);
-        assert!(c.is_sharing());
+        // Visibility is chosen before connecting (on until the app says).
+        assert!(c.is_visible());
+        c.set_visible(false);
+        assert!(!c.is_visible());
     }
 }

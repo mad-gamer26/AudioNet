@@ -36,6 +36,11 @@ pub struct ClientInfo {
     /// Software name and version, e.g. "audionet-node 0.1.0".
     pub software: String,
     pub platform: Option<Platform>,
+    /// Devices: whether the device is visible to the account's other
+    /// devices from the moment it connects (see [`ClientMessage::Visibility`]).
+    /// `null` (and clients that predate visibility): visible.
+    #[serde(default)]
+    pub visible: Option<bool>,
 }
 
 /// What a source captures.
@@ -71,13 +76,18 @@ pub struct NodeSummary {
     pub node_id: NodeId,
     pub name: String,
     pub platform: Option<Platform>,
-    /// The device's AudioNet is running and connected.
+    /// The device is visible: connected, with visibility on. Device lists
+    /// hold only visible devices, so this is true in them; a `node_update`
+    /// with `false` says the device is no longer visible (it turned
+    /// visibility off, or disconnected) and should be removed.
+    ///
+    /// (Servers before 1.3 listed devices that were not connected too, with
+    /// `false`.)
     pub online: bool,
-    /// The device shares its audio: others may listen to its sources and
-    /// it may send its own. An online device that does not share still
-    /// receives audio (others may send to its outputs, and it may listen to
-    /// them). Always false when offline. Servers that do not send it (before
-    /// sharing existed) meant "sharing whenever online".
+    /// The same as `online`, for apps that predate visibility (which
+    /// replaced "sharing"): a visible device may be listened to and sent to.
+    /// Servers that do not send it (before sharing existed) meant "sharing
+    /// whenever online".
     #[serde(default = "sharing_when_unsaid")]
     pub sharing: bool,
     pub sources: Vec<SourceInfo>,
@@ -124,9 +134,17 @@ pub enum ClientMessage {
         protocol_version: ProtocolVersion,
         client: ClientInfo,
     },
-    /// Nodes: whether this device shares its audio (see
-    /// [`NodeSummary::sharing`]). Until a node says, the server takes it as
-    /// sharing, as nodes that connected only to share did.
+    /// Nodes: turns this device's visibility on or off. Visible: it is
+    /// listed to the account's other devices, which may listen to it and
+    /// send to it. Not visible: it is a visitor, listed nowhere and
+    /// reachable by no one, but it may still listen to and send to the
+    /// account's visible devices. Turning it off ends the sessions others
+    /// have with it. Its starting value is [`ClientInfo::visible`].
+    Visibility {
+        visible: bool,
+    },
+    /// Nodes that predate visibility: the same as `Visibility` (sharing on
+    /// meant visible).
     Sharing {
         sharing: bool,
     },
@@ -275,6 +293,19 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn visibility_on_the_wire() {
+        let m = ClientMessage::Visibility { visible: false };
+        assert_eq!(
+            serde_json::to_string(&m).unwrap(),
+            r#"{"type":"visibility","visible":false}"#
+        );
+        // A hello from a client that predates visibility: visible.
+        let old = r#"{"kind":"node","software":"audionet-node 1.2.5","platform":"windows"}"#;
+        let c: ClientInfo = serde_json::from_str(old).unwrap();
+        assert_eq!(c.visible, None);
     }
 
     #[test]

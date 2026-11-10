@@ -86,11 +86,11 @@ pub enum Command {
         volume: f32,
         muted: bool,
     },
-    /// Start or stop sharing this device's audio in this account (see
-    /// [`Agent::sharing`]). Stopping ends every stream it sends; what it
-    /// receives goes on.
-    SetSharing {
-        sharing: bool,
+    /// Turns this device's visibility on or off (see [`Agent::visible`]).
+    /// Turning it off ends the streams other devices have with it; the ones
+    /// it started go on.
+    SetVisibility {
+        visible: bool,
     },
 }
 
@@ -104,8 +104,15 @@ pub enum AppEvent {
     Disconnected {
         reason: String,
     },
+    /// The account's visible devices (only visible devices are listed).
     Devices(Vec<NodeSummary>),
+    /// A visible device appeared or changed (its name, sounds or outputs).
     DeviceUpdate(NodeSummary),
+    /// A device is no longer visible (it turned visibility off, or
+    /// disconnected): remove it from the list.
+    DeviceGone {
+        node_id: NodeId,
+    },
     /// Progress of a session this app started, from either device.
     Session {
         session_id: SessionId,
@@ -171,14 +178,15 @@ pub struct Agent {
     /// Diagnostics: sessions offer only relayed candidates (tests the TURN
     /// relay, like the web client's `?ice=relay`).
     pub relay_only: bool,
-    /// Whether this device shares its audio in this account: others may
-    /// listen to it and it may send its own. Not sharing, it stays online:
-    /// it sees the other devices, listens to them and plays what they send
-    /// it. Changed with [`Command::SetSharing`] (the app keeps its choice).
-    pub sharing: Arc<AtomicBool>,
+    /// Whether this device is visible to the account's other devices:
+    /// listed to them, and they may listen to it and send to it. Not
+    /// visible, it is a visitor: listed nowhere and reachable by no one, but
+    /// it still sees the visible devices, listens to them and sends to them.
+    /// Changed with [`Command::SetVisibility`] (the app keeps its choice).
+    pub visible: Arc<AtomicBool>,
     /// Connect as a visitor rather than a device: `config.token` is a web
-    /// session (`ans_…`), nothing about this computer's audio is announced,
-    /// and sending needs no sharing (as in the web client).
+    /// session (`ans_…`), and nothing about this computer's audio is
+    /// announced (as in the web client).
     pub visitor: bool,
     /// Whether measurements go to the status log too: technical notes of
     /// every session, and the reports of sessions other devices asked for
@@ -308,6 +316,7 @@ impl Agent {
                 },
                 software: self.software.clone(),
                 platform: Some(self.platform),
+                visible: (!self.visitor).then(|| self.visible.load(Relaxed)),
             },
         };
         let send =
@@ -340,12 +349,10 @@ impl Agent {
                 "Connected to {} as \"{}\" for account {}.",
                 self.config.server_url, self.config.name, self.config.username
             ));
-            // Before anything else: whether this device shares.
-            let sharing_now = ClientMessage::Sharing {
-                sharing: self.sharing.load(Relaxed),
-            };
-            if sink.send(send(&sharing_now)).await.is_err() {
-                return Outcome::Retry("the connection closed during sign-in".into());
+            if !self.visible.load(Relaxed) {
+                (self.status)(
+                    "Not visible: your other devices can't see this device. It can still listen to them and send to them.",
+                );
             }
         }
         // A visitor offers nothing: it announces no sounds or outputs.
@@ -404,14 +411,14 @@ impl Agent {
                         let Ok(msg) = serde_json::from_str::<ServerMessage>(t.as_str()) else { continue };
                         match msg {
                             ServerMessage::SessionOffer { session_id, media, sdp, .. } => {
-                                // Not sharing: nobody may listen to this device.
-                                // (The server refuses that too; this also holds
+                                // Not visible: nobody may reach this device. (The
+                                // server routes nothing to it; this also holds
                                 // with an older server.)
-                                if matches!(media, SessionMedia::Listen { .. }) && !self.sharing.load(Relaxed) {
-                                    (self.status)(&format!("Session {session_id} refused: this device is not sharing its audio."));
+                                if !self.visible.load(Relaxed) {
+                                    (self.status)(&format!("Session {session_id} refused: this device is not visible."));
                                     let refuse = ClientMessage::SessionEnd {
                                         session_id,
-                                        reason: format!("\"{}\" is not sharing its audio.", self.config.name),
+                                        reason: format!("\"{}\" is not visible.", self.config.name),
                                     };
                                     if sink.send(send(&refuse)).await.is_err() {
                                         break Outcome::Retry("the connection closed".into());
@@ -469,12 +476,20 @@ impl Agent {
                                     }
                             }
                             ServerMessage::Nodes { nodes } => {
+                                // Only visible devices (servers before 1.3
+                                // also listed the ones not connected).
+                                let nodes: Vec<NodeSummary> = nodes.into_iter().filter(|n| n.online).collect();
                                 known = nodes.iter().map(|n| (n.node_id.as_str().to_owned(), n.clone())).collect();
                                 self.emit(AppEvent::Devices(nodes));
                             }
                             ServerMessage::NodeUpdate { node } => {
-                                known.insert(node.node_id.as_str().to_owned(), node.clone());
-                                self.emit(AppEvent::DeviceUpdate(node));
+                                if node.online {
+                                    known.insert(node.node_id.as_str().to_owned(), node.clone());
+                                    self.emit(AppEvent::DeviceUpdate(node));
+                                } else {
+                                    known.remove(node.node_id.as_str());
+                                    self.emit(AppEvent::DeviceGone { node_id: node.node_id });
+                                }
                             }
                             ServerMessage::Error { message, session_id: Some(session_id), .. }
                                 if outgoing.contains_key(session_id.as_str()) =>
@@ -582,13 +597,6 @@ impl Agent {
                         Command::Start { session_id, node_id, remote, local } => {
                             if sessions.contains_key(session_id.as_str()) {
                                 None
-                            } else if matches!(local, LocalMedia::Send { .. }) && !self.visitor && !self.sharing.load(Relaxed) {
-                                // Sending needs sharing; nothing reaches the network.
-                                self.emit(AppEvent::SessionEnded {
-                                    session_id,
-                                    reason: "This device is not sharing its audio. Start sharing to send it.".into(),
-                                });
-                                None
                             } else {
                                 let device = known.get(node_id.as_str());
                                 let (sources, destinations) = device
@@ -617,16 +625,16 @@ impl Agent {
                                 None
                             }
                         }
-                        Command::SetSharing { sharing } => {
-                            self.sharing.store(sharing, Relaxed);
-                            (self.status)(if sharing {
-                                "Sharing: other devices can listen to this device, and it can send its audio."
+                        Command::SetVisibility { visible } => {
+                            self.visible.store(visible, Relaxed);
+                            (self.status)(if visible {
+                                "Visible: your other devices can see this device, listen to it and send to it."
                             } else {
-                                "Not sharing: this device still receives audio, but sends none of its own."
+                                "Not visible: your other devices can't see this device. It can still listen to them and send to them."
                             });
-                            // The server ends the streams this device sends
-                            // (telling both sides).
-                            Some(ClientMessage::Sharing { sharing })
+                            // The server ends the streams others have with
+                            // this device (telling both sides).
+                            Some(ClientMessage::Visibility { visible })
                         }
                         Command::SetVolume { session_id, volume, muted } => {
                             if let Some(h) = sessions.get(session_id.as_str()) {

@@ -265,7 +265,7 @@ fn agent_with(
         active_sessions: Default::default(),
         control,
         relay_only,
-        sharing: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        visible: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         visitor: false,
         measurements_in_status: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     }
@@ -394,11 +394,12 @@ async fn two_native_devices_stream_audio_both_ways() {
     let _ = stop_tx.send(true);
 }
 
-/// A device that does not share stays online: it receives audio (others
-/// send to it, it listens to them) but sends none of its own, until it
-/// shares; stopping sharing ends what it sends, on both sides.
+/// A device that is not visible is a visitor: listed to no one and reached
+/// by no one, but it still listens to and sends to the visible devices.
+/// Turned visible it is listed and reached; hidden again, the streams others
+/// have with it end on both sides, while the ones it started go on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_device_that_does_not_share_receives_but_does_not_send() {
+async fn a_device_that_is_not_visible_is_a_visitor() {
     let base = start_server().await;
     let laptop_config = sign_in(&base, "Laptop");
     let laptop_id = NodeId::new(laptop_config.node_id.clone()).unwrap();
@@ -407,7 +408,7 @@ async fn a_device_that_does_not_share_receives_but_does_not_send() {
 
     let laptop_audio = Arc::new(FakeAudio::default());
     let phone_audio = Arc::new(FakeAudio::default());
-    let laptop_sharing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let laptop_visible = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (ltx, mut laptop_events) = mpsc::unbounded_channel();
     let (laptop_control, laptop) = Control::new(Arc::new(move |e| {
         let _ = ltx.send(e);
@@ -422,42 +423,53 @@ async fn a_device_that_does_not_share_receives_but_does_not_send() {
         Arc::clone(&laptop_audio),
         Some(laptop_control),
     );
-    laptop_agent.sharing = Arc::clone(&laptop_sharing);
-    for a in [
-        laptop_agent,
-        agent(phone_config, Arc::clone(&phone_audio), Some(phone_control)),
-    ] {
-        let mut stop = stop_rx.clone();
-        tokio::spawn(a.run(async move {
+    laptop_agent.visible = Arc::clone(&laptop_visible);
+    // The phone first, so its device list is complete when the laptop comes.
+    let mut stop = stop_rx.clone();
+    tokio::spawn(
+        agent(phone_config, Arc::clone(&phone_audio), Some(phone_control)).run(async move {
             let _ = stop.changed().await;
-        }));
-    }
-    let seen = |sharing: bool| {
-        move |e: &AppEvent| {
-            let ok = |n: &audionet_protocol::signal::NodeSummary| {
-                n.name == "Laptop" && n.online && n.sharing == sharing && !n.sources.is_empty()
-            };
-            match e {
-                AppEvent::Devices(nodes) => nodes.iter().any(ok),
-                AppEvent::DeviceUpdate(n) => ok(n),
-                _ => false,
-            }
+        }),
+    );
+    next_event(&mut phone_events, "the phone connected", |e| {
+        matches!(e, AppEvent::Devices(_))
+    })
+    .await;
+    let mut stop = stop_rx.clone();
+    tokio::spawn(laptop_agent.run(async move {
+        let _ = stop.changed().await;
+    }));
+    let laptop_listed = |e: &AppEvent| {
+        let ok = |n: &audionet_protocol::signal::NodeSummary| {
+            n.name == "Laptop" && n.online && n.sharing && !n.sources.is_empty()
+        };
+        match e {
+            AppEvent::Devices(nodes) => nodes.iter().any(ok),
+            AppEvent::DeviceUpdate(n) => ok(n),
+            _ => false,
         }
     };
-    // 1. The phone sees the laptop online, not sharing.
-    next_event(
-        &mut phone_events,
-        "the laptop online, not sharing",
-        seen(false),
-    )
-    .await;
-    // The laptop sees the phone too.
+
+    // 1. The laptop (not visible) sees the phone; the phone never hears of
+    //    the laptop.
     next_event(&mut laptop_events, "the phone", |e| match e {
         AppEvent::Devices(nodes) => nodes.iter().any(|n| n.name == "Phone" && n.online),
         AppEvent::DeviceUpdate(n) => n.name == "Phone" && n.online,
         _ => false,
     })
     .await;
+    phone.send(Command::ListDevices).unwrap();
+    let e = next_event(&mut phone_events, "the phone's list", |e| {
+        matches!(e, AppEvent::Devices(_))
+    })
+    .await;
+    let AppEvent::Devices(listed) = e else {
+        unreachable!()
+    };
+    assert!(
+        listed.iter().all(|n| n.name != "Laptop"),
+        "a device that is not visible is listed nowhere: {listed:?}"
+    );
 
     let listen_to_laptop = |id: &str| Command::Start {
         session_id: SessionId::new(id).unwrap(),
@@ -472,15 +484,32 @@ async fn a_device_that_does_not_share_receives_but_does_not_send() {
     let ended = |id: &'static str| move |e: &AppEvent| matches!(e, AppEvent::SessionEnded { session_id, .. } if session_id.as_str() == id);
     let active = |id: &'static str| move |e: &AppEvent| matches!(e, AppEvent::Session { session_id, state: SessionState::Active, .. } if session_id.as_str() == id);
 
-    // 2. Nobody may listen to it.
+    // 2. Nobody reaches it: not to listen, not to send.
     phone.send(listen_to_laptop("refused")).unwrap();
     let e = next_event(&mut phone_events, "listening refused", ended("refused")).await;
     let AppEvent::SessionEnded { reason, .. } = e else {
         unreachable!()
     };
-    assert!(reason.contains("\"Laptop\" is not sharing"), "{reason}");
+    assert!(reason.contains("not visible"), "{reason}");
+    phone
+        .send(Command::Start {
+            session_id: SessionId::new("send-refused").unwrap(),
+            node_id: laptop_id.clone(),
+            remote: SessionMedia::Speak {
+                destination_id: "output:speakers".into(),
+            },
+            local: LocalMedia::Send {
+                source_id: "input:mic".into(),
+            },
+        })
+        .unwrap();
+    let e = next_event(&mut phone_events, "sending refused", ended("send-refused")).await;
+    let AppEvent::SessionEnded { reason, .. } = e else {
+        unreachable!()
+    };
+    assert!(reason.contains("not visible"), "{reason}");
 
-    // 3. It may not send its own audio.
+    // 3. As a visitor it still sends its own audio to the phone...
     laptop
         .send(Command::Start {
             session_id: SessionId::new("laptop-sends").unwrap(),
@@ -493,39 +522,19 @@ async fn a_device_that_does_not_share_receives_but_does_not_send() {
             },
         })
         .unwrap();
-    let e = next_event(&mut laptop_events, "sending refused", ended("laptop-sends")).await;
-    let AppEvent::SessionEnded { reason, .. } = e else {
-        unreachable!()
-    };
-    assert!(reason.contains("not sharing"), "{reason}");
-
-    // 4. It receives: the phone sends its microphone to the laptop.
-    phone
-        .send(Command::Start {
-            session_id: SessionId::new("to-laptop").unwrap(),
-            node_id: laptop_id.clone(),
-            remote: SessionMedia::Speak {
-                destination_id: "output:speakers".into(),
-            },
-            local: LocalMedia::Send {
-                source_id: "input:mic".into(),
-            },
-        })
-        .unwrap();
     next_event(
-        &mut phone_events,
-        "phone to laptop connected",
-        active("to-laptop"),
+        &mut laptop_events,
+        "laptop sends to the phone",
+        active("laptop-sends"),
     )
     .await;
     tokio::time::sleep(Duration::from_secs(3)).await;
-    let (level, hz) = analyse(&laptop_audio.played);
-    println!("the laptop (not sharing) plays the phone: {level:.1} dBFS at {hz:.0} Hz");
+    let (level, hz) = analyse(&phone_audio.played);
+    println!("the phone plays the laptop (not visible): {level:.1} dBFS at {hz:.0} Hz");
     assert!(
         level > -20.0 && (hz - TONE_HZ).abs() < 15.0,
         "{level:.1} dBFS at {hz:.0} Hz"
     );
-
     // ...and listens to the phone.
     laptop
         .send(Command::Start {
@@ -546,50 +555,57 @@ async fn a_device_that_does_not_share_receives_but_does_not_send() {
     )
     .await;
 
-    // 5. Sharing: now it may be listened to.
-    laptop.send(Command::SetSharing { sharing: true }).unwrap();
-    next_event(&mut phone_events, "the laptop sharing", seen(true)).await;
-    phone.send(listen_to_laptop("listen-shared")).unwrap();
+    // 4. Visible: listed, and the phone hears it.
+    laptop
+        .send(Command::SetVisibility { visible: true })
+        .unwrap();
+    next_event(&mut phone_events, "the laptop listed", laptop_listed).await;
+    phone.send(listen_to_laptop("listen-visible")).unwrap();
     next_event(
         &mut phone_events,
         "listening to the laptop",
-        active("listen-shared"),
+        active("listen-visible"),
     )
     .await;
-    phone_audio.played.lock().unwrap().clear();
     tokio::time::sleep(Duration::from_secs(3)).await;
-    let (level, hz) = analyse(&phone_audio.played);
-    println!("the phone hears the laptop (sharing): {level:.1} dBFS at {hz:.0} Hz");
-    assert!(
-        level > -20.0 && (hz - TONE_HZ).abs() < 15.0,
-        "{level:.1} dBFS at {hz:.0} Hz"
-    );
+    laptop_audio.played.lock().unwrap().clear();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let (level, _) = analyse(&laptop_audio.played);
+    assert!(level > -20.0, "the laptop plays the phone: {level:.1} dBFS");
 
-    // 6. Stopping sharing ends what it sends, on the phone too; what it
-    //    receives goes on.
-    laptop.send(Command::SetSharing { sharing: false }).unwrap();
+    // 5. Hidden again: the phone's stream from it ends on both sides and
+    //    the phone removes it; the laptop's own streams go on.
+    laptop
+        .send(Command::SetVisibility { visible: false })
+        .unwrap();
     let e = next_event(
         &mut phone_events,
         "the listening stream ended",
-        ended("listen-shared"),
+        ended("listen-visible"),
     )
     .await;
     let AppEvent::SessionEnded { reason, .. } = e else {
         unreachable!()
     };
-    assert!(reason.contains("stopped sharing"), "{reason}");
+    assert!(reason.contains("is no longer visible"), "{reason}");
     next_event(
         &mut phone_events,
-        "the laptop not sharing again",
-        seen(false),
+        "the laptop gone",
+        |e| matches!(e, AppEvent::DeviceGone { node_id } if *node_id == laptop_id),
     )
     .await;
+    phone_audio.played.lock().unwrap().clear();
     laptop_audio.played.lock().unwrap().clear();
     tokio::time::sleep(Duration::from_secs(2)).await;
-    let (level, _) = analyse(&laptop_audio.played);
+    let (sent, _) = analyse(&phone_audio.played);
+    let (heard, _) = analyse(&laptop_audio.played);
     assert!(
-        level > -20.0,
-        "the laptop still plays the phone: {level:.1} dBFS"
+        sent > -20.0,
+        "the phone still plays what the laptop sends: {sent:.1} dBFS"
+    );
+    assert!(
+        heard > -20.0,
+        "the laptop still plays the phone: {heard:.1} dBFS"
     );
     let _ = stop_tx.send(true);
 }
@@ -814,8 +830,9 @@ async fn a_visitor_listens_and_sends_without_becoming_a_device() {
     );
     let mut visitor = agent(visitor_config, Arc::clone(&visitor_audio), Some(control));
     visitor.visitor = true;
-    // Not sharing: a visitor needs no sharing to send (like the web client).
-    visitor.sharing.store(false, Relaxed);
+    // A visitor has no visibility of its own and still sends (like the web
+    // client).
+    visitor.visible.store(false, Relaxed);
     let mut stop = stop_rx.clone();
     tokio::spawn(visitor.run(async move {
         let _ = stop.changed().await;
@@ -1028,8 +1045,8 @@ async fn an_app_listens_into_an_audio_tap() {
         );
         client.start();
         next_ffi_event(&rx, "the PC listed", |e| match e {
-            Event::Devices { devices } => devices.iter().any(|d| d.name == "Studio PC" && d.online),
-            Event::DeviceChanged { device } => device.name == "Studio PC" && device.online,
+            Event::Devices { devices } => devices.iter().any(|d| d.name == "Studio PC"),
+            Event::DeviceChanged { device } => device.name == "Studio PC",
             _ => false,
         });
 

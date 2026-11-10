@@ -104,6 +104,9 @@ fn event_json(account: &str, e: AppEvent) -> Value {
         AppEvent::DeviceUpdate(device) => {
             json!({ "event": "device_update", "account": account, "device": device })
         }
+        AppEvent::DeviceGone { node_id } => {
+            json!({ "event": "device_gone", "account": account, "node_id": node_id })
+        }
         AppEvent::Session {
             session_id,
             state,
@@ -170,7 +173,7 @@ impl Engine {
             active_sessions: Default::default(),
             control: Some(control),
             relay_only: false,
-            sharing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            visible: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             visitor: true,
             measurements_in_status: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };

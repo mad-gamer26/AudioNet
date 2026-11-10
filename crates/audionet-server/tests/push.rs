@@ -1,8 +1,8 @@
 //! Push notifications through a real server that is also its own push
 //! gateway, with Apple's push service replaced by a recorder: a phone turns
-//! notifications on, another device of the account comes online, changes
-//! its sharing and goes away, and what would reach Apple is decrypted with
-//! the phone's key.
+//! notifications on, another device of the account becomes visible, hides,
+//! becomes visible again and goes away, and what would reach Apple is
+//! decrypted with the phone's key.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -117,6 +117,31 @@ async fn go_online(addr: &str, token: &str) -> Ws {
     ws
 }
 
+/// Connects a device that starts hidden (its hello says so).
+async fn go_online_hidden(addr: &str, token: &str) -> Ws {
+    let mut req = format!("ws://{addr}/api/v1/ws")
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(Message::Text(
+        r#"{"type":"hello","protocol_version":{"major":0,"minor":1},"client":{"kind":"node","software":"test","platform":"windows","visible":false}}"#.into(),
+    ))
+    .await
+    .unwrap();
+    ws
+}
+
+async fn set_visible(ws: &mut Ws, on: bool) {
+    ws.send(Message::Text(
+        format!(r#"{{"type":"visibility","visible":{on}}}"#).into(),
+    ))
+    .await
+    .unwrap();
+}
+
+/// What a device that predates visibility says ("sharing" meant visible).
 async fn set_sharing(ws: &mut Ws, on: bool) {
     ws.send(Message::Text(
         format!(r#"{{"type":"sharing","sharing":{on}}}"#).into(),
@@ -221,15 +246,16 @@ async fn a_phone_hears_about_the_accounts_other_devices() {
 
     // The phone itself coming online says nothing to itself.
     let _phone_ws = go_online(&addr, &phone).await;
-    // The PC comes online and reports it is not sharing (said with
-    // "online"), then starts sharing, then stops, then goes away for good.
+    // The PC connects (visible), hides, becomes visible again (as an app
+    // that predates visibility says it: sharing), and goes away.
+    // ("Now visible" waits REPORT_WAIT and is sent on the push task's next
+    // one-second tick: up to 3 s.)
     let mut pc_ws = go_online(&addr, &pc).await;
-    set_sharing(&mut pc_ws, false).await;
+    tokio::time::sleep(Duration::from_millis(3300)).await;
+    set_visible(&mut pc_ws, false).await;
     tokio::time::sleep(Duration::from_millis(2300)).await;
     set_sharing(&mut pc_ws, true).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    set_sharing(&mut pc_ws, false).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(3300)).await;
     drop(pc_ws);
 
     let got = received(&sent, 4).await;
@@ -237,40 +263,47 @@ async fn a_phone_hears_about_the_accounts_other_devices() {
     assert_eq!(
         bodies,
         [
-            "Studio PC is online. (false)",
-            "Studio PC started sharing its audio. (true)",
-            "Studio PC stopped sharing its audio. (false)",
-            "Studio PC is offline. (unknown)",
+            "Studio PC is now visible. (true)",
+            "Studio PC is no longer visible. (false)",
+            "Studio PC is now visible. (true)",
+            "Studio PC is no longer visible. (false)",
         ]
     );
     assert!(
         got.iter().all(|(title, _, _)| title == "alice"),
         "the account name is the title"
     );
-    assert!(got[0].2.starts_with("online-") && got[1].2.starts_with("sharing-"));
+    assert!(got.iter().all(|g| g.2.starts_with("online-")));
     assert!(
         sent.lock().unwrap().iter().all(|s| s.sandbox),
         "the phone's environment"
     );
 
-    // Presence only: sharing changes are not sent.
+    // A phone that predates visibility and asked only for "sharing" still
+    // hears about visibility. A device that connects hidden says nothing.
     sent.lock().unwrap().clear();
     request(
         &addr,
         "PUT",
         "/api/v1/push/pusher",
-        &pusher(&format!("http://{addr}"), true, false),
+        &pusher(&format!("http://{addr}"), false, true),
         Some(&phone),
     )
     .await;
-    let mut pc_ws = go_online(&addr, &pc).await;
-    set_sharing(&mut pc_ws, true).await;
-    tokio::time::sleep(Duration::from_millis(2300)).await;
-    set_sharing(&mut pc_ws, false).await;
+    let hidden_ws = go_online_hidden(&addr, &pc).await;
+    tokio::time::sleep(Duration::from_millis(3300)).await;
+    assert!(
+        sent.lock().unwrap().is_empty(),
+        "nothing about a hidden device"
+    );
+    drop(hidden_ws);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(sent.lock().unwrap().is_empty(), "nor about it leaving");
+    let pc_ws = go_online(&addr, &pc).await;
     let got = received(&sent, 1).await;
     assert_eq!(
         got.iter().map(|g| g.1.as_str()).collect::<Vec<_>>(),
-        ["Studio PC is online. (true)"]
+        ["Studio PC is now visible. (true)"]
     );
 
     // Both off: the pusher is gone.

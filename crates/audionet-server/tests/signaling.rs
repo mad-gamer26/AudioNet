@@ -121,6 +121,7 @@ fn hello(kind: ClientKind) -> ClientMessage {
             kind,
             software: "test".into(),
             platform: Some(Platform::Windows),
+            visible: None,
         },
     }
 }

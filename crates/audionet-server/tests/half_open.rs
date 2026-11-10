@@ -163,7 +163,7 @@ async fn a_silently_dead_connection_is_noticed_and_replaced() {
         active_sessions: Default::default(),
         control: Some(control),
         relay_only: false,
-        sharing: Arc::new(AtomicBool::new(true)),
+        visible: Arc::new(AtomicBool::new(true)),
         visitor: false,
         measurements_in_status: Arc::new(AtomicBool::new(false)),
     };

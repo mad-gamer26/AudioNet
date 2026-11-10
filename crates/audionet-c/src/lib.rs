@@ -99,12 +99,14 @@ fn output_json(o: &Output) -> Value {
     json!({ "id": o.id, "name": o.name, "is_default": o.is_default })
 }
 
+/// A device as JSON. Only visible devices are listed, so `online` and
+/// `sharing` are always true: scripts written before visibility read them.
 fn device_json(d: &Device) -> Value {
     json!({
         "node_id": d.node_id,
         "name": d.name,
-        "online": d.online,
-        "sharing": d.sharing,
+        "online": true,
+        "sharing": true,
         "platform": d.platform,
         "sources": d.sources.iter().map(source_json).collect::<Vec<_>>(),
         "outputs": d.outputs.iter().map(output_json).collect::<Vec<_>>(),
@@ -124,6 +126,7 @@ fn event_json(e: &Event) -> Value {
         Event::DeviceChanged { device } => {
             json!({ "type": "device", "device": device_json(device) })
         }
+        Event::DeviceGone { node_id } => json!({ "type": "device_gone", "node_id": node_id }),
         Event::Stream {
             session_id,
             state,

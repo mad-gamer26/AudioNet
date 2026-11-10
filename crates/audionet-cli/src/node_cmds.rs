@@ -222,8 +222,8 @@ pub fn run(config: Option<PathBuf>, background: bool) -> Result<(), String> {
         relay_only: false,
         visitor: false,
         measurements_in_status: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        // A plain device shares: that is what it runs for.
-        sharing: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        // A plain device is visible: that is what it runs for.
+        visible: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
