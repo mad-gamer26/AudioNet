@@ -43,25 +43,30 @@ class audionet_output_info {
 	}
 }
 
-// One of the account's devices.
+// One of the account's visible devices. Only visible devices are listed:
+// a device with visibility off, or not running, is not in the list and
+// cannot be reached (its "device_gone" event removes it).
 class audionet_device {
 	string node_id;
 	string name;
 	string platform;
+	// Always true (every listed device is visible); kept for scripts written
+	// before visibility.
 	bool online;
 	bool sharing;
 	audionet_sound_info@[] sources;
 	audionet_output_info@[] outputs;
-	// "Studio PC: online, sharing".
+	// "Studio PC".
 	string describe() {
-		return name + ": " + (!online ? "offline" : sharing ? "online, sharing" : "online, not sharing");
+		return name;
 	}
 }
 
 // Something that happened, from audionet_client.poll().
 class audionet_event {
-	// "connected", "disconnected", "status", "devices", "device", "stream",
-	// "stream_ended", "diagnostics", "server_problem", "stopped".
+	// "connected", "disconnected", "status", "devices", "device" (a visible
+	// device appeared or changed), "device_gone" (it is no longer visible),
+	// "stream", "stream_ended", "diagnostics", "server_problem", "stopped".
 	string type;
 	// What happened, in words (for speaking and the log).
 	string text;
@@ -204,7 +209,17 @@ class audionet_client {
 				}
 			}
 			if (!found) devices.insert_last(e.device);
-			e.text = e.device.describe();
+			e.text = found ? e.device.describe() + " changed." : e.device.describe() + " is now visible.";
+		} else if (e.type == "device_gone") {
+			string gone = audionet_json_string(o, "node_id");
+			e.text = "A device is no longer visible.";
+			for (int i = int(devices.length()) - 1; i >= 0; i--) {
+				if (devices[i].node_id == gone) {
+					@e.device = devices[i];
+					e.text = devices[i].describe() + " is no longer visible.";
+					devices.remove_at(i);
+				}
+			}
 		} else if (e.type == "stream") {
 			e.text = audionet_json_string(o, "detail");
 		} else if (e.type == "stream_ended") {

@@ -23,14 +23,10 @@ def source_label(s):
 
 
 def device_label(d):
-	if not d.get("online"):
-		state = "offline"
-	elif d.get("sharing", True):
-		state = "online, sharing"
-	else:
-		state = "online, not sharing"
+	"""A visible device (only visible devices are listed): its name and
+	platform."""
 	platform = PLATFORMS.get(d.get("platform") or "", "")
-	return f"{d['name']}: {state}" + (f", {platform}" if platform else "")
+	return d["name"] + (f", {platform}" if platform else "")
 
 
 class AccountState:
@@ -47,7 +43,7 @@ class AccountState:
 		return f"{self.account.label}, {self.status}"
 
 	def sorted_devices(self):
-		return sorted(self.devices.values(), key=lambda d: (not d.get("online"), d["name"].lower()))
+		return sorted(self.devices.values(), key=lambda d: d["name"].lower())
 
 
 class Stream:

@@ -58,7 +58,7 @@ void main() {
 		audionet_event@ e = an.poll();         // devices, stream states, problems
 		if (@e != null and e.type == "devices" and !radio.active and an.devices.length() > 0) {
 			audionet_device@ d = an.devices[0];
-			if (d.sharing and d.sources.length() > 0) radio.start_listening(an, d, d.sources[0]);
+			if (d.sources.length() > 0) radio.start_listening(an, d, d.sources[0]);
 			radio.snd.set_position_3d(5, 0, 0);  // to your right
 		}
 		radio.update();                         // every time round the loop

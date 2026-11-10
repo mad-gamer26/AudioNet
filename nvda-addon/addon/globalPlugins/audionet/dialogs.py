@@ -286,23 +286,22 @@ class MainWindow(wx.Dialog):
 		for d in st.sorted_devices() if st else []:
 			node = d["node_id"]
 			groups = []
-			if d.get("online"):
-				if d.get("sharing", True) and d.get("sources"):
-					groups.append(
-						(
-							("group", node, "sources"),
-							_("Sounds to listen to"),
-							[(("source", node, s["id"]), source_label(s), []) for s in d["sources"]],
-						)
+			if d.get("sources"):
+				groups.append(
+					(
+						("group", node, "sources"),
+						_("Sounds to listen to"),
+						[(("source", node, s["id"]), source_label(s), []) for s in d["sources"]],
 					)
-				if d.get("destinations"):
-					groups.append(
-						(
-							("group", node, "destinations"),
-							_("Outputs to send to"),
-							[(("dest", node, x["id"]), x["name"], []) for x in d["destinations"]],
-						)
+				)
+			if d.get("destinations"):
+				groups.append(
+					(
+						("group", node, "destinations"),
+						_("Outputs to send to"),
+						[(("dest", node, x["id"]), x["name"], []) for x in d["destinations"]],
 					)
+				)
 			out.append((("device", node), device_label(d), groups))
 		return out
 
@@ -491,7 +490,7 @@ class AudioNetPanel(SettingsPanel):
 		sHelper.addItem(wx.StaticText(self, label=VISITOR_NOTE))
 		conf = config.conf["audionet"]
 		self.announceDevices = sHelper.addItem(
-			wx.CheckBox(self, label=_("Announce when devices go &online or offline"))
+			wx.CheckBox(self, label=_("Announce when devices become &visible or no longer visible"))
 		)
 		self.announceDevices.SetValue(conf["announceDevices"])
 		self.announceStreams = sHelper.addItem(

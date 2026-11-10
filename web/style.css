@@ -132,8 +132,6 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .device form { margin: 0.75rem 0; }
 .device .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; }
 
-.state-online { color: var(--ok); font-weight: 600; }
-.state-offline { color: var(--muted); font-weight: 600; }
 
 #streams li {
   border: 1px solid var(--border);

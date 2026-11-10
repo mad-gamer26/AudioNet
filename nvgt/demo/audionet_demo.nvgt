@@ -390,10 +390,6 @@ void listen_now() {
 		speak("Choose a device and one of its sounds first.");
 		return;
 	}
-	if (!d.online or !d.sharing) {
-		speak(d.name + (d.online ? " is not sharing its audio." : " is offline."));
-		return;
-	}
 	demo_stream st;
 	// Each new stream starts a little further round, so several do not
 	// play from the same place.
@@ -416,10 +412,6 @@ void send_now(bool microphone_input) {
 	int i = f.get_list_position(c_outputs);
 	if (@d == null or i < 0 or i >= int(d.outputs.length())) {
 		speak("Choose a device and one of its outputs first.");
-		return;
-	}
-	if (!d.online) {
-		speak(d.name + " is offline.");
 		return;
 	}
 	demo_stream st;
@@ -462,7 +454,7 @@ void handle_events() {
 		audionet_event@ e = an.poll();
 		if (@e == null) return;
 		if (e.type == "diagnostics") continue;
-		if (e.type == "devices" or e.type == "device") fill_devices();
+		if (e.type == "devices" or e.type == "device" or e.type == "device_gone") fill_devices();
 		bool say = e.type != "status";
 		if (e.type == "stream" or e.type == "stream_ended") {
 			for (uint i = 0; i < streams.length(); i++) {

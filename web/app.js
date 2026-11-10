@@ -148,9 +148,95 @@ function signedIn(me, moveFocus) {
   $("app-section").hidden = false;
   if ("email" in me) setEmailState(me.email, me.pending_email);
   else loadEmailState();
+  loadManagedDevices();
   if (moveFocus) $("devices-heading").focus();
   connect();
   refreshMicrophones();
+}
+
+// ─── managing devices ───────────────────────────────────────────────────────
+
+// Every device signed in to the account (visible or not), to rename or
+// remove: /api/v1/nodes lists them without any status.
+async function loadManagedDevices() {
+  try {
+    const r = await api("GET", "/api/v1/nodes");
+    renderManagedDevices(r.nodes || []);
+  } catch (_) { /* tried again on the next change */ }
+}
+
+function renderManagedDevices(nodes) {
+  const list = $("managed-devices");
+  list.replaceChildren();
+  $("no-managed-devices").hidden = nodes.length > 0;
+  for (const n of [...nodes].sort((a, b) => a.name.localeCompare(b.name))) {
+    const li = document.createElement("li");
+    const text = document.createElement("span");
+    text.textContent = `${n.name} (${platformName(n.platform)}) `;
+    const rename = document.createElement("button");
+    rename.type = "button";
+    rename.textContent = "Rename";
+    rename.setAttribute("aria-label", `Rename ${n.name}`);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove ${n.name}`);
+    li.append(text, rename, " ", remove);
+    rename.addEventListener("click", () => showRenameForm(li, n, rename));
+    remove.addEventListener("click", () => removeDevice(n, li));
+    list.appendChild(li);
+  }
+}
+
+function showRenameForm(li, n, button) {
+  if (li.querySelector("form")) return;
+  const form = document.createElement("form");
+  const id = `rename-${n.node_id}`;
+  form.innerHTML = `<p><label for="${id}"></label> <input id="${id}" maxlength="64" required>
+    <button type="submit">Save</button> <button type="button" class="cancel">Cancel</button></p>`;
+  form.querySelector("label").textContent = `New name for ${n.name}`;
+  const input = form.querySelector("input");
+  input.value = n.name;
+  li.appendChild(form);
+  button.setAttribute("aria-expanded", "true");
+  input.focus();
+  input.select();
+  const close = () => {
+    form.remove();
+    button.setAttribute("aria-expanded", "false");
+    button.focus();
+  };
+  form.querySelector(".cancel").addEventListener("click", close);
+  form.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = input.value.trim();
+    if (!name) { input.focus(); return; }
+    try {
+      await api("PATCH", `/api/v1/nodes/${encodeURIComponent(n.node_id)}`, { name });
+      announce(`${n.name} is now called ${name}.`);
+      await loadManagedDevices();
+      $("manage-heading").focus();
+    } catch (err) {
+      showError(err.message);
+      input.focus();
+    }
+  });
+}
+
+async function removeDevice(n, li) {
+  if (!confirm(`Remove ${n.name} from your account? It will need to sign in again.`)) return;
+  try {
+    await api("DELETE", `/api/v1/nodes/${encodeURIComponent(n.node_id)}`);
+    state.nodes.delete(n.node_id);
+    renderDevices();
+    li.remove();
+    announce(`${n.name} was removed from your account.`);
+    await loadManagedDevices();
+    $("manage-heading").focus();
+  } catch (err) {
+    showError(err.message);
+  }
 }
 
 // ─── email address ──────────────────────────────────────────────────────────
@@ -552,19 +638,26 @@ function handleServer(msg) {
       state.iceServers = rtcIceServers(msg.ice_servers);
       break;
     case "nodes":
+      // Only visible devices are listed (servers before 1.3 also listed
+      // devices that were not connected).
       state.nodes.clear();
-      for (const n of msg.nodes) state.nodes.set(n.node_id, n);
+      for (const n of msg.nodes) if (n.online) state.nodes.set(n.node_id, n);
       renderDevices();
       break;
     case "node_update": {
+      // A device became visible or changed; `online: false` says it is no
+      // longer visible (visibility off, or disconnected).
       const before = state.nodes.get(msg.node.node_id);
-      state.nodes.set(msg.node.node_id, msg.node);
-      if (before && before.online !== msg.node.online) {
-        announce(`${msg.node.name} is now ${msg.node.online ? "online" : "offline"}.`);
-      } else if (before && msg.node.online && sharing(before) !== sharing(msg.node)) {
-        announce(`${msg.node.name} ${sharing(msg.node) ? "started" : "stopped"} sharing its audio.`);
+      if (msg.node.online) {
+        state.nodes.set(msg.node.node_id, msg.node);
+        if (!before) announce(`${msg.node.name} is now visible.`);
+      } else if (before) {
+        state.nodes.delete(msg.node.node_id);
+        announce(`${msg.node.name} is no longer visible.`);
       }
       renderDevices();
+      // A new device or a rename shows in Manage devices too.
+      if (msg.node.online && (!before || before.name !== msg.node.name)) loadManagedDevices();
       break;
     }
     case "session_answer": {
@@ -692,7 +785,6 @@ function deviceElement(node) {
         <p><button type="submit">Send my microphone</button></p>
       </div>
     </form>
-    <p><button type="button" class="remove">Remove this device from my account</button></p>
     </div>`;
   el.querySelector(".listen").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -707,33 +799,13 @@ function deviceElement(node) {
     if (sel.value) startSpeak(node.node_id, sel.value, sel.selectedOptions[0].textContent, voice, mic.value, mic.selectedOptions[0]?.textContent || "");
   });
   el.querySelector(".mic").addEventListener("change", (e) => saveMicrophoneChoice(e.target.value));
-  el.querySelector(".remove").addEventListener("click", async () => {
-    const n = state.nodes.get(node.node_id);
-    if (!confirm(`Remove ${n ? n.name : "this device"} from your account? It will need to sign in again.`)) return;
-    try {
-      await api("DELETE", `/api/v1/nodes/${encodeURIComponent(node.node_id)}`);
-      state.nodes.delete(node.node_id);
-      el.remove();
-      announce(`${n ? n.name : "The device"} was removed.`);
-      $("devices-heading").focus();
-      renderDevices();
-    } catch (e) {
-      showError(e.message);
-    }
-  });
   $("devices").appendChild(el);
   return el;
 }
 
-/// Whether a device shares its audio (servers before sharing did not say:
-/// online meant sharing). Not sharing, it can still be sent to.
-function sharing(n) {
-  return n.online && n.sharing !== false;
-}
-
+// The visible devices (only visible devices are in state.nodes).
 function renderDevices() {
-  const nodes = [...state.nodes.values()].sort((a, b) =>
-    (b.online - a.online) || a.name.localeCompare(b.name));
+  const nodes = [...state.nodes.values()].sort((a, b) => a.name.localeCompare(b.name));
   $("no-devices").hidden = nodes.length > 0;
   // Remove elements for devices that no longer exist.
   for (const el of [...$("devices").children]) {
@@ -744,31 +816,24 @@ function renderDevices() {
     const id = el.id;
     const name = el.querySelector(`#${CSS.escape(id)}-name`);
     if (name.textContent !== n.name) name.textContent = n.name;
-    const summary = !n.online
-      ? `: offline, ${platformName(n.platform)}. Start AudioNet on it to use it.`
-      : sharing(n)
-        ? `: online, ${platformName(n.platform)}, ${n.sources.length} sounds, ${n.destinations.length} outputs`
-        : `: online, not sharing its audio, ${platformName(n.platform)}, ${n.destinations.length} outputs`;
+    const summary = `: ${platformName(n.platform)}, ${n.sources.length} sounds, ${n.destinations.length} outputs`;
     const p = el.querySelector(".summary");
     if (p.textContent !== summary) p.textContent = summary;
-    p.className = `summary ${n.online ? "state-online" : "state-offline"}`;
     const sources = n.sources.map((s) => ({
       id: s.id,
       label: `${s.name}${s.source_type === "input" ? " (input)" : ""}${s.is_default ? " (default)" : ""}`,
       isDefault: s.is_default && s.source_type === "loopback",
     }));
     const dests = n.destinations.map((d) => ({ id: d.id, label: `${d.name}${d.is_default ? " (default)" : ""}`, isDefault: d.is_default }));
-    // A device that does not share can be sent to, not listened to.
-    setOptions(el.querySelector(`#${CSS.escape(id)}-source`), sharing(n) ? sources : [],
-      !n.online ? "Device is offline" : sharing(n) ? "No sources available" : "Not sharing its audio");
-    setOptions(el.querySelector(`#${CSS.escape(id)}-dest`), dests, n.online ? "No outputs available" : "Device is offline");
+    setOptions(el.querySelector(`#${CSS.escape(id)}-source`), sources, "No sources available");
+    setOptions(el.querySelector(`#${CSS.escape(id)}-dest`), dests, "No outputs available");
     const mic = el.querySelector(".mic");
     setOptions(mic, microphoneOptions(), "No microphone found");
     // The microphone chosen last time, once the browser lists it.
     const saved = savedMicrophone();
     if (saved && mic.value === "" && state.microphones.some((m) => m.id === saved)) mic.value = saved;
-    el.querySelector(".listen button").disabled = !sharing(n) || !state.connected;
-    el.querySelector(".speak button").disabled = !n.online || !state.connected;
+    el.querySelector(".listen button").disabled = !state.connected;
+    el.querySelector(".speak button").disabled = !state.connected;
   }
 }
 

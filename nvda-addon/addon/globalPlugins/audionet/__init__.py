@@ -199,16 +199,20 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self.model.add_log(f"{name}: {msg['reason']}")
 			self.say(_("AudioNet: {account} was signed out: {reason}").format(account=name, reason=msg["reason"]))
 		elif kind == "devices":
-			st.devices = {d["node_id"]: d for d in msg["devices"]}
+			# Only visible devices are listed.
+			st.devices = {d["node_id"]: d for d in msg["devices"] if d.get("online", True)}
 		elif kind == "device_update":
+			# A visible device appeared or changed.
 			d = msg["device"]
 			old = st.devices.get(d["node_id"])
 			st.devices[d["node_id"]] = d
-			if old is not None and bool(old.get("online")) != bool(d.get("online")):
-				text = _("{device} is online").format(device=d["name"]) if d.get("online") else _("{device} is offline").format(device=d["name"])
-				self.model.add_log(text)
-				if conf["announceDevices"]:
-					self.say(text)
+			if old is None:
+				self._device_note(_("{device} is now visible").format(device=d["name"]))
+		elif kind == "device_gone":
+			# No longer visible (visibility off, or disconnected).
+			old = st.devices.pop(msg["node_id"], None)
+			if old is not None:
+				self._device_note(_("{device} is no longer visible").format(device=old["name"]))
 		elif kind == "session":
 			s = self.model.streams.get(msg["session_id"])
 			if s is not None:
@@ -254,6 +258,13 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	def say(self, text):
 		ui.message(text)
+
+	def _device_note(self, text):
+		"""A device became visible or stopped being visible: logged, and said
+		if "Announce when devices become visible…" is on."""
+		self.model.add_log(text)
+		if config.conf["audionet"]["announceDevices"]:
+			self.say(text)
 
 	# ─── accounts ──────────────────────────────────────────────────────────
 
@@ -453,7 +464,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		if not self.disabled:
 			self._change_volume(-VOLUME_STEP)
 
-	@script(description=_("Reports which of your AudioNet devices are online"))
+	@script(description=_("Reports which of your AudioNet devices are visible"))
 	def script_reportDevices(self, gesture):
 		if self.disabled:
 			return
@@ -463,13 +474,13 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self.ensure_engine()
 		parts = []
 		for st in self.model.accounts.values():
-			online = [d for d in st.sorted_devices() if d.get("online")]
+			visible = st.sorted_devices()
 			if not st.connected:
 				parts.append(f"{st.account.label}: {st.status}")
-			elif not online:
-				parts.append(_("{account}: no devices online").format(account=st.account.label))
+			elif not visible:
+				parts.append(_("{account}: no devices visible").format(account=st.account.label))
 			else:
-				names = ", ".join(device_label(d) for d in online)
+				names = ", ".join(device_label(d) for d in visible)
 				parts.append(f"{st.account.label}: {names}")
 		self.say(". ".join(parts))
 

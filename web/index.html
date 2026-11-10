@@ -136,12 +136,15 @@
     </section>
 
     <section id="app-section" aria-labelledby="devices-heading" hidden>
-      <h2 id="devices-heading" tabindex="-1">Your devices</h2>
+      <h2 id="devices-heading" tabindex="-1">Visible devices</h2>
       <p id="connection-state">Connecting to the server…</p>
+      <p class="hint">Your devices that are running AudioNet with visibility on. A device with
+        visibility off can still listen and send, but is not listed and cannot be reached.</p>
       <p><button type="button" id="open-status-log">Status log</button></p>
       <div id="devices"></div>
       <p id="no-devices" hidden>
-        No devices are signed in to this account yet. See "Add a device" below.
+        None of your devices is visible right now. A device appears here while AudioNet runs on it
+        with visibility on. To sign in a new one, see "Add a device" below.
       </p>
 
       <h2 id="streams-heading">Active streams</h2>
@@ -187,6 +190,12 @@
           <button type="button" id="email-cancel">Cancel</button>
         </p>
       </form>
+
+      <h2 id="manage-heading" tabindex="-1">Manage devices</h2>
+      <p>Every device signed in to this account, whether it is visible or not. Removing one signs it
+        out: it will need to sign in again.</p>
+      <ul id="managed-devices" aria-labelledby="manage-heading"></ul>
+      <p id="no-managed-devices" hidden>No devices are signed in to this account yet.</p>
 
     </section>
 

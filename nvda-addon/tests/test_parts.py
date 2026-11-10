@@ -65,11 +65,12 @@ class AccountStoreTests(unittest.TestCase):
 
 class WordsTests(unittest.TestCase):
 	def test_devices(self):
+		# Only visible devices are listed: no online, offline or sharing words.
 		d = {"name": "Studio PC", "online": True, "sharing": True, "platform": "windows"}
-		self.assertEqual(model.device_label(d), "Studio PC: online, sharing, Windows")
-		d.update(sharing=False, platform="ios")
-		self.assertEqual(model.device_label(d), "Studio PC: online, not sharing, iPhone")
-		self.assertEqual(model.device_label({"name": "Mac", "online": False, "platform": None}), "Mac: offline")
+		self.assertEqual(model.device_label(d), "Studio PC, Windows")
+		d.update(platform="ios")
+		self.assertEqual(model.device_label(d), "Studio PC, iPhone")
+		self.assertEqual(model.device_label({"name": "Mac", "platform": None}), "Mac")
 
 	def test_sources(self):
 		# Devices already say it in words; nothing is added.
@@ -88,14 +89,14 @@ class WordsTests(unittest.TestCase):
 		self.assertEqual(t.short_title, "Sending to iPhone")
 		self.assertEqual(t.title, "Sending Yeti to Speaker on iPhone")
 
-	def test_offline_devices_sort_last(self):
+	def test_devices_sort_by_name(self):
 		st = model.AccountState(accounts.Account("a", "https://x.example", "u", "t"))
 		st.devices = {
-			"1": {"node_id": "1", "name": "b", "online": False},
-			"2": {"node_id": "2", "name": "Z", "online": True},
-			"3": {"node_id": "3", "name": "a", "online": True},
+			"1": {"node_id": "1", "name": "b"},
+			"2": {"node_id": "2", "name": "Z"},
+			"3": {"node_id": "3", "name": "a"},
 		}
-		self.assertEqual([d["name"] for d in st.sorted_devices()], ["a", "Z", "b"])
+		self.assertEqual([d["name"] for d in st.sorted_devices()], ["a", "b", "Z"])
 
 	def test_log_is_bounded(self):
 		m = model.Model()
