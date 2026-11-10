@@ -274,8 +274,6 @@ struct StreamsScreen: View {
                     ForEach(model.streams) { row in
                         StreamRowButton(row: row) { openID = row.id }
                     }
-                } header: {
-                    heading("Streams started here")
                 }
             }
         }
@@ -318,15 +316,16 @@ struct StreamRowButton: View {
         .accessibilityValue("Volume \(model.volumeText(row))")
         .accessibilityHint("Opens its mute, volume and stop controls.")
         .accessibilityIdentifier("stream")
+        // In this order: Stop, Decrease Volume, Increase Volume, Mute.
         .accessibilityActions {
-            Button(row.muted ? "Unmute" : "Mute") { model.toggleMute(row.id) }
-            if model.volumeStep(row.id, up: true) != nil {
-                Button("Increase Volume") { model.stepVolume(row.id, up: true) }
-            }
+            Button("Stop") { model.stopStream(row) }
             if model.volumeStep(row.id, up: false) != nil {
                 Button("Decrease Volume") { model.stepVolume(row.id, up: false) }
             }
-            Button("Stop") { model.stopStream(row) }
+            if model.volumeStep(row.id, up: true) != nil {
+                Button("Increase Volume") { model.stepVolume(row.id, up: true) }
+            }
+            Button(row.muted ? "Unmute" : "Mute") { model.toggleMute(row.id) }
         }
     }
 }
