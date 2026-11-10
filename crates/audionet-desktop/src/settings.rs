@@ -13,10 +13,6 @@ use windows::core::{PCWSTR, w};
 pub const CLOSE_TO_TRAY: (PCWSTR, bool) = (w!("CloseToTray"), true);
 /// Start hidden in the system tray.
 pub const START_IN_TRAY: (PCWSTR, bool) = (w!("StartInTray"), false);
-/// Before sharing was per account (0.7 and earlier): start sharing as soon
-/// as the app opened. Read once, to carry that choice over to each
-/// account (see `account_sharing`); no longer offered in Settings.
-pub const START_SHARING: (PCWSTR, bool) = (w!("StartSharing"), false);
 /// Check for, download and install updates automatically.
 pub const AUTO_UPDATE: (PCWSTR, bool) = (w!("AutoUpdate"), true);
 /// Measurements (network details, streams' packet reports) in the status
@@ -119,16 +115,17 @@ pub fn set_string(name: PCWSTR, value: &str) -> Result<(), String> {
     }
 }
 
-/// The value name for whether this computer shares its audio in the
-/// account where it is device `node_id`.
-fn sharing_name(node_id: &str) -> windows::core::HSTRING {
-    windows::core::HSTRING::from(format!("Sharing-{node_id}"))
+/// The value name for whether this computer is visible in the account
+/// where it is device `node_id`. (Before 1.3 each account had a "Sharing-"
+/// value instead; it is not carried over: every account starts visible.)
+fn visible_name(node_id: &str) -> windows::core::HSTRING {
+    windows::core::HSTRING::from(format!("Visible-{node_id}"))
 }
 
-/// Whether this computer shares its audio in that account, if it was ever
+/// Whether this computer is visible in that account, if it was ever
 /// chosen there.
-pub fn account_sharing(node_id: &str) -> Option<bool> {
-    let name = sharing_name(node_id);
+pub fn account_visible(node_id: &str) -> Option<bool> {
+    let name = visible_name(node_id);
     let mut value = 0u32;
     let mut size = size_of::<u32>() as u32;
     // SAFETY: reading a DWORD into a correctly sized local buffer; the
@@ -147,9 +144,9 @@ pub fn account_sharing(node_id: &str) -> Option<bool> {
     (r == ERROR_SUCCESS).then_some(value != 0)
 }
 
-/// Remembers whether this computer shares its audio in that account.
-pub fn set_account_sharing(node_id: &str, on: bool) -> Result<(), String> {
-    let name = sharing_name(node_id);
+/// Remembers whether this computer is visible in that account.
+pub fn set_account_visible(node_id: &str, on: bool) -> Result<(), String> {
+    let name = visible_name(node_id);
     let value = u32::from(on);
     // SAFETY: writing a DWORD from a local; the name outlives the call.
     let r = unsafe {
@@ -166,22 +163,27 @@ pub fn set_account_sharing(node_id: &str, on: bool) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "Could not save whether to share: Windows error {}",
+            "Could not save whether this computer is visible: Windows error {}",
             r.0
         ))
     }
 }
 
-/// Forgets the sharing choice of an account this computer left.
-pub fn forget_account_sharing(node_id: &str) {
-    let name = sharing_name(node_id);
-    // SAFETY: deleting one value under our own key; the name outlives the
-    // call. A missing value is fine.
-    unsafe {
-        let _ = windows::Win32::System::Registry::RegDeleteKeyValueW(
-            HKEY_CURRENT_USER,
-            crate::profile::settings_key(),
-            PCWSTR(name.as_ptr()),
-        );
+/// Forgets the visibility choice of an account this computer left (and
+/// the sharing choice versions before 1.3 kept).
+pub fn forget_account_visible(node_id: &str) {
+    for name in [
+        visible_name(node_id),
+        windows::core::HSTRING::from(format!("Sharing-{node_id}")),
+    ] {
+        // SAFETY: deleting one value under our own key; the name outlives
+        // the call. A missing value is fine.
+        unsafe {
+            let _ = windows::Win32::System::Registry::RegDeleteKeyValueW(
+                HKEY_CURRENT_USER,
+                crate::profile::settings_key(),
+                PCWSTR(name.as_ptr()),
+            );
+        }
     }
 }

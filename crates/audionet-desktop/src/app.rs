@@ -155,15 +155,15 @@ pub fn local_endpoints() -> Result<(Vec<SourceInfo>, Vec<DestinationInfo>), Stri
     WasapiNodeAudio.endpoints()
 }
 
-/// A running device agent: this computer online in one account.
+/// A running device agent: this computer connected in one account.
 pub struct Running {
     stop: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
     active_sessions: Arc<AtomicUsize>,
     commands: mpsc::UnboundedSender<Command>,
-    /// Whether it shares this computer's audio there (the agent reads it
-    /// on every connection).
-    sharing: Arc<AtomicBool>,
+    /// Whether this computer is visible there (the agent reads it on every
+    /// connection).
+    visible: Arc<AtomicBool>,
 }
 
 impl Running {
@@ -171,7 +171,7 @@ impl Running {
     /// is called once when the agent stops (with an error if it failed).
     pub fn start(
         config: NodeConfig,
-        sharing: bool,
+        visible: bool,
         status: Arc<dyn Fn(&str) + Send + Sync>,
         events: AppEventFn,
         ended: impl FnOnce(Option<String>) + Send + 'static,
@@ -180,8 +180,8 @@ impl Running {
         let (control, commands) = Control::new(events);
         let active_sessions = Arc::new(AtomicUsize::new(0));
         let sessions = Arc::clone(&active_sessions);
-        let sharing = Arc::new(AtomicBool::new(sharing));
-        let agent_sharing = Arc::clone(&sharing);
+        let visible = Arc::new(AtomicBool::new(visible));
+        let agent_visible = Arc::clone(&visible);
         let thread = std::thread::spawn(move || {
             let rt = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -205,7 +205,7 @@ impl Running {
                 relay_only: false,
                 visitor: false,
                 measurements_in_status: Arc::clone(&MEASUREMENTS),
-                sharing: agent_sharing,
+                visible: agent_visible,
             };
             let result = rt.block_on(agent.run(async {
                 let _ = rx.await;
@@ -217,20 +217,21 @@ impl Running {
             thread: Some(thread),
             active_sessions,
             commands,
-            sharing,
+            visible,
         }
     }
 
-    /// Whether this computer shares its audio in this account.
-    pub fn is_sharing(&self) -> bool {
-        self.sharing.load(Relaxed)
+    /// Whether this computer is visible in this account.
+    pub fn is_visible(&self) -> bool {
+        self.visible.load(Relaxed)
     }
 
-    /// Starts or stops sharing: at once for the next connection, and the
-    /// agent tells the server now (which ends what this computer sends).
-    pub fn set_sharing(&self, on: bool) {
-        self.sharing.store(on, Relaxed);
-        self.command(Command::SetSharing { sharing: on });
+    /// Turns visibility on or off: at once for the next connection, and the
+    /// agent tells the server now (which ends the streams others have with
+    /// this computer).
+    pub fn set_visible(&self, on: bool) {
+        self.visible.store(on, Relaxed);
+        self.command(Command::SetVisibility { visible: on });
     }
 
     /// Sends a remote-control command to the agent.

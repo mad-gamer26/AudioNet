@@ -8,13 +8,13 @@
 //! Closing the window keeps AudioNet running in the system tray (unless
 //! that option is turned off). `audionet-desktop --background` starts in
 //! the tray and connects automatically (used for starting at sign-in). The
-//! "Start minimized to the system tray" and "Start sharing automatically"
-//! options apply to every start. Only one copy runs: starting it again
-//! shows the existing window.
+//! "Start minimized to the system tray" option applies to every start. Only
+//! one copy runs: starting it again shows the existing window.
 //!
 //! Official builds update themselves (see `update`): the running copy
 //! starts the new one with `--after-update <pid> --from <version>`, plus
-//! `--show` and `--share` to keep the window and sharing as they were.
+//! `--show` to keep the window as it was. (Copies before 1.3 also pass
+//! `--share`, which is ignored: visibility is saved per account.)
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -59,7 +59,6 @@ fn main() {
             ui::AfterUpdate {
                 from: value("--from").unwrap_or_default(),
                 show: args.iter().any(|a| a == "--show"),
-                share: args.iter().any(|a| a == "--share"),
             }
         });
     ui::run(ui::Launch {

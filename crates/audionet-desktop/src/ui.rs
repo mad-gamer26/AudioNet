@@ -1,6 +1,18 @@
 //! The window: standard Win32 controls only, so NVDA, JAWS and Narrator
 //! get names, roles, states and keyboard behavior from Windows itself.
 //!
+//! Layout: until this computer is signed in to an account, the window shows
+//! only the sign-in page. Then a standard tab control holds four tabs:
+//! Devices (the account's visible devices: listen and send), Streams (the
+//! streams this computer started: stop, mute, volume), Accounts (the
+//! accounts, this computer's visibility in each, sign out, add another,
+//! manage devices) and Settings. "Status log…" and "Exit" are always there.
+//! Ctrl+Tab and Ctrl+Shift+Tab (and Ctrl+Page Down / Page Up) move between
+//! tabs from anywhere in the window, as in Windows property sheets; the
+//! arrow keys do on the tab control itself. Only the selected tab's
+//! controls exist on screen (the others are hidden), so Tab and screen
+//! readers see one page at a time.
+//!
 //! Accessibility details:
 //! * Every edit box is preceded by its label (a STATIC control) in creation
 //!   order, which is how Windows derives the accessible name. Labels carry
@@ -19,7 +31,7 @@
 
 use std::cell::RefCell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering::Relaxed};
 
 use audionet_node::config::NodeConfig;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -30,6 +42,9 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::{
     NotificationKind_Other, NotificationProcessing_ImportantMostRecent, UiaHostProviderFromHwnd,
     UiaRaiseNotificationEvent,
+};
+use windows::Win32::UI::Controls::{
+    TCIF_TEXT, TCITEMW, TCM_GETCURSEL, TCM_INSERTITEMW, TCM_SETCURSEL, TCM_SETITEMW,
 };
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
@@ -42,20 +57,94 @@ use windows::core::{BSTR, HSTRING, PCWSTR, w};
 use crate::tray::{self, TrayEvent};
 use crate::{app, handoff, settings, update};
 
+// Labels are the id of the control they name minus one.
 const ID_SERVER: i32 = 101;
 const ID_NAME: i32 = 105;
-const ID_SIGN_OUT: i32 = 111;
+const ID_SIGN_OUT: i32 = 118;
 /// The accounts this computer is signed in to (a list box).
 const ID_ACCOUNTS: i32 = 112;
-const ID_START: i32 = 130;
+/// This computer's visibility in the selected account (a checkbox).
+const ID_VISIBLE: i32 = 114;
+/// What visibility means (read-only text).
+const ID_VISIBLE_HELP: i32 = 115;
+const ID_ADD_ACCOUNT: i32 = 116;
+/// Opens the web client's Manage devices (rename and remove devices).
+const ID_MANAGE: i32 = 117;
 const ID_OPEN_WEB: i32 = 131;
 const ID_LOG: i32 = 132;
 const ID_EXIT: i32 = 134;
-const ID_SETTINGS: i32 = 140;
 const ID_USER: i32 = 141;
 const ID_PASSWORD: i32 = 143;
 const ID_SIGN_IN: i32 = 144;
 const ID_FORGOT: i32 = 145;
+/// Back from adding another account to the tabs.
+const ID_CANCEL_ADD: i32 = 146;
+/// The sign-in page's heading (read-only text).
+const ID_SIGN_IN_HEADING: i32 = 147;
+const ID_TABS: i32 = 150;
+
+/// The sign-in page's controls.
+const SIGN_IN_PAGE: [i32; 12] = [
+    ID_SIGN_IN_HEADING,
+    ID_SERVER - 1,
+    ID_SERVER,
+    ID_USER - 1,
+    ID_USER,
+    ID_PASSWORD - 1,
+    ID_PASSWORD,
+    ID_NAME - 1,
+    ID_NAME,
+    ID_SIGN_IN,
+    ID_FORGOT,
+    ID_CANCEL_ADD,
+];
+/// The Accounts tab's controls.
+const ACCOUNTS_PAGE: [i32; 8] = [
+    ID_ACCOUNTS - 1,
+    ID_ACCOUNTS,
+    ID_VISIBLE,
+    ID_VISIBLE_HELP,
+    ID_SIGN_OUT,
+    ID_ADD_ACCOUNT,
+    ID_MANAGE,
+    ID_OPEN_WEB,
+];
+
+/// What the window shows: the sign-in page, or one of the tabs (in the tab
+/// control's order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Page {
+    SignIn,
+    Devices,
+    Streams,
+    Accounts,
+    Settings,
+}
+
+const TABS: [Page; 4] = [Page::Devices, Page::Streams, Page::Accounts, Page::Settings];
+
+impl Page {
+    fn controls(self) -> &'static [i32] {
+        match self {
+            Page::SignIn => &SIGN_IN_PAGE,
+            Page::Devices => &crate::remote::DEVICES_PAGE,
+            Page::Streams => &crate::remote::STREAMS_PAGE,
+            Page::Accounts => &ACCOUNTS_PAGE,
+            Page::Settings => &crate::prefs::PAGE,
+        }
+    }
+
+    /// Where focus goes when the page opens.
+    fn first(self) -> i32 {
+        match self {
+            Page::SignIn => ID_SERVER,
+            Page::Devices => crate::remote::DEVICES_FIRST,
+            Page::Streams => crate::remote::STREAMS_FIRST,
+            Page::Accounts => ID_ACCOUNTS,
+            Page::Settings => crate::prefs::FIRST,
+        }
+    }
+}
 
 /// Update timer: runs the schedule below.
 const TIMER_UPDATE: usize = 1;
@@ -82,7 +171,7 @@ const WM_APP_SIGNED_OUT: u32 = WM_APP + 6;
 
 /// How the app was started.
 pub struct Launch {
-    /// Started at sign-in: in the tray, sharing.
+    /// Started at Windows sign-in: in the tray.
     pub background: bool,
     pub after_update: Option<AfterUpdate>,
 }
@@ -91,7 +180,6 @@ pub struct Launch {
 pub struct AfterUpdate {
     pub from: String,
     pub show: bool,
-    pub share: bool,
 }
 
 struct UpdateOutcome {
@@ -118,18 +206,21 @@ struct State {
     /// Every account this computer is signed in to (it is a device in each).
     configs: Vec<NodeConfig>,
     /// The running agents, one per account (by this computer's device id
-    /// there): this computer is online in every account while AudioNet
-    /// runs; each shares its audio or not.
+    /// there): this computer is connected to every account while AudioNet
+    /// runs, visible there or not as chosen per account.
     running: Vec<(String, app::Running)>,
     /// Accounts whose agent is connected to the server now.
     connected: Vec<String>,
     /// What the Accounts list shows (rebuilt only when this changes, so
     /// moving through it is not disturbed).
     account_rows: Vec<String>,
-    /// Whether an account with no sharing choice saved yet starts sharing:
-    /// at launch, what 0.7 did (see `run`); afterwards (a new sign-in) no.
-    default_sharing: bool,
     signing_in: bool,
+    /// What the window shows now.
+    page: Page,
+    /// The sign-in page is open to add another account (it has Cancel).
+    adding: bool,
+    /// The Streams tab's title, as last set (it holds the count).
+    streams_title: String,
     /// The "still running in the tray" notification was shown this run.
     tray_notice_shown: bool,
     updates: Updates,
@@ -142,6 +233,10 @@ struct State {
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 /// Sent by a second copy of the app: show this window instead.
 static SHOW_REQUEST: AtomicU32 = AtomicU32::new(0);
+/// The control that had focus when the window was last deactivated:
+/// focus returns there when the person comes back (Alt+Tab), as in dialog
+/// boxes.
+static LAST_FOCUS: AtomicIsize = AtomicIsize::new(0);
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
@@ -190,10 +285,8 @@ pub(crate) fn announce(hwnd: HWND, text: &str) {
     // From the window the person is in: Settings when it is in front.
     // SAFETY: reading the foreground window handle has no preconditions.
     let foreground = unsafe { GetForegroundWindow() };
-    let hwnd = [crate::prefs::handle(), crate::logwin::handle()]
-        .into_iter()
-        .flatten()
-        .find(|w| *w == foreground)
+    let hwnd = crate::logwin::handle()
+        .filter(|w| *w == foreground)
         .unwrap_or(hwnd);
     // SAFETY: the host provider for our own window; BSTRs are owned here.
     unsafe {
@@ -237,65 +330,58 @@ fn important(text: &str) -> bool {
         "failed",
         "Could not",
         "no longer",
+        "now visible",
     ]
     .iter()
     .any(|k| text.contains(k))
 }
 
-/// The account the sharing button acts on: the one selected in Accounts
-/// (the only one when there is one).
+/// The account the Visible checkbox and Sign out act on: the one selected
+/// in Accounts (the only one when there is one).
 fn chosen_account(hwnd: HWND, s: &State) -> Option<NodeConfig> {
     let i = list_selection(hwnd, ID_ACCOUNTS).unwrap_or(0);
     s.configs.get(i).or(s.configs.first()).cloned()
 }
 
-fn is_sharing(s: &State, node_id: &str) -> bool {
+/// Whether this computer is visible in that account.
+fn visible_in(s: &State, node_id: &str) -> bool {
     s.running
         .iter()
-        .any(|(id, r)| id == node_id && r.is_sharing())
-}
-
-/// Whether this computer shares its audio in that account (for the remote
-/// panel: sending from this computer needs it).
-pub(crate) fn account_is_sharing(node_id: &str) -> bool {
-    with_state(|s| is_sharing(s, node_id)).unwrap_or(false)
+        .any(|(id, r)| id == node_id && r.is_visible())
 }
 
 fn refresh(hwnd: HWND) {
     let rows = with_state(|s| {
         let signed_in = !s.configs.is_empty();
-        // Another account can be added at any time.
-        for id in [ID_SERVER, ID_USER, ID_PASSWORD, ID_NAME, ID_SIGN_IN] {
-            enable(hwnd, id, !s.signing_in);
-        }
+        // The fields stay enabled while signing in (disabling the focused
+        // one would leave focus nowhere); a second press is refused.
         set_text(
             hwnd,
             ID_SIGN_IN,
-            if signed_in {
-                "&Add account"
-            } else {
-                "Sign &in"
+            match (s.signing_in, s.adding) {
+                (true, _) => "Signing &in…",
+                (false, true) => "&Add account",
+                (false, false) => "Sign &in",
             },
         );
-        enable(hwnd, ID_ACCOUNTS, signed_in);
-        enable(hwnd, ID_SIGN_OUT, signed_in);
-        enable(hwnd, ID_START, signed_in);
         // "Forgot password" stays enabled (so it can be found with Tab) and
         // explains when the server address is missing.
-        enable(
+        for id in [ID_ACCOUNTS, ID_SIGN_OUT, ID_VISIBLE, ID_MANAGE] {
+            enable(hwnd, id, signed_in);
+        }
+        // The checkbox acts on the selected account and says so when there
+        // are several.
+        let chosen_visible = chosen_account(hwnd, s).is_some_and(|c| visible_in(s, &c.node_id));
+        set_checked(hwnd, ID_VISIBLE, chosen_visible);
+        set_text(
             hwnd,
-            ID_OPEN_WEB,
-            signed_in || !get_text(hwnd, ID_SERVER).trim().is_empty(),
+            ID_VISIBLE,
+            if s.configs.len() > 1 {
+                "&Visible to my other devices in the selected account"
+            } else {
+                "&Visible to my other devices"
+            },
         );
-        // Sharing is per account: the button acts on the selected one.
-        let chosen_shares = chosen_account(hwnd, s).is_some_and(|c| is_sharing(s, &c.node_id));
-        let label = match (chosen_shares, s.configs.len() > 1) {
-            (true, false) => "S&top sharing",
-            (false, false) => "&Start sharing",
-            (true, true) => "S&top sharing in the selected account",
-            (false, true) => "&Start sharing in the selected account",
-        };
-        set_text(hwnd, ID_START, label);
         tray::set_tip(hwnd, &tray_tip(s));
         s.configs
             .iter()
@@ -305,10 +391,10 @@ fn refresh(hwnd: HWND) {
                     "not connected"
                 } else if !s.connected.contains(&c.node_id) {
                     "connecting"
-                } else if is_sharing(s, &c.node_id) {
-                    "online, sharing"
+                } else if visible_in(s, &c.node_id) {
+                    "visible"
                 } else {
-                    "online, not sharing"
+                    "not visible"
                 };
                 format!("{}, as \"{}\": {state}", app::account_name(c), c.name)
             })
@@ -328,6 +414,123 @@ fn refresh(hwnd: HWND) {
     if changed {
         let keep = list_selection(hwnd, ID_ACCOUNTS);
         set_list(hwnd, ID_ACCOUNTS, &rows, keep.or(Some(0)));
+    }
+}
+
+// ─── pages and tabs ─────────────────────────────────────────────────────────
+
+fn show(hwnd: HWND, id: i32, on: bool) {
+    // SAFETY: showing or hiding one of our child controls.
+    unsafe {
+        let _ = ShowWindow(item(hwnd, id), if on { SW_SHOWNA } else { SW_HIDE });
+    }
+}
+
+/// Shows `page` (and the tab control unless it is the sign-in page),
+/// hides every other page's controls, and with `focus` puts focus on the
+/// page's first control.
+fn show_page(hwnd: HWND, page: Page, focus: bool) {
+    let adding = with_state(|s| {
+        s.page = page;
+        s.adding
+    })
+    .unwrap_or(false);
+    for p in [
+        Page::SignIn,
+        Page::Devices,
+        Page::Streams,
+        Page::Accounts,
+        Page::Settings,
+    ] {
+        if p != page {
+            for id in p.controls() {
+                show(hwnd, *id, false);
+            }
+        }
+    }
+    for id in page.controls() {
+        show(hwnd, *id, *id != ID_CANCEL_ADD || adding);
+    }
+    show(hwnd, ID_TABS, page != Page::SignIn);
+    if let Some(i) = TABS.iter().position(|t| *t == page) {
+        // SAFETY: selecting a tab of our own tab control.
+        unsafe {
+            let _ = SendMessageW(item(hwnd, ID_TABS), TCM_SETCURSEL, Some(WPARAM(i)), None);
+        }
+    }
+    if focus {
+        // SAFETY: focusing one of our child controls.
+        unsafe {
+            let _ = SetFocus(Some(item(hwnd, page.first())));
+        }
+    }
+}
+
+/// The page the window shows now.
+fn current_page() -> Page {
+    with_state(|s| s.page).unwrap_or(Page::SignIn)
+}
+
+/// Ctrl+Tab (`forward`) or Ctrl+Shift+Tab: the next or previous tab, with
+/// focus on its first control. Nothing on the sign-in page.
+fn cycle_tab(hwnd: HWND, forward: bool) {
+    let page = current_page();
+    let Some(i) = TABS.iter().position(|t| *t == page) else {
+        return;
+    };
+    let n = TABS.len();
+    let next = TABS[if forward {
+        (i + 1) % n
+    } else {
+        (i + n - 1) % n
+    }];
+    show_page(hwnd, next, true);
+}
+
+/// The tab chosen on the tab control itself (arrow keys or a click).
+fn on_tab_changed(hwnd: HWND) {
+    // SAFETY: reading the selection of our own tab control.
+    let i = unsafe { SendMessageW(item(hwnd, ID_TABS), TCM_GETCURSEL, None, None) }.0;
+    if let Some(page) = usize::try_from(i).ok().and_then(|i| TABS.get(i).copied()) {
+        show_page(hwnd, page, false);
+    }
+}
+
+fn set_tab_text(hwnd: HWND, index: usize, text: &str) {
+    let mut wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    let tab = TCITEMW {
+        mask: TCIF_TEXT,
+        pszText: windows::core::PWSTR(wide.as_mut_ptr()),
+        ..Default::default()
+    };
+    // SAFETY: setting a tab's text on our own tab control; `wide` outlives
+    // the call.
+    unsafe {
+        let _ = SendMessageW(
+            item(hwnd, ID_TABS),
+            TCM_SETITEMW,
+            Some(WPARAM(index)),
+            Some(LPARAM(&tab as *const TCITEMW as isize)),
+        );
+    }
+}
+
+/// The streams changed: the Streams tab's title holds their count.
+pub(crate) fn streams_changed(hwnd: HWND) {
+    let n = crate::remote::stream_count();
+    let title = if n == 0 {
+        "Streams".to_owned()
+    } else {
+        format!("Streams ({n})")
+    };
+    let changed = with_state(|s| {
+        let changed = s.streams_title != title;
+        s.streams_title.clone_from(&title);
+        changed
+    })
+    .unwrap_or(false);
+    if changed {
+        set_tab_text(hwnd, 1, &title);
     }
 }
 
@@ -364,23 +567,23 @@ fn account_views(s: &State) -> Vec<(String, String)> {
 
 /// The tray icon's tooltip and accessible name.
 fn tray_tip(s: &State) -> String {
-    let sharing = s
+    let visible = s
         .configs
         .iter()
-        .filter(|c| is_sharing(s, &c.node_id))
+        .filter(|c| visible_in(s, &c.node_id))
         .count();
     match s.configs.as_slice() {
         [] => "AudioNet: not signed in".into(),
         [c] => format!(
             "AudioNet: {}, signed in as {}",
-            if sharing == 1 {
-                "sharing"
+            if visible == 1 {
+                "visible"
             } else {
-                "not sharing"
+                "not visible"
             },
             c.name
         ),
-        more => format!("AudioNet: sharing in {sharing} of {} accounts", more.len()),
+        more => format!("AudioNet: visible in {visible} of {} accounts", more.len()),
     }
 }
 
@@ -389,20 +592,25 @@ fn is_visible(hwnd: HWND) -> bool {
     unsafe { IsWindowVisible(hwnd).as_bool() }
 }
 
-/// Brings the window back from the tray (or from minimized) with focus.
+/// Brings the window back from the tray (or from minimized) with focus on
+/// the page it shows.
 fn show_window(hwnd: HWND) {
-    let signed_in = with_state(|s| !s.configs.is_empty()).unwrap_or(false);
-    // SAFETY: showing, restoring and focusing our own window and control.
+    // SAFETY: showing, restoring and focusing our own window.
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
         if IsIconic(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         }
         let _ = SetForegroundWindow(hwnd);
-        let _ = SetFocus(Some(item(
-            hwnd,
-            if signed_in { ID_START } else { ID_SERVER },
-        )));
+    }
+    show_page(hwnd, current_page(), true);
+}
+
+/// Opens the window on its Settings tab (the tray menu's Settings…).
+fn show_settings(hwnd: HWND) {
+    show_window(hwnd);
+    if current_page() != Page::SignIn {
+        show_page(hwnd, Page::Settings, true);
     }
 }
 
@@ -425,7 +633,7 @@ fn hide_to_tray(hwnd: HWND) {
 }
 
 /// Connects every account not yet connected: while AudioNet runs, this
-/// computer is online in all of them.
+/// computer is connected to all of them.
 fn start_agent(hwnd: HWND) {
     let configs = with_state(|s| s.configs.clone()).unwrap_or_default();
     for config in configs {
@@ -434,15 +642,16 @@ fn start_agent(hwnd: HWND) {
     refresh(hwnd);
 }
 
-/// Whether an account shares when it connects: its saved choice, else the
-/// default (and that is saved, so it stays the account's own choice).
-fn initial_sharing(node_id: &str) -> bool {
-    if let Some(on) = settings::account_sharing(node_id) {
+/// Whether this computer is visible in an account when it connects: the
+/// account's saved choice, else visible (saved, so it stays the account's
+/// own choice). The sharing choice of versions before 1.3 is not carried
+/// over: every account starts visible.
+fn initial_visibility(node_id: &str) -> bool {
+    if let Some(on) = settings::account_visible(node_id) {
         return on;
     }
-    let on = with_state(|s| s.default_sharing).unwrap_or(false);
-    let _ = settings::set_account_sharing(node_id, on);
-    on
+    let _ = settings::set_account_visible(node_id, true);
+    true
 }
 
 /// Connects one account's agent.
@@ -451,7 +660,7 @@ fn start_account(hwnd: HWND, config: NodeConfig) {
     if with_state(|s| s.running.iter().any(|(r, _)| r == &id)).unwrap_or(true) {
         return;
     }
-    let sharing = initial_sharing(&id);
+    let visible = initial_visibility(&id);
     let h = hwnd.0 as isize;
     let status: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |t: &str| {
         post(
@@ -467,14 +676,14 @@ fn start_account(hwnd: HWND, config: NodeConfig) {
     let events: audionet_node::agent::AppEventFn =
         Arc::new(move |e| post(h, WM_APP_REMOTE, (account.clone(), e)));
     let account = id.clone();
-    let running = app::Running::start(config, sharing, status, events, move |err| {
+    let running = app::Running::start(config, visible, status, events, move |err| {
         post(h, WM_APP_ENDED, (account, err))
     });
     with_state(|s| s.running.push((id, running)));
 }
 
-/// Disconnects every account (leaving AudioNet): this computer goes
-/// offline.
+/// Disconnects every account (leaving AudioNet): this computer is no
+/// longer visible anywhere.
 fn stop_agent(hwnd: HWND) {
     let running = with_state(|s| {
         s.connected.clear();
@@ -485,37 +694,40 @@ fn stop_agent(hwnd: HWND) {
         for (_, mut r) in running {
             r.stop();
         }
-        log(hwnd, "Stopped. This computer is offline in your accounts.");
+        log(
+            hwnd,
+            "Stopped. This computer is no longer connected to your accounts.",
+        );
     }
     crate::remote::on_stopped(hwnd);
     refresh(hwnd);
 }
 
-/// Starts or stops sharing this computer's audio in one account, and
+/// Turns this computer's visibility in one account on or off, and
 /// remembers the choice.
-fn set_sharing(hwnd: HWND, config: &NodeConfig, on: bool) {
+fn set_visible(hwnd: HWND, config: &NodeConfig, on: bool) {
     let found = with_state(|s| {
         s.running
             .iter()
             .find(|(id, _)| id == &config.node_id)
-            .map(|(_, r)| r.set_sharing(on))
+            .map(|(_, r)| r.set_visible(on))
             .is_some()
     })
     .unwrap_or(false);
     if !found {
         return;
     }
-    if let Err(e) = settings::set_account_sharing(&config.node_id, on) {
+    if let Err(e) = settings::set_account_visible(&config.node_id, on) {
         log(hwnd, &e);
     }
     let name = app::account_name(config);
     let text = if on {
         format!(
-            "Sharing this computer's audio in {name}: your devices there can listen to it, and it can send its audio."
+            "This computer is visible in {name}: your other devices there see it, and can listen to it and send to it."
         )
     } else {
         format!(
-            "Stopped sharing in {name}. This computer is still online there: it receives audio, but sends none of its own."
+            "This computer is no longer visible in {name}: your other devices there cannot see it or reach it. It can still listen to them and send to them."
         )
     };
     log(hwnd, &text);
@@ -523,15 +735,15 @@ fn set_sharing(hwnd: HWND, config: &NodeConfig, on: bool) {
     refresh(hwnd);
 }
 
-/// The tray's Start sharing / Stop sharing: every account.
-fn toggle_sharing_everywhere(hwnd: HWND) {
+/// The tray's visibility item: every account.
+fn toggle_visible_everywhere(hwnd: HWND) {
     let (configs, any) = with_state(|s| {
-        let any = s.configs.iter().any(|c| is_sharing(s, &c.node_id));
+        let any = s.configs.iter().any(|c| visible_in(s, &c.node_id));
         (s.configs.clone(), any)
     })
     .unwrap_or_default();
     for c in &configs {
-        set_sharing(hwnd, c, !any);
+        set_visible(hwnd, c, !any);
     }
 }
 
@@ -547,9 +759,23 @@ fn run_command(account: &str, c: audionet_node::agent::Command) -> bool {
     .unwrap_or(false)
 }
 
+/// The server address of the first account (or the one typed on the
+/// sign-in page), without a trailing slash.
+fn server_address(hwnd: HWND) -> String {
+    with_state(|s| s.configs.first().map(|c| c.server_url.clone()))
+        .flatten()
+        .unwrap_or_else(|| get_text(hwnd, ID_SERVER).trim().to_owned())
+        .trim_end_matches('/')
+        .to_owned()
+}
+
 fn on_command(hwnd: HWND, id: i32) {
     match id {
         ID_SIGN_IN => {
+            if with_state(|s| s.signing_in).unwrap_or(false) {
+                announce(hwnd, "Still signing in.");
+                return;
+            }
             let server = get_text(hwnd, ID_SERVER).trim().to_owned();
             let user = get_text(hwnd, ID_USER).trim().to_owned();
             let password = get_text(hwnd, ID_PASSWORD);
@@ -600,6 +826,30 @@ fn on_command(hwnd: HWND, id: i32) {
                 post(h, WM_APP_SIGNED_IN, r)
             });
         }
+        ID_CANCEL_ADD => {
+            with_state(|s| s.adding = false);
+            set_text(hwnd, ID_PASSWORD, "");
+            refresh(hwnd);
+            show_page(hwnd, Page::Accounts, false);
+            // SAFETY: focusing one of our child controls.
+            unsafe {
+                let _ = SetFocus(Some(item(hwnd, ID_ADD_ACCOUNT)));
+            }
+        }
+        ID_ADD_ACCOUNT => {
+            with_state(|s| s.adding = true);
+            set_text(hwnd, ID_USER, "");
+            set_text(hwnd, ID_PASSWORD, "");
+            refresh(hwnd);
+            show_page(hwnd, Page::SignIn, true);
+            announce(hwnd, "Add an account: sign in to it.");
+        }
+        ID_VISIBLE => {
+            let chosen = with_state(|s| chosen_account(hwnd, s)).flatten();
+            if let Some(c) = chosen {
+                set_visible(hwnd, &c, is_checked(hwnd, ID_VISIBLE));
+            }
+        }
         ID_SIGN_OUT => {
             let Some(config) = list_selection(hwnd, ID_ACCOUNTS)
                 .and_then(|i| with_state(|s| s.configs.get(i).cloned()).flatten())
@@ -611,7 +861,7 @@ fn on_command(hwnd: HWND, id: i32) {
             if confirm(
                 hwnd,
                 &format!(
-                    "Sign out of {name}? This computer is removed from that account, and stops sharing there. To use it there again, sign in again."
+                    "Sign out of {name}? This computer is removed from that account. To use it there again, sign in again."
                 ),
             ) {
                 // Its agent stops first (streams there end), then the
@@ -634,23 +884,17 @@ fn on_command(hwnd: HWND, id: i32) {
                 refresh(hwnd);
             }
         }
-        ID_START => {
-            let chosen = with_state(|s| {
-                chosen_account(hwnd, s).map(|c| {
-                    let on = is_sharing(s, &c.node_id);
-                    (c, on)
-                })
-            })
-            .flatten();
-            if let Some((c, on)) = chosen {
-                set_sharing(hwnd, &c, !on);
+        ID_MANAGE => {
+            // Renaming and removing devices is in the web client.
+            if open_in_browser(hwnd, &format!("{}/?manage", server_address(hwnd))) {
+                log(
+                    hwnd,
+                    "Opened Manage devices in the web browser: rename or remove your devices there.",
+                );
             }
         }
         ID_OPEN_WEB => {
-            let url = with_state(|s| s.configs.first().map(|c| c.server_url.clone()))
-                .flatten()
-                .unwrap_or_else(|| get_text(hwnd, ID_SERVER).trim().to_owned());
-            open_in_browser(hwnd, &url);
+            open_in_browser(hwnd, &server_address(hwnd));
         }
         ID_FORGOT => {
             // Passwords are reset in the web client of the server typed
@@ -673,7 +917,6 @@ fn on_command(hwnd: HWND, id: i32) {
             }
         }
         ID_LOG => crate::logwin::open(hwnd),
-        ID_SETTINGS => crate::prefs::open(hwnd),
         ID_EXIT => exit_app(hwnd),
         _ => {}
     }
@@ -942,11 +1185,6 @@ fn try_install_update(hwnd: HWND, manual: bool) {
     if is_visible(hwnd) {
         command.arg("--show");
     }
-    // Each account's sharing is saved; --share only matters to a copy from
-    // before that (which then shares everywhere).
-    if with_state(|s| s.configs.iter().any(|c| is_sharing(s, &c.node_id))).unwrap_or(false) {
-        command.arg("--share");
-    }
     let started = command
         .spawn()
         .map(|mut child| {
@@ -997,14 +1235,14 @@ fn update_tick(hwnd: HWND) {
     }
 }
 
-/// Really quits (after confirming if this computer is being shared).
+/// Really quits (after confirming if this computer is visible somewhere).
 fn exit_app(hwnd: HWND) {
-    let sharing =
-        with_state(|s| s.configs.iter().any(|c| is_sharing(s, &c.node_id))).unwrap_or(false);
-    if sharing
+    let visible =
+        with_state(|s| s.configs.iter().any(|c| visible_in(s, &c.node_id))).unwrap_or(false);
+    if visible
         && !confirm(
             hwnd,
-            "AudioNet is sharing this computer's audio. Exit? This computer goes offline in your accounts.",
+            "Exit AudioNet? This computer will no longer be visible to your other devices, and its streams end.",
         )
     {
         return;
@@ -1165,6 +1403,14 @@ pub(crate) fn message_font(scale: f32) -> HFONT {
     }
 }
 
+/// The window's client size (before DPI scaling).
+const WINDOW_W: i32 = 600;
+const WINDOW_H: i32 = 640;
+/// Where a tab's controls start, and how wide they are.
+const PAGE_X: i32 = 24;
+const PAGE_Y: i32 = 48;
+const PAGE_W: i32 = WINDOW_W - 2 * PAGE_X;
+
 fn build(hwnd: HWND) {
     // SAFETY: querying our own window's DPI.
     let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
@@ -1175,17 +1421,75 @@ fn build(hwnd: HWND) {
     let edit_style = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | tab;
     let border = WS_EX_CLIENTEDGE;
     let button = WINDOW_STYLE(BS_PUSHBUTTON as u32) | tab;
+    let none = WINDOW_EX_STYLE(0);
     let x = 16;
-    let full = 528;
+    let full = WINDOW_W - 2 * x;
+    // SAFETY: registering the common-controls class the tab control needs.
+    unsafe {
+        let icc = windows::Win32::UI::Controls::INITCOMMONCONTROLSEX {
+            dwSize: std::mem::size_of::<windows::Win32::UI::Controls::INITCOMMONCONTROLSEX>()
+                as u32,
+            dwICC: windows::Win32::UI::Controls::ICC_TAB_CLASSES,
+        };
+        let _ = windows::Win32::UI::Controls::InitCommonControlsEx(&icc);
+    }
 
+    // The tab control first: first in Tab order. WS_CLIPSIBLINGS keeps it
+    // from painting over the pages' controls, which are its siblings.
+    // Its window text is its accessible name ("Pages, tab control").
+    control(
+        hwnd,
+        windows::Win32::UI::Controls::WC_TABCONTROLW,
+        "Pages",
+        tab | WS_CLIPSIBLINGS,
+        none,
+        ID_TABS,
+        (8, 8, WINDOW_W - 16, WINDOW_H - 60),
+        scale,
+        font,
+    );
+    for (i, title) in ["Devices", "Streams", "Accounts", "Settings"]
+        .iter()
+        .enumerate()
+    {
+        let mut wide: Vec<u16> = title.encode_utf16().chain([0]).collect();
+        let t = TCITEMW {
+            mask: TCIF_TEXT,
+            pszText: windows::core::PWSTR(wide.as_mut_ptr()),
+            ..Default::default()
+        };
+        // SAFETY: adding a tab to our own tab control; `wide` outlives the
+        // call.
+        unsafe {
+            let _ = SendMessageW(
+                item(hwnd, ID_TABS),
+                TCM_INSERTITEMW,
+                Some(WPARAM(i)),
+                Some(LPARAM(&t as *const TCITEMW as isize)),
+            );
+        }
+    }
+
+    // ── The sign-in page (no tabs) ──
+    control(
+        hwnd,
+        w!("STATIC"),
+        "Sign in to your AudioNet account to add this computer to it.",
+        st,
+        none,
+        ID_SIGN_IN_HEADING,
+        (x, 14, full, 24),
+        scale,
+        font,
+    );
     control(
         hwnd,
         w!("STATIC"),
         "&Server address:",
         st,
-        WINDOW_EX_STYLE(0),
-        100,
-        (x, 14, full, 20),
+        none,
+        ID_SERVER - 1,
+        (x, 46, full, 20),
         scale,
         font,
     );
@@ -1196,18 +1500,19 @@ fn build(hwnd: HWND) {
         edit_style,
         border,
         ID_SERVER,
-        (x, 36, full, 26),
+        (x, 68, full, 26),
         scale,
         font,
     );
+    let half = (full - 16) / 2;
     control(
         hwnd,
         w!("STATIC"),
         "Account &user name:",
         st,
-        WINDOW_EX_STYLE(0),
-        140,
-        (x, 70, 250, 20),
+        none,
+        ID_USER - 1,
+        (x, 104, half, 20),
         scale,
         font,
     );
@@ -1218,7 +1523,7 @@ fn build(hwnd: HWND) {
         edit_style,
         border,
         ID_USER,
-        (x, 92, 250, 26),
+        (x, 126, half, 26),
         scale,
         font,
     );
@@ -1227,9 +1532,9 @@ fn build(hwnd: HWND) {
         w!("STATIC"),
         "Pass&word:",
         st,
-        WINDOW_EX_STYLE(0),
-        142,
-        (x + 270, 70, 258, 20),
+        none,
+        ID_PASSWORD - 1,
+        (x + half + 16, 104, half, 20),
         scale,
         font,
     );
@@ -1240,18 +1545,18 @@ fn build(hwnd: HWND) {
         edit_style | WINDOW_STYLE(ES_PASSWORD as u32),
         border,
         ID_PASSWORD,
-        (x + 270, 92, 258, 26),
+        (x + half + 16, 126, half, 26),
         scale,
         font,
     );
     control(
         hwnd,
         w!("STATIC"),
-        "Device &name:",
+        "&Name for this computer:",
         st,
-        WINDOW_EX_STYLE(0),
-        104,
-        (x, 126, full, 20),
+        none,
+        ID_NAME - 1,
+        (x, 162, full, 20),
         scale,
         font,
     );
@@ -1262,7 +1567,7 @@ fn build(hwnd: HWND) {
         edit_style,
         border,
         ID_NAME,
-        (x, 148, 300, 26),
+        (x, 184, 300, 26),
         scale,
         font,
     );
@@ -1271,9 +1576,9 @@ fn build(hwnd: HWND) {
         w!("BUTTON"),
         "Sign &in",
         WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | tab,
-        WINDOW_EX_STYLE(0),
+        none,
         ID_SIGN_IN,
-        (x, 184, 120, 30),
+        (x, 224, 140, 30),
         scale,
         font,
     );
@@ -1282,20 +1587,37 @@ fn build(hwnd: HWND) {
         w!("BUTTON"),
         "&Forgot password…",
         button,
-        WINDOW_EX_STYLE(0),
+        none,
         ID_FORGOT,
-        (x + 130, 184, 170, 30),
+        (x + 150, 224, 180, 30),
         scale,
         font,
     );
     control(
         hwnd,
+        w!("BUTTON"),
+        "&Cancel",
+        button,
+        none,
+        ID_CANCEL_ADD,
+        (x + 340, 224, 110, 30),
+        scale,
+        font,
+    );
+
+    // ── Devices and Streams ──
+    crate::remote::build(hwnd, PAGE_X, PAGE_Y, PAGE_W, scale, font);
+
+    // ── Accounts ──
+    let (px, py, pw) = (PAGE_X, PAGE_Y, PAGE_W);
+    control(
+        hwnd,
         w!("STATIC"),
-        "&Accounts:",
+        "&Accounts this computer is signed in to:",
         st,
-        WINDOW_EX_STYLE(0),
-        ID_ACCOUNTS + 1,
-        (x, 222, full, 20),
+        none,
+        ID_ACCOUNTS - 1,
+        (px, py, pw, 20),
         scale,
         font,
     );
@@ -1306,7 +1628,29 @@ fn build(hwnd: HWND) {
         WINDOW_STYLE((LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32) | WS_VSCROLL | tab,
         border,
         ID_ACCOUNTS,
-        (x, 244, full, 56),
+        (px, py + 22, pw, 100),
+        scale,
+        font,
+    );
+    control(
+        hwnd,
+        w!("BUTTON"),
+        "&Visible to my other devices",
+        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | tab,
+        none,
+        ID_VISIBLE,
+        (px, py + 132, pw, 26),
+        scale,
+        font,
+    );
+    control(
+        hwnd,
+        w!("STATIC"),
+        "Visible: your other devices see this computer, and can listen to it and send to it. Not visible: it is hidden from them and they cannot reach it, but it can still listen to them and send to them.",
+        st,
+        none,
+        ID_VISIBLE_HELP,
+        (px, py + 162, pw, 60),
         scale,
         font,
     );
@@ -1315,21 +1659,31 @@ fn build(hwnd: HWND) {
         w!("BUTTON"),
         "Sign &out of the selected account",
         button,
-        WINDOW_EX_STYLE(0),
+        none,
         ID_SIGN_OUT,
-        (x, 306, 280, 30),
+        (px, py + 232, 270, 30),
         scale,
         font,
     );
-
     control(
         hwnd,
         w!("BUTTON"),
-        "&Start",
+        "A&dd account…",
         button,
-        WINDOW_EX_STYLE(0),
-        ID_START,
-        (x, 348, 110, 30),
+        none,
+        ID_ADD_ACCOUNT,
+        (px + 280, py + 232, 160, 30),
+        scale,
+        font,
+    );
+    control(
+        hwnd,
+        w!("BUTTON"),
+        "&Manage devices…",
+        button,
+        none,
+        ID_MANAGE,
+        (px, py + 272, 180, 30),
         scale,
         font,
     );
@@ -1338,20 +1692,25 @@ fn build(hwnd: HWND) {
         w!("BUTTON"),
         "Open &web client",
         button,
-        WINDOW_EX_STYLE(0),
+        none,
         ID_OPEN_WEB,
-        (x + 120, 348, 150, 30),
+        (px + 190, py + 272, 170, 30),
         scale,
         font,
     );
+
+    // ── Settings ──
+    crate::prefs::build(hwnd, PAGE_X, PAGE_Y, PAGE_W, scale, font);
+
+    // ── Always ──
     control(
         hwnd,
         w!("BUTTON"),
         "Status &log…",
         button,
-        WINDOW_EX_STYLE(0),
+        none,
         ID_LOG,
-        (x + 280, 348, 120, 30),
+        (x, WINDOW_H - 42, 140, 30),
         scale,
         font,
     );
@@ -1360,25 +1719,12 @@ fn build(hwnd: HWND) {
         w!("BUTTON"),
         "E&xit",
         button,
-        WINDOW_EX_STYLE(0),
+        none,
         ID_EXIT,
-        (x + 410, 348, 118, 30),
+        (WINDOW_W - x - 110, WINDOW_H - 42, 110, 30),
         scale,
         font,
     );
-    control(
-        hwnd,
-        w!("BUTTON"),
-        "Settin&gs…",
-        button,
-        WINDOW_EX_STYLE(0),
-        ID_SETTINGS,
-        (x, 386, 130, 30),
-        scale,
-        font,
-    );
-
-    crate::remote::build(hwnd, x + full + 24, scale, font);
     with_state(|s| s.font = font);
 }
 
@@ -1393,22 +1739,59 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         return LRESULT(0);
     }
     match msg {
+        WM_ACTIVATE => {
+            if wparam.0 & 0xFFFF == WA_INACTIVE as usize {
+                // SAFETY: reading the focus and checking it is one of ours.
+                unsafe {
+                    let f = windows::Win32::UI::Input::KeyboardAndMouse::GetFocus();
+                    if !f.is_invalid() && IsChild(hwnd, f).as_bool() {
+                        LAST_FOCUS.store(f.0 as isize, Relaxed);
+                    }
+                }
+            }
+            // SAFETY: default handling (it gives the window focus when it is
+            // activated, which WM_SETFOCUS below passes on).
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        WM_SETFOCUS => {
+            // The window itself never keeps focus: back to the control that
+            // had it, or the page's first control.
+            let saved = HWND(LAST_FOCUS.load(Relaxed) as *mut _);
+            // SAFETY: checking and focusing our own child controls.
+            unsafe {
+                let usable = !saved.is_invalid()
+                    && IsChild(hwnd, saved).as_bool()
+                    && IsWindowVisible(saved).as_bool()
+                    && windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(saved)
+                        .as_bool();
+                let target = if usable {
+                    saved
+                } else {
+                    let page = STATE
+                        .with(|s| s.try_borrow().ok().and_then(|s| s.as_ref().map(|s| s.page)))
+                        .unwrap_or(Page::SignIn);
+                    item(hwnd, page.first())
+                };
+                let _ = SetFocus(Some(target));
+            }
+            LRESULT(0)
+        }
         tray::WM_APP_TRAY => {
             match tray::event(wparam.0, lparam.0) {
                 Some(TrayEvent::Open) => show_window(hwnd),
                 Some(TrayEvent::Menu(x, y)) => {
-                    let (sharing, signed_in) = with_state(|s| {
+                    let (visible, signed_in) = with_state(|s| {
                         (
-                            s.configs.iter().any(|c| is_sharing(s, &c.node_id)),
+                            s.configs.iter().any(|c| visible_in(s, &c.node_id)),
                             !s.configs.is_empty(),
                         )
                     })
                     .unwrap_or((false, false));
-                    let (chosen, previous) = tray::menu(hwnd, x, y, sharing, signed_in);
+                    let (chosen, previous) = tray::menu(hwnd, x, y, visible, signed_in);
                     match chosen {
                         Some(tray::MENU_OPEN) => show_window(hwnd),
-                        Some(tray::MENU_TOGGLE) => toggle_sharing_everywhere(hwnd),
-                        Some(tray::MENU_SETTINGS) => crate::prefs::open(hwnd),
+                        Some(tray::MENU_TOGGLE) => toggle_visible_everywhere(hwnd),
+                        Some(tray::MENU_SETTINGS) => show_settings(hwnd),
                         Some(tray::MENU_EXIT) => exit_app(hwnd),
                         _ => {}
                     }
@@ -1428,6 +1811,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             // SAFETY: for WM_NOTIFY, lParam points to an NMHDR from one of
             // our child controls, valid for this call.
             let header = unsafe { &*(lparam.0 as *const windows::Win32::UI::Controls::NMHDR) };
+            if header.idFrom == ID_TABS as usize
+                && header.code == windows::Win32::UI::Controls::TCN_SELCHANGE
+            {
+                on_tab_changed(hwnd);
+                return LRESULT(0);
+            }
             let handled = crate::remote::on_notify(hwnd, header, &run_command);
             if handled {
                 return LRESULT(1);
@@ -1446,27 +1835,31 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             let code = (wparam.0 >> 16) as u32;
             if crate::remote::owns(id) {
                 crate::remote::on_command(hwnd, id, code, &run_command);
-            } else if code == BN_CLICKED || id == IDOK.0 {
-                on_command(hwnd, if id == IDOK.0 { ID_SIGN_IN } else { id });
-            } else if (id == ID_SERVER && code == EN_CHANGE)
-                || (id == ID_ACCOUNTS && code == LBN_SELCHANGE)
-            {
-                // The sharing button acts on the selected account.
+            } else if crate::prefs::owns(id) {
+                if code == BN_CLICKED {
+                    crate::prefs::on_command(hwnd, id);
+                }
+            } else if id == IDOK.0 {
+                // Enter: the sign-in page's default button.
+                if current_page() == Page::SignIn {
+                    on_command(hwnd, ID_SIGN_IN);
+                }
+            } else if id == ID_ACCOUNTS && code == LBN_SELCHANGE {
+                // The Visible checkbox acts on the selected account.
                 refresh(hwnd);
+            } else if code == BN_CLICKED {
+                on_command(hwnd, id);
             }
             LRESULT(0)
         }
         DM_GETDEFID => {
-            // Enter activates "Sign in" (or "Add account" while a password is
-            // typed), otherwise Start/Stop.
-            let signed_in = with_state(|s| !s.configs.is_empty()).unwrap_or(false);
-            let adding = !get_text(hwnd, ID_PASSWORD).is_empty();
-            let id = if signed_in && !adding {
-                ID_START
+            // Enter on the sign-in page signs in; the tabs have no default
+            // button (Enter belongs to the focused control).
+            if current_page() == Page::SignIn {
+                LRESULT(((DC_HASDEFID as isize) << 16) | ID_SIGN_IN as isize)
             } else {
-                ID_SIGN_IN
-            };
-            LRESULT(((DC_HASDEFID as isize) << 16) | id as isize)
+                LRESULT(0)
+            }
         }
         WM_APP_STATUS => {
             // SAFETY: posted by `post` with a Box<StatusMsg>.
@@ -1484,18 +1877,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             match *r {
                 Ok(c) => {
                     let text = format!(
-                        "Signed in as \"{}\" to {}. This computer is online there, not sharing its audio: press Start sharing to share it.",
+                        "Signed in as \"{}\" to {}. This computer is visible there: your other devices see it, and can listen to it and send to it. To hide it, turn off Visible in Accounts.",
                         c.name,
                         app::account_name(&c)
                     );
-                    let (accounts, index) = with_state(|s| {
+                    let (accounts, index, adding) = with_state(|s| {
                         s.configs.push(c.clone());
-                        (account_views(s), s.configs.len() - 1)
+                        let adding = std::mem::replace(&mut s.adding, false);
+                        (account_views(s), s.configs.len() - 1, adding)
                     })
                     .unwrap_or_default();
                     crate::remote::set_accounts(hwnd, accounts);
                     start_account(hwnd, c);
-                    // The new account is the one the sharing button acts on.
+                    // The new account is the one the Visible checkbox acts on.
                     refresh(hwnd);
                     // SAFETY: selecting a row of our own list box.
                     unsafe {
@@ -1509,10 +1903,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     log(hwnd, &text);
                     announce(hwnd, &text);
                     refresh(hwnd);
-                    // SAFETY: focusing one of our child controls.
-                    unsafe {
-                        let _ = SetFocus(Some(item(hwnd, ID_START)));
-                    }
+                    // The first account opens Devices; another one goes back
+                    // to Accounts, where it was added.
+                    show_page(
+                        hwnd,
+                        if adding {
+                            Page::Accounts
+                        } else {
+                            Page::Devices
+                        },
+                        true,
+                    );
                 }
                 Err(e) => {
                     refresh(hwnd);
@@ -1534,7 +1935,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             let name = app::account_name(&config);
             match result.and_then(|()| app::forget_config(&config.node_id)) {
                 Ok(()) => {
-                    settings::forget_account_sharing(&config.node_id);
+                    settings::forget_account_visible(&config.node_id);
                     let accounts = with_state(|s| {
                         s.configs.retain(|c| c.node_id != config.node_id);
                         account_views(s)
@@ -1548,12 +1949,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     announce(hwnd, &text);
                     refresh(hwnd);
                     let none_left = with_state(|s| s.configs.is_empty()).unwrap_or(true);
-                    // SAFETY: focusing one of our child controls.
-                    unsafe {
-                        let _ = SetFocus(Some(item(
-                            hwnd,
-                            if none_left { ID_SERVER } else { ID_ACCOUNTS },
-                        )));
+                    if none_left {
+                        with_state(|s| s.adding = false);
+                        refresh(hwnd);
+                        show_page(hwnd, Page::SignIn, true);
+                    } else {
+                        // SAFETY: focusing one of our child controls.
+                        unsafe {
+                            let _ = SetFocus(Some(item(hwnd, ID_ACCOUNTS)));
+                        }
                     }
                 }
                 Err(e) => {
@@ -1655,13 +2059,13 @@ pub fn run(launch: Launch) {
     // SAFETY: looking up a top-level window by our class name and posting
     // it a registered message.
     unsafe {
-        if let Ok(existing) = FindWindowW(crate::profile::class_name(), PCWSTR::null()) {
-            if !existing.is_invalid() {
-                if !background {
-                    let _ = PostMessageW(Some(existing), show_request, WPARAM(0), LPARAM(0));
-                }
-                return;
+        if let Ok(existing) = FindWindowW(crate::profile::class_name(), PCWSTR::null())
+            && !existing.is_invalid()
+        {
+            if !background {
+                let _ = PostMessageW(Some(existing), show_request, WPARAM(0), LPARAM(0));
             }
+            return;
         }
     }
     // SAFETY: process-wide DPI awareness, set once before creating windows.
@@ -1685,8 +2089,8 @@ pub fn run(launch: Launch) {
         let mut rect = RECT {
             left: 0,
             top: 0,
-            right: 1100,
-            bottom: 760,
+            right: WINDOW_W,
+            bottom: WINDOW_H,
         };
         let _ = AdjustWindowRectEx(&mut rect, style, false, WS_EX_CONTROLPARENT);
         match CreateWindowExW(
@@ -1715,8 +2119,8 @@ pub fn run(launch: Launch) {
         let mut rect = RECT {
             left: 0,
             top: 0,
-            right: (1100.0 * scale) as i32,
-            bottom: (760.0 * scale) as i32,
+            right: (WINDOW_W as f32 * scale) as i32,
+            bottom: (WINDOW_H as f32 * scale) as i32,
         };
         let _ = AdjustWindowRectEx(&mut rect, style, false, WS_EX_CONTROLPARENT);
         let _ = SetWindowPos(
@@ -1741,16 +2145,10 @@ pub fn run(launch: Launch) {
             running: Vec::new(),
             connected: Vec::new(),
             account_rows: Vec::new(),
-            // An account with no saved choice yet (after updating from 0.7,
-            // where sharing was not per account) shares if 0.7 would have:
-            // it was sharing when the update started this copy, AudioNet
-            // started at Windows sign-in, or "Start sharing automatically"
-            // was on.
-            default_sharing: match &launch.after_update {
-                Some(u) => u.share,
-                None => background || settings::get(settings::START_SHARING),
-            },
             signing_in: false,
+            page: Page::SignIn,
+            adding: false,
+            streams_title: "Streams".into(),
             tray_notice_shown: false,
             updates: Updates {
                 next_check: std::time::Instant::now() + FIRST_CHECK,
@@ -1769,7 +2167,7 @@ pub fn run(launch: Launch) {
         set_text(hwnd, ID_NAME, &c.name);
         log(
             hwnd,
-            "Welcome back. This computer goes online in your accounts; each account's Start sharing and Stop sharing decides whether it shares its audio there.",
+            "Welcome back. This computer connects to your accounts; in each one it is visible to your other devices or not, as chosen in Accounts.",
         );
     } else {
         log(
@@ -1785,6 +2183,12 @@ pub fn run(launch: Launch) {
     let tip = with_state(|s| tray_tip(s)).unwrap_or_default();
     tray::add(hwnd, &tip);
     refresh(hwnd);
+    let first_page = if signed_in.is_some() {
+        Page::Devices
+    } else {
+        Page::SignIn
+    };
+    show_page(hwnd, first_page, false);
 
     // After an update: come back the way the previous copy was, and remove
     // its renamed files. Otherwise: in the tray at sign-in, or every time
@@ -1801,20 +2205,14 @@ pub fn run(launch: Launch) {
         unsafe {
             let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
             let _ = UpdateWindow(hwnd);
-            let first = if signed_in.is_some() {
-                ID_START
-            } else {
-                ID_SERVER
-            };
-            let _ = SetFocus(Some(item(hwnd, first)));
+            let _ = SetFocus(Some(item(hwnd, first_page.first())));
         }
     }
-    // Online in every account while AudioNet runs; each shares or not as
-    // chosen there. Accounts added later start without sharing.
+    // Connected to every account while AudioNet runs; visible in each or
+    // not as chosen there (new accounts start visible).
     if signed_in.is_some() {
         start_agent(hwnd);
     }
-    with_state(|s| s.default_sharing = false);
     if let Some(u) = &launch.after_update {
         let text = format!(
             "AudioNet was updated from version {} to {}.",
@@ -1838,14 +2236,35 @@ pub fn run(launch: Launch) {
     unsafe {
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            // Settings and the status log (when open) and the main window
-            // each get keyboard navigation for their own controls.
-            let owned = [crate::prefs::handle(), crate::logwin::handle()]
-                .into_iter()
-                .flatten()
-                .find(|p| msg.hwnd == *p || IsChild(*p, msg.hwnd).as_bool());
+            // The status log (when open) and the main window each get
+            // keyboard navigation for their own controls.
+            let owned = crate::logwin::handle()
+                .filter(|p| msg.hwnd == *p || IsChild(*p, msg.hwnd).as_bool());
+            // Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+Page Down and Ctrl+Page Up move
+            // between tabs from anywhere in the main window.
+            if owned.is_none()
+                && msg.message == WM_KEYDOWN
+                && (msg.hwnd == hwnd || IsChild(hwnd, msg.hwnd).as_bool())
+            {
+                use windows::Win32::UI::Input::KeyboardAndMouse::{
+                    GetKeyState, VK_CONTROL, VK_NEXT, VK_PRIOR, VK_SHIFT, VK_TAB,
+                };
+                let ctrl = GetKeyState(i32::from(VK_CONTROL.0)) < 0;
+                let shift = GetKeyState(i32::from(VK_SHIFT.0)) < 0;
+                let key = msg.wParam.0 as u16;
+                let step = match key {
+                    k if ctrl && k == VK_TAB.0 => Some(!shift),
+                    k if ctrl && k == VK_NEXT.0 => Some(true),
+                    k if ctrl && k == VK_PRIOR.0 => Some(false),
+                    _ => None,
+                };
+                if let Some(forward) = step {
+                    cycle_tab(hwnd, forward);
+                    continue;
+                }
+            }
             // Enter in the device tree belongs to the tree (listen or send),
-            // not to the window's default button (Start/Stop).
+            // not to the dialog manager.
             let tree_enter = msg.message == WM_KEYDOWN
                 && msg.wParam.0
                     == usize::from(windows::Win32::UI::Input::KeyboardAndMouse::VK_RETURN.0)
@@ -1864,4 +2283,45 @@ pub fn run(launch: Launch) {
     with_state(|s| {
         let _ = s.hwnd;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every control of the window has an id of its own: pages are shown
+    /// and hidden by id, so two controls sharing one would leave one of
+    /// them on the wrong page.
+    #[test]
+    fn control_ids_are_unique() {
+        let mut ids: Vec<i32> = [
+            Page::SignIn,
+            Page::Devices,
+            Page::Streams,
+            Page::Accounts,
+            Page::Settings,
+        ]
+        .iter()
+        .flat_map(|p| p.controls().iter().copied())
+        .chain([ID_LOG, ID_EXIT, ID_TABS])
+        .collect();
+        let count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "a control id is used twice: {ids:?}");
+    }
+
+    /// Each page's first control is one of its own.
+    #[test]
+    fn first_controls_belong_to_their_pages() {
+        for p in [
+            Page::SignIn,
+            Page::Devices,
+            Page::Streams,
+            Page::Accounts,
+            Page::Settings,
+        ] {
+            assert!(p.controls().contains(&p.first()), "{p:?}");
+        }
+    }
 }

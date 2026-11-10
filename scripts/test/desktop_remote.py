@@ -1,15 +1,17 @@
 """End-to-end test of the desktop app as a remote, through UI Automation
 (the way a keyboard or screen-reader user drives it) and a live server:
 
-1. A temporary source device (the audionet command-line agent) shares
+1. A temporary source device (the audionet command-line agent) offers
    what plays on SOURCE_OUTPUT, where a 997 Hz tone plays.
-2. The desktop app signs in with the account password and starts. In the
-   "Your devices" tree that device is one collapsed item; the test expands
-   it, then "Sounds to listen to", selects the sound, chooses a local
-   output (PLAYBACK_OUTPUT) and presses Enter on the tree (listen).
+2. The desktop app signs in with the account password, adds a second
+   (temporary) account, and is hidden in that one (a visitor there). On
+   the Devices tab that device is one collapsed tree item; the test
+   expands it, then "Sounds to listen to", selects the sound, chooses a
+   local output (PLAYBACK_OUTPUT) and presses Enter on the tree (listen).
 3. What arrives on PLAYBACK_OUTPUT is recorded (WASAPI loopback) and must
-   be the tone at the right level; then "Stop the selected stream" must
-   stop it.
+   be the tone at the right level; on the Streams tab, volume, mute and
+   "Stop the selected stream" must work.
+4. Sending this computer's sound to the device's output, likewise.
 
 Use outputs that do not feed each other (check with a baseline first).
 The app runs under AUDIONET_TEST_PROFILE (never touches a running
@@ -151,9 +153,18 @@ def select(el):
     el.GetCurrentPattern(UIA.UIA_SelectionItemPatternId).QueryInterface(UIA.IUIAutomationSelectionItemPattern).Select()
     time.sleep(0.2)
 
+def tab(name):
+    """Selects one of the window's tabs (as clicking it, or Ctrl+Tab, does)."""
+    for e in all_elements():
+        if e.CurrentControlType == UIA.UIA_TabItemControlTypeId and (e.CurrentName or "").startswith(name):
+            e.GetCurrentPattern(UIA.UIA_SelectionItemPatternId).QueryInterface(UIA.IUIAutomationSelectionItemPattern).Select()
+            time.sleep(0.4)
+            return
+    raise KeyError(name)
+
 def tree_top():
     """The top-level items of the device tree."""
-    tree = named("Your devices", UIA.UIA_TreeControlTypeId)
+    tree = named("Devices", UIA.UIA_TreeControlTypeId)
     arr = tree.FindAll(UIA.TreeScope_Children, uia.CreatePropertyCondition(UIA.UIA_ControlTypePropertyId,
                                                                           UIA.UIA_TreeItemControlTypeId))
     return [arr.GetElement(i).CurrentName or "" for i in range(arr.Length)]
@@ -232,37 +243,45 @@ try:
     set_edit("Server address", BASE)
     set_edit("Account user name", USER)
     set_edit("Password", PASSWORD)
-    set_edit("Device name", APP_NAME)
+    set_edit("Name for this computer", APP_NAME)
     press("Sign in")
-    check("signs in with the password", wait_for(lambda: "Signed in as" in status_log(), 30), status_log()[-300:])
+    # The password is cleared the moment it is used (before the sign-in
+    # page closes).
     check("password field is cleared", named("Password", UIA.UIA_EditControlTypeId).GetCurrentPattern(UIA.UIA_ValuePatternId)
           .QueryInterface(UIA.IUIAutomationValuePattern).CurrentValue == "")
+    check("signs in with the password", wait_for(lambda: "Signed in as" in status_log(), 30), status_log()[-300:])
 
-    # A second account (a temporary one): added with the same fields and the
-    # button, which now says "Add account".
+    # A second account (a temporary one): Accounts tab, "Add account…",
+    # the sign-in page again, whose button now says "Add account".
     second = second_account.create()
+    tab("Accounts")
+    press("Add account…")
+    check("Add account opens the sign-in page", wait_for(lambda: bool(named("Account user name", UIA.UIA_EditControlTypeId)), 5))
     set_edit("Account user name", second[0])
     set_edit("Password", second[1])
     press("Add account")
-    accounts = lambda: [i.CurrentName or "" for i in items("Accounts", UIA.UIA_ListControlTypeId)]
-    check("adds a second account", wait_for(lambda: len(accounts()) == 2, 30), str(accounts()))
+    accounts = lambda: [i.CurrentName or "" for i in items("Accounts this computer", UIA.UIA_ListControlTypeId)]
+    check("adds a second account (back on Accounts)", wait_for(lambda: len(accounts()) == 2, 30), str(accounts()))
     check("the accounts are listed in words", any(a.startswith(f"{USER} on ") for a in accounts())
           and any(a.startswith(f"{second[0]} on ") for a in accounts()), str(accounts()))
-    # Online at once after signing in; sending from this computer needs
-    # sharing in that account: select it (the new one is selected after
-    # adding it), then Start sharing.
-    choose("Accounts", UIA.UIA_ListControlTypeId, f"{USER} on ")
-    press("Start sharing")
-    check("sharing in the first account only", wait_for(lambda: any(a.startswith(f"{USER} on ") and a.endswith("online, sharing") for a in accounts())
-          and any(a.startswith(f"{second[0]} on ") and a.endswith("online, not sharing") for a in accounts()), 15), str(accounts()))
+    # Visible at once in both; hide it in the second account (a visitor
+    # there: it still sees and reaches that account's devices).
+    check("visible in both accounts", wait_for(lambda: all(a.endswith(": visible") for a in accounts()), 15), str(accounts()))
+    choose("Accounts this computer", UIA.UIA_ListControlTypeId, f"{second[0]} on ")
+    time.sleep(0.3)
+    named("Visible to my other devices", UIA.UIA_CheckBoxControlTypeId).GetCurrentPattern(UIA.UIA_TogglePatternId) \
+        .QueryInterface(UIA.IUIAutomationTogglePattern).Toggle()
+    check("hidden in the second account only", wait_for(lambda: any(a.startswith(f"{USER} on ") and a.endswith(": visible") for a in accounts())
+          and any(a.startswith(f"{second[0]} on ") and a.endswith(": not visible") for a in accounts()), 15), str(accounts()))
+    tab("Devices")
     check("connects", wait_for(lambda: "Connected to" in status_log(), 30))
     check("both accounts connect", wait_for(lambda: status_log().count("Connected to") >= 2, 30))
     check("the tree has an item per account", wait_for(lambda: any(t.startswith(f"Devices in {USER} on") for t in tree_top())
           and any(t.startswith(f"Devices in {second[0]} on") for t in tree_top()), 20), str(tree_top()))
-    devices = lambda: named("Your devices", UIA.UIA_TreeControlTypeId)
-    check("lists the source device online, as one collapsed tree item",
-          wait_for(lambda: expand_state(tree_item(devices(), f"{SOURCE_NAME}, online")) == 0, 30))
-    source = tree_item(devices(), f"{SOURCE_NAME}, online")
+    devices = lambda: named("Devices", UIA.UIA_TreeControlTypeId)
+    check("lists the source device by name and platform, as one collapsed tree item",
+          wait_for(lambda: expand_state(tree_item(devices(), f"{SOURCE_NAME}, Windows")) == 0, 30))
+    source = tree_item(devices(), f"{SOURCE_NAME}, Windows")
     select(source)
     expand(source)
     check("expanding it shows Sounds to listen to and Outputs to send to",
@@ -279,8 +298,11 @@ try:
     # Enter on the chosen sound listens (as a keyboard user presses it).
     tree_hwnd = devices().CurrentNativeWindowHandle
     u.PostMessageW(tree_hwnd, 0x0100, 0x0D, 0)  # WM_KEYDOWN, VK_RETURN
+    tab("Streams")
     streams = lambda: [i.CurrentName or "" for i in items("Streams this computer started", UIA.UIA_ListControlTypeId)]
-    check("stream connects", wait_for(lambda: any("connected" in r for r in streams()), 30), str(streams()))
+    check("stream connects (on the Streams tab)", wait_for(lambda: any("connected" in r for r in streams()), 30), str(streams()))
+    check("the Streams tab counts it", any((e.CurrentName or "") == "Streams (1)" for e in all_elements()
+                                           if e.CurrentControlType == UIA.UIA_TabItemControlTypeId))
 
     # 3. What plays here.
     time.sleep(3)
@@ -335,15 +357,17 @@ try:
     check("the stop is logged in words", "Stopped: Listening to" in status_log())
 
     # 4. Send: this computer's copy of the tone to the other device's output.
+    tab("Devices")
     check("this computer's sounds are offered",
           choose_by_keyboard("Send from this computer", f"Sound playing on {SOURCE_OUTPUT}"), combo_value("Send from this computer"))
-    source = tree_item(devices(), f"{SOURCE_NAME}, online")
+    source = tree_item(devices(), f"{SOURCE_NAME}, Windows")
     expand(source)
     outputs = tree_item(source, "Outputs to send to")
     expand(outputs)
     select(tree_item(outputs, PLAYBACK_OUTPUT))
     check("the tree kept the device expanded after the listen", expand_state(source) == 1)
     press("Send to the chosen output")
+    tab("Streams")
     check("send stream connects", wait_for(lambda: any("Sending" in r and "connected" in r for r in streams()), 30), str(streams()))
     time.sleep(3)
     wav2 = os.path.join(work, "sent.wav")
@@ -359,10 +383,12 @@ try:
     check("stopping the send removes it", wait_for(lambda: not streams(), 15), str(streams()))
 
     # Signing out of the second account (the app asks first) leaves one.
-    choose("Accounts", UIA.UIA_ListControlTypeId, second[0])
+    tab("Accounts")
+    choose("Accounts this computer", UIA.UIA_ListControlTypeId, second[0])
     press("Sign out of the selected account")
     check("sign-out asks first", answer_dialog("Yes"))
     check("one account is left", wait_for(lambda: len(accounts()) == 1, 15), str(accounts()))
+    tab("Devices")
     check("the tree has no account items with one account",
           wait_for(lambda: not any(t.startswith("Devices in") for t in tree_top()), 10), str(tree_top()))
 finally:

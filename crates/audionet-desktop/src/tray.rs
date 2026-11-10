@@ -125,10 +125,10 @@ pub fn remove(hwnd: HWND) {
 
 /// Shows the icon's menu. Returns the chosen item, if any, and the window
 /// that was active before (to give focus back with `restore_focus`).
-pub fn menu(hwnd: HWND, x: i32, y: i32, running: bool, signed_in: bool) -> (Option<u32>, HWND) {
+pub fn menu(hwnd: HWND, x: i32, y: i32, visible: bool, signed_in: bool) -> (Option<u32>, HWND) {
     // SAFETY: reading which window is active.
     let previous = unsafe { GetForegroundWindow() };
-    (show_menu(hwnd, x, y, running, signed_in), previous)
+    (show_menu(hwnd, x, y, visible, signed_in), previous)
 }
 
 /// Gives the foreground back to `previous` (if it still exists and is not
@@ -145,7 +145,7 @@ pub fn restore_focus(hwnd: HWND, previous: HWND) {
     }
 }
 
-fn show_menu(hwnd: HWND, x: i32, y: i32, running: bool, signed_in: bool) -> Option<u32> {
+fn show_menu(hwnd: HWND, x: i32, y: i32, visible: bool, signed_in: bool) -> Option<u32> {
     // SAFETY: a popup menu we create, show and destroy here. The foreground
     // window and WM_NULL steps are what the shell documentation requires
     // for notification-area menus to close correctly.
@@ -157,10 +157,10 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, running: bool, signed_in: bool) -> Opti
             MENU_OPEN as usize,
             &HSTRING::from("&Open AudioNet"),
         );
-        let toggle = if running {
-            "S&top sharing"
+        let toggle = if visible {
+            "&Hide this computer from my other devices"
         } else {
-            "&Start sharing"
+            "Make this computer &visible to my other devices"
         };
         let flags = if signed_in {
             MF_STRING
@@ -168,9 +168,11 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, running: bool, signed_in: bool) -> Opti
             MF_STRING | MF_GRAYED
         };
         let _ = AppendMenuW(menu, flags, MENU_TOGGLE as usize, &HSTRING::from(toggle));
+        // Settings is a tab of the signed-in window: unavailable (and so
+        // said by screen readers) until this computer is signed in.
         let _ = AppendMenuW(
             menu,
-            MF_STRING,
+            flags,
             MENU_SETTINGS as usize,
             &HSTRING::from("Setti&ngs…"),
         );
@@ -216,7 +218,7 @@ mod tests {
     #[test]
     fn tooltip_text_is_truncated_and_terminated() {
         let mut buf = [0xFFFFu16; 8];
-        copy_into(&mut buf, "AudioNet: sharing");
+        copy_into(&mut buf, "AudioNet: visible");
         assert_eq!(String::from_utf16_lossy(&buf[..7]), "AudioNe");
         assert_eq!(buf[7], 0);
     }

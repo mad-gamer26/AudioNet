@@ -1,8 +1,9 @@
-//! The remote panel: this account's other devices, listening to them and
-//! sending to them, and the streams this computer started.
+//! The remote panel: this account's other visible devices, listening to
+//! them and sending to them (the Devices tab), and the streams this computer
+//! started (the Streams tab).
 //!
 //! Devices are a standard TreeView (the native Windows outline): each
-//! device is one collapsed item ("Studio PC, online"); expanding it shows
+//! visible device is one collapsed item ("Studio PC, Windows"); expanding it shows
 //! "Sounds to listen to" and "Outputs to send to", each with its items.
 //! Screen readers get names, levels, positions and expanded states from
 //! Windows itself. A sound is played with Listen (or Enter) on this
@@ -12,7 +13,7 @@
 //! Changes are applied to the tree in place (renamed items, added or
 //! removed devices, a device's sounds and outputs), so what is expanded,
 //! the selection and a screen reader's position are kept. Starts, stops
-//! and devices going online or offline are announced once.
+//! and devices becoming visible or no longer visible are announced once.
 
 use std::cell::RefCell;
 
@@ -21,7 +22,7 @@ use audionet_node::session::LocalMedia;
 use audionet_protocol::signal::{
     DestinationInfo, NodeSummary, SessionMedia, SessionState, SourceInfo, SourceType,
 };
-use audionet_protocol::{NodeId, SessionId};
+use audionet_protocol::{NodeId, Platform, SessionId};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Gdi::HFONT;
 use windows::Win32::UI::Controls::{
@@ -135,10 +136,6 @@ fn with<T>(f: impl FnOnce(&mut Remote) -> T) -> T {
 }
 
 /// Whether any account's connection is up.
-fn any_online(r: &Remote) -> bool {
-    r.accounts.iter().any(|a| a.online)
-}
-
 /// Every account's devices, in account order, with the account.
 fn all_devices(r: &Remote) -> Vec<(String, NodeSummary)> {
     r.accounts
@@ -179,9 +176,34 @@ pub fn owns(id: i32) -> bool {
     (ID_DEVICES..=ID_VOLUME).contains(&id)
 }
 
-/// Creates the panel's controls in a column starting at `x`.
-pub fn build(hwnd: HWND, x: i32, scale: f32, font: HFONT) {
-    let w = 500;
+/// The Devices tab's controls (labels are the control's id minus one).
+pub const DEVICES_PAGE: [i32; 8] = [
+    ID_DEVICES - 1,
+    ID_DEVICES,
+    ID_LOCAL_OUTPUT - 1,
+    ID_LOCAL_OUTPUT,
+    ID_LISTEN,
+    ID_LOCAL_SOURCE - 1,
+    ID_LOCAL_SOURCE,
+    ID_SEND,
+];
+/// The Streams tab's controls.
+pub const STREAMS_PAGE: [i32; 6] = [
+    ID_STREAMS - 1,
+    ID_STREAMS,
+    ID_STOP_STREAM,
+    ID_MUTE,
+    ID_VOLUME - 1,
+    ID_VOLUME,
+];
+
+/// The control focus goes to when the Devices or Streams tab opens.
+pub const DEVICES_FIRST: i32 = ID_DEVICES;
+pub const STREAMS_FIRST: i32 = ID_STREAMS;
+
+/// Creates the Devices tab's controls and the Streams tab's, both at
+/// (`x`, `y`), `w` wide (the tabs show one or the other).
+pub fn build(hwnd: HWND, x: i32, y: i32, w: i32, scale: f32, font: HFONT) {
     let label = |text: &str, id: i32, y: i32| {
         add(hwnd, Ctl::label(text, id), (x, y, w, 20), scale, font);
     };
@@ -196,7 +218,12 @@ pub fn build(hwnd: HWND, x: i32, scale: f32, font: HFONT) {
         };
         let _ = InitCommonControlsEx(&icc);
     }
-    label("Your de&vices:", ID_DEVICES - 1, 14);
+    // ── Devices ──
+    label(
+        "De&vices (expand one to listen to it or send to it):",
+        ID_DEVICES - 1,
+        y,
+    );
     add(
         hwnd,
         Ctl::custom(
@@ -207,51 +234,52 @@ pub fn build(hwnd: HWND, x: i32, scale: f32, font: HFONT) {
             WS_EX_CLIENTEDGE,
             ID_DEVICES,
         ),
-        (x, 36, w, 280),
+        (x, y + 22, w, 250),
         scale,
         font,
     );
-    label("Play it &on:", ID_LOCAL_OUTPUT - 1, 326);
-    combo(ID_LOCAL_OUTPUT, 348);
+    label("Play it &on:", ID_LOCAL_OUTPUT - 1, y + 284);
+    combo(ID_LOCAL_OUTPUT, y + 306);
     add(
         hwnd,
         Ctl::button("Lis&ten to the chosen sound", ID_LISTEN),
-        (x, 382, 240, 30),
+        (x, y + 340, 260, 30),
         scale,
         font,
     );
-    label("Send f&rom this computer:", ID_LOCAL_SOURCE - 1, 424);
-    combo(ID_LOCAL_SOURCE, 446);
+    label("Send f&rom this computer:", ID_LOCAL_SOURCE - 1, y + 382);
+    combo(ID_LOCAL_SOURCE, y + 404);
     add(
         hwnd,
         Ctl::button("S&end to the chosen output", ID_SEND),
-        (x, 480, 240, 30),
+        (x, y + 438, 260, 30),
         scale,
         font,
     );
-    label("Streams this computer started:", ID_STREAMS - 1, 522);
+    // ── Streams ──
+    label("Streams this computer &started:", ID_STREAMS - 1, y);
     add(
         hwnd,
         Ctl::listbox(ID_STREAMS),
-        (x, 544, w, 100),
+        (x, y + 22, w, 200),
         scale,
         font,
     );
     add(
         hwnd,
-        Ctl::button("Stop the selected stream", ID_STOP_STREAM),
-        (x, 652, 220, 30),
+        Ctl::button("Sto&p the selected stream", ID_STOP_STREAM),
+        (x, y + 232, 240, 30),
         scale,
         font,
     );
     add(
         hwnd,
         Ctl::checkbox("&Mute the selected stream", ID_MUTE),
-        (x + 240, 652, 260, 30),
+        (x + 256, y + 232, w - 256, 30),
         scale,
         font,
     );
-    label("Volume of the selecte&d stream:", ID_VOLUME - 1, 690);
+    label("Volume of the selecte&d stream:", ID_VOLUME - 1, y + 274);
     add(
         hwnd,
         Ctl::custom(
@@ -260,7 +288,7 @@ pub fn build(hwnd: HWND, x: i32, scale: f32, font: HFONT) {
             WINDOW_EX_STYLE(0),
             ID_VOLUME,
         ),
-        (x, 712, w, 32),
+        (x, y + 296, w, 32),
         scale,
         font,
     );
@@ -270,6 +298,11 @@ pub fn build(hwnd: HWND, x: i32, scale: f32, font: HFONT) {
     send(hwnd, TBM_SETPAGESIZE, ID_VOLUME, 0, VOLUME_PAGE as isize);
     send(hwnd, TBM_SETPOS, ID_VOLUME, 1, 100);
     refresh(hwnd);
+}
+
+/// How many streams this computer started (for the Streams tab's title).
+pub fn stream_count() -> usize {
+    with(|r| r.streams.len())
 }
 
 /// Shows the selected stream's mute and volume.
@@ -366,15 +399,24 @@ fn set_row(hwnd: HWND, id: i32, index: usize, text: &str) {
     }
 }
 
+/// A visible device (only visible devices are listed): its name and what
+/// it is.
 fn device_row(d: &NodeSummary) -> String {
-    let state = if !d.online {
-        "offline"
-    } else if d.sharing {
-        "online"
-    } else {
-        "online, not sharing"
-    };
-    format!("{}, {state}", d.name)
+    match d.platform {
+        Some(p) => format!("{}, {}", d.name, platform_name(p)),
+        None => d.name.clone(),
+    }
+}
+
+fn platform_name(p: Platform) -> &'static str {
+    match p {
+        Platform::Windows => "Windows",
+        Platform::MacOs => "Mac",
+        Platform::Linux => "Linux",
+        Platform::Ios => "iPhone",
+        Platform::Android => "Android",
+        Platform::Browser => "web browser",
+    }
 }
 
 fn source_row(s: &SourceInfo) -> String {
@@ -738,24 +780,25 @@ fn refresh(hwnd: HWND) {
     fill(hwnd, ID_STREAMS, &streams, keep, false);
     sync_volume(hwnd);
     update_buttons(hwnd);
+    crate::ui::streams_changed(hwnd);
 }
 
-/// Controls stay enabled while online (disabled controls drop out of the
-/// Tab order); Listen and Send say in words why they cannot start.
+/// The panel's controls are always enabled: a disabled control drops out of
+/// the Tab order, and one disabled while it has focus leaves focus nowhere
+/// (a screen reader then says nothing). Listen, Send, Stop and the volume
+/// say in words why they cannot act yet (nothing chosen, not connected).
 fn update_buttons(hwnd: HWND) {
-    let online = with(|r| any_online(r));
     for id in [
         ID_DEVICES,
         ID_LOCAL_OUTPUT,
         ID_LISTEN,
         ID_LOCAL_SOURCE,
         ID_SEND,
+        ID_STOP_STREAM,
+        ID_MUTE,
+        ID_VOLUME,
     ] {
-        enable(hwnd, id, online);
-    }
-    let has_streams = with(|r| !r.streams.is_empty());
-    for id in [ID_STOP_STREAM, ID_MUTE, ID_VOLUME] {
-        enable(hwnd, id, online && has_streams);
+        enable(hwnd, id, true);
     }
 }
 
@@ -811,14 +854,6 @@ fn new_session_id() -> SessionId {
     SessionId::new(format!("app-{nanos:x}-{}", NEXT.fetch_add(1, Relaxed))).expect("valid id")
 }
 
-fn offline(hwnd: HWND, device: &NodeSummary) -> bool {
-    if device.online {
-        return false;
-    }
-    announce(hwnd, &format!("{} is offline.", device.name));
-    true
-}
-
 fn listen(hwnd: HWND, run: &dyn Fn(&str, Command) -> bool) {
     let (device, source, account) = match picked(hwnd) {
         Some((Picked::Sound(d, s), a)) => (d, s, a),
@@ -835,24 +870,11 @@ fn listen(hwnd: HWND, run: &dyn Fn(&str, Command) -> bool) {
         None => {
             announce(
                 hwnd,
-                "Choose a sound in Your devices first: expand a device, then Sounds to listen to.",
+                "Choose a sound in Devices first: expand a device, then Sounds to listen to.",
             );
             return;
         }
     };
-    if offline(hwnd, &device) {
-        return;
-    }
-    if !device.sharing {
-        announce(
-            hwnd,
-            &format!(
-                "{} is not sharing its audio, so it cannot be listened to. You can still send to it.",
-                device.name
-            ),
-        );
-        return;
-    }
     let Some(output) = selected(hwnd, ID_LOCAL_OUTPUT, true)
         .and_then(|i| with(|r| r.local_outputs.get(i).cloned()))
     else {
@@ -894,21 +916,11 @@ fn send_audio(hwnd: HWND, run: &dyn Fn(&str, Command) -> bool) {
         None => {
             announce(
                 hwnd,
-                "Choose an output in Your devices first: expand a device, then Outputs to send to.",
+                "Choose an output in Devices first: expand a device, then Outputs to send to.",
             );
             return;
         }
     };
-    if offline(hwnd, &device) {
-        return;
-    }
-    if !crate::ui::account_is_sharing(&account) {
-        announce(
-            hwnd,
-            "This computer is not sharing its audio in this account. Press Start sharing to send from it.",
-        );
-        return;
-    }
     let Some(source) = selected(hwnd, ID_LOCAL_SOURCE, true)
         .and_then(|i| with(|r| r.local_sources.get(i).cloned()))
     else {
@@ -1017,42 +1029,45 @@ pub fn on_event(hwnd: HWND, account: &str, event: AppEvent) {
             if node.node_id.as_str() == account {
                 return;
             }
-            let (online_changed, sharing_changed) = with(|r| {
+            // A visible device appeared (announced) or changed.
+            let appeared = with(|r| {
                 let a = r.accounts.iter_mut().find(|a| a.id == account)?;
                 Some(
                     match a.devices.iter().position(|d| d.node_id == node.node_id) {
                         Some(i) => {
-                            let before = &a.devices[i];
-                            let changed = (
-                                before.online != node.online,
-                                before.online && node.online && before.sharing != node.sharing,
-                            );
                             a.devices[i] = node.clone();
-                            changed
+                            false
                         }
                         None => {
                             a.devices.push(node.clone());
-                            (true, false)
+                            true
                         }
                     },
                 )
             })
-            .unwrap_or((false, false));
+            .unwrap_or(false);
             sync_tree(hwnd);
-            if online_changed {
-                let state = if node.online { "online" } else { "offline" };
-                announce(hwnd, &format!("{} is now {state}.", node.name));
-                log(hwnd, &format!("{} is now {state}.", node.name));
-            } else if sharing_changed {
-                let text = format!(
-                    "{} {} sharing its audio.",
-                    node.name,
-                    if node.sharing { "started" } else { "stopped" }
-                );
+            if appeared {
+                let text = format!("{} is now visible.", node.name);
                 announce(hwnd, &text);
                 log(hwnd, &text);
             }
             update_buttons(hwnd);
+        }
+        AppEvent::DeviceGone { node_id } => {
+            // No longer visible (visibility off, or disconnected).
+            let gone = with(|r| {
+                let a = r.accounts.iter_mut().find(|a| a.id == account)?;
+                let i = a.devices.iter().position(|d| d.node_id == node_id)?;
+                Some(a.devices.remove(i).name)
+            });
+            if let Some(name) = gone {
+                sync_tree(hwnd);
+                let text = format!("{name} is no longer visible.");
+                announce(hwnd, &text);
+                log(hwnd, &text);
+                update_buttons(hwnd);
+            }
         }
         AppEvent::Session {
             session_id,
