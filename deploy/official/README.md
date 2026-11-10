@@ -14,3 +14,10 @@ No secrets are stored here: the TURN secret lives only in
 change, copy it to `/var/www/audionet/install.ps1` on the server (mode
 644); the nginx `location = /install.ps1` block serves it as plain text,
 never cached.
+
+`install.sh` is the macOS and Linux installer served at
+`https://audionet.mad-gamer.com/install.sh` (`curl -fsSL ... | sh`), published
+the same way to `/var/www/audionet/install.sh` (`location = /install.sh`).
+It embeds the release public key (base64 DER of
+`update-public-key.txt`): change it there too if the key ever changes.
+Test it before publishing (see docs/testing.md, "Installers").

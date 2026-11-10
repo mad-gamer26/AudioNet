@@ -313,5 +313,21 @@ Automated accessibility checks:
   out of one account. Temporary devices are removed
   afterwards.
 
+* Installers: `deploy/official/install.sh` (macOS and Linux) is driven
+  through a terminal by `scripts/test/install_sh.py`, answering its
+  questions as a person would, also piped into sh:
+  `install_sh_linux.py` (Docker: Ubuntu 22.04 fresh install with signing
+  in and starting, again, an update from 1.2.5, uninstall with nothing
+  left; manifests not signed with the release key, for another product or
+  missing, and a download that does not match, all refused; no terminal;
+  root; Ubuntu 20.04, Alpine and a missing ALSA library refused with the
+  reason; Debian 12 and Fedora), `install_sh_systemd.py` (a throwaway user
+  on this Linux computer: the systemd user service written, enabled,
+  restarted on reinstall and removed) and `install_sh_mac.py` (on the Mac,
+  in sandbox folders: fresh, Open, Reinstall, quitting a running copy, an
+  update from 1.2.5, uninstall with settings, a folder that may not be
+  written, and a download that does not match, an app with a broken
+  signature or signed by someone else, all refused).
+
 See [accessibility.md](accessibility.md) for the manual screen-reader test
 script and the current verification status.

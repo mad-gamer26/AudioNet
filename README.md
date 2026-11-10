@@ -60,6 +60,14 @@ with no latency growth.
    irm https://audionet.mad-gamer.com/install.ps1 | iex
    ```
 
+   On a Mac or a Linux computer, the same in a terminal (on the Mac it
+   installs the app; on Linux the `audionet` program, optionally signed in
+   and started with your session):
+
+   ```text
+   curl -fsSL https://audionet.mad-gamer.com/install.sh | sh
+   ```
+
    On a computer without a screen, sign in from a terminal instead (it asks
    for the password):
 

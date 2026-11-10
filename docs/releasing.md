@@ -81,6 +81,21 @@ python scripts/release_sign.py keygen %USERPROFILE%\.audionet-release\update-sig
    links to the latest release for downloads. Nothing about releases is
    on the AudioNet server.
 
+## Linux
+
+`scripts/package-linux.sh` builds `dist/audionet-linux-x64-<version>.tar.gz`
+(build it on an old system, such as an Ubuntu 22.04 container, for glibc
+2.34). Sign its manifest on the machine with the release key, for the
+installer (`deploy/official/install.sh`, which checks it):
+
+```sh
+python scripts/release_sign.py manifest KEY dist/audionet-linux-x64-<version>.tar.gz <version> dist ^
+  --product audionet-linux-x64 --name latest-linux.json
+```
+
+and attach the tarball, its `.sha256`, `latest-linux.json` and its `.sig`
+to the release. Without `latest-linux.json` the Linux installer refuses.
+
 ## Self-hosters and forks
 
 To ship your own updating builds, create your own key, commit or keep

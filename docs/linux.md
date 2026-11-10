@@ -30,6 +30,12 @@ running it falls back to ALSA, where outputs' sound cannot be shared.
 
 ## Setting it up
 
+The quickest way: `curl -fsSL https://audionet.mad-gamer.com/install.sh | sh`
+installs the program in `~/.local/bin` (or a folder you choose), checks the
+download against the signed release, and offers to sign in, to start it
+with your session (a systemd user service) and to add it to your PATH.
+Running it again updates, reinstalls or uninstalls it. By hand:
+
 1. Get the program: the `audionet-linux-x64-<version>.tar.gz` download
    (64-bit Intel or AMD; glibc 2.34 or later: Ubuntu 22.04, Debian 12,
    Fedora 35 and newer),
