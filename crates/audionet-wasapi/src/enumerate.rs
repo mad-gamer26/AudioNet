@@ -99,10 +99,10 @@ fn read_default_endpoints(enumerator: &IMMDeviceEnumerator) -> Vec<(String, Defa
         for (role, role_value) in ROLES {
             // SAFETY: `enumerator` is valid; arguments are documented values.
             // Failure (typically E_NOTFOUND) just means there is no default.
-            if let Ok(device) = unsafe { enumerator.GetDefaultAudioEndpoint(flow, role) } {
-                if let Ok(id) = device_id(&device) {
-                    defaults.push((id, role_value));
-                }
+            if let Ok(device) = unsafe { enumerator.GetDefaultAudioEndpoint(flow, role) }
+                && let Ok(id) = device_id(&device)
+            {
+                defaults.push((id, role_value));
             }
         }
     }

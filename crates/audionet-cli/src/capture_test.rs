@@ -267,15 +267,16 @@ fn consume(
                 Ok(()) => EndReason::Duration,
             };
         }
-        if let Some((at, len)) = stall_at {
-            if !stall_done && Instant::now() >= at {
-                out.say(&format!(
-                    "Simulating a consumer stall of {} ms. The capture thread keeps running.",
-                    len.as_millis()
-                ));
-                std::thread::sleep(len);
-                stall_done = true;
-            }
+        if let Some((at, len)) = stall_at
+            && !stall_done
+            && Instant::now() >= at
+        {
+            out.say(&format!(
+                "Simulating a consumer stall of {} ms. The capture thread keeps running.",
+                len.as_millis()
+            ));
+            std::thread::sleep(len);
+            stall_done = true;
         }
 
         consumer.trim_stale(threshold, keep);

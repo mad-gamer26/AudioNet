@@ -385,26 +385,26 @@ impl RealtimeRender<'_> {
 fn write_samples(layout: PcmLayout, src: &[f32], dst: &mut [u8]) {
     match layout {
         PcmLayout::F32 => {
-            for (d, s) in dst.chunks_exact_mut(4).zip(src) {
-                d.copy_from_slice(&s.to_le_bytes());
+            for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src) {
+                *d = s.to_le_bytes();
             }
         }
         PcmLayout::I16 => {
-            for (d, s) in dst.chunks_exact_mut(2).zip(src) {
+            for (d, s) in dst.as_chunks_mut::<2>().0.iter_mut().zip(src) {
                 let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
-                d.copy_from_slice(&v.to_le_bytes());
+                *d = v.to_le_bytes();
             }
         }
         PcmLayout::I24Packed => {
-            for (d, s) in dst.chunks_exact_mut(3).zip(src) {
+            for (d, s) in dst.as_chunks_mut::<3>().0.iter_mut().zip(src) {
                 let v = (f64::from(s.clamp(-1.0, 1.0)) * 8_388_607.0) as i32;
                 d.copy_from_slice(&v.to_le_bytes()[..3]);
             }
         }
         PcmLayout::I32 => {
-            for (d, s) in dst.chunks_exact_mut(4).zip(src) {
+            for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src) {
                 let v = (f64::from(s.clamp(-1.0, 1.0)) * 2_147_483_647.0) as i32;
-                d.copy_from_slice(&v.to_le_bytes());
+                *d = v.to_le_bytes();
             }
         }
     }
