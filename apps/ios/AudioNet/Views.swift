@@ -257,6 +257,8 @@ struct DevicesScreen: View {
 /// The streams this iPhone started: state, mute, volume, stop.
 struct StreamsScreen: View {
     @EnvironmentObject var model: AppModel
+    /// The stream whose sheet is open.
+    @State private var openID: String?
 
     var body: some View {
         Form {
@@ -265,26 +267,115 @@ struct StreamsScreen: View {
                     Text("No streams are running. Start one from Devices: open a device, then Listen or Send.")
                 }
             } else {
-                // A section per stream; each part a row of its own, so
-                // every row grows with the text size on its own.
-                ForEach(model.streams) { row in
-                    Section {
-                        Text("\(row.title): \(row.state)")
-                            .accessibilityIdentifier("stream")
-                        // Measurements only when "Show Measurements" is on
-                        // (Settings); never announced.
-                        if model.showMeasurements, let live = model.diagnostics[row.id] {
-                            LiveTextRow(live: live)
-                        }
-                        StreamVolume(row: row)
-                        Button("Stop") { model.stopStream(row) }
-                            .accessibilityLabel("Stop \(row.title)")
+                Section {
+                    // One row per stream. A tap opens its sheet (heading,
+                    // mute, volume, stop); VoiceOver's actions (swipe up or
+                    // down) do the same without opening it.
+                    ForEach(model.streams) { row in
+                        StreamRowButton(row: row) { openID = row.id }
                     }
+                } header: {
+                    heading("Streams started here")
                 }
             }
         }
         .headerProminence(.increased)
         .navigationTitle("Streams")
+        // Closes by itself when the stream ends.
+        .sheet(isPresented: Binding(
+            get: { openID.map { id in model.streams.contains { $0.id == id } } ?? false },
+            set: { if !$0 { openID = nil } })) {
+            if let id = openID { StreamSheet(id: id) }
+        }
+    }
+}
+
+/// A stream's row: what it is and its state, its volume as its value, the
+/// measurements when shown, and VoiceOver actions for mute, volume and
+/// stop. Increase Volume is offered only below 100 percent, Decrease
+/// Volume only above 0.
+struct StreamRowButton: View {
+    @EnvironmentObject var model: AppModel
+    let row: StreamRow
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(row.title): \(row.state)")
+                    .foregroundStyle(.primary)
+                // Measurements only when "Show Measurements" is on
+                // (Settings); never announced.
+                if model.showMeasurements, let live = model.diagnostics[row.id] {
+                    LiveTextRow(live: live)
+                        .font(.callout)
+                        .foregroundStyle(.primary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue("Volume \(model.volumeText(row))")
+        .accessibilityHint("Opens its mute, volume and stop controls.")
+        .accessibilityIdentifier("stream")
+        .accessibilityActions {
+            Button(row.muted ? "Unmute" : "Mute") { model.toggleMute(row.id) }
+            if model.volumeStep(row.id, up: true) != nil {
+                Button("Increase Volume") { model.stepVolume(row.id, up: true) }
+            }
+            if model.volumeStep(row.id, up: false) != nil {
+                Button("Decrease Volume") { model.stepVolume(row.id, up: false) }
+            }
+            Button("Stop") { model.stopStream(row) }
+        }
+    }
+}
+
+/// One stream's sheet: its title as the heading, its state, Mute, the
+/// volume slider and Stop; Done (a row) closes it, as does swiping down.
+struct StreamSheet: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let id: String
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let row = model.streams.first(where: { $0.id == id }) {
+                    Section {
+                        Text(row.state.prefix(1).uppercased() + row.state.dropFirst())
+                            .accessibilityIdentifier("streamState")
+                        Toggle("Mute", isOn: model.muted(id))
+                            .accessibilityIdentifier("streamMute")
+                        // No visible percentage: the slider's position shows
+                        // it, and its spoken value says it.
+                        Slider(value: model.volume(id), in: 0...1, step: 0.05)
+                            .accessibilityLabel("Volume")
+                            .accessibilityValue(model.volumeText(row))
+                            .accessibilityIdentifier("streamVolume")
+                        Button("Stop", role: .destructive) {
+                            model.stopStream(row)
+                            dismiss()
+                        }
+                        .foregroundStyle(accessibleDestructive)
+                        .accessibilityIdentifier("stopStream")
+                    } header: {
+                        heading(row.title)
+                            .accessibilityAddTraits(.isHeader)
+                            .accessibilityIdentifier("streamHeading")
+                    }
+                    // A row, not a navigation-bar button: bar buttons do not
+                    // grow with Dynamic Type.
+                    Section {
+                        Button("Done") { dismiss() }
+                            .accessibilityIdentifier("closeStream")
+                    }
+                }
+            }
+            .headerProminence(.increased)
+            .navigationTitle("Stream")
+            .navigationBarTitleDisplayMode(.inline)
+        }
     }
 }
 
@@ -343,27 +434,6 @@ struct AccountsScreen: View {
             .accessibilityIdentifier("confirmSignOut")
             Button("Cancel", role: .cancel) { signingOut = nil }
         }
-    }
-}
-
-/// A stream's mute switch and volume slider (on this device: what it plays
-/// here, or what it sends). Their spoken names say which stream.
-struct StreamVolume: View {
-    @EnvironmentObject var model: AppModel
-    let row: StreamRow
-
-    var body: some View {
-        let percent = Int((row.volume * 100).rounded())
-        Toggle("Mute", isOn: model.muted(row.id))
-            .accessibilityLabel("Mute \(row.title)")
-            .accessibilityIdentifier("streamMute")
-        // No visible percentage: the slider's position shows it, and its
-        // spoken value says it (a separate text row was reported as clipped
-        // at large text sizes).
-        Slider(value: model.volume(row.id), in: 0...1, step: 0.05)
-        .accessibilityLabel("Volume for \(row.title)")
-        .accessibilityValue(row.muted ? "\(percent) percent, muted" : "\(percent) percent")
-        .accessibilityIdentifier("streamVolume")
     }
 }
 

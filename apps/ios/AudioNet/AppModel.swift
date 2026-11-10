@@ -479,6 +479,38 @@ final class AppModel: ObservableObject {
                 set: { v in self.updateVolume(id) { $0.volume = v } })
     }
 
+    /// The volume one 5-percent step up or down (VoiceOver's Increase and
+    /// Decrease Volume), on the 5-percent grid; nil at the end of the range.
+    func volumeStep(_ id: String, up: Bool) -> Int? {
+        guard let row = streams.first(where: { $0.id == id }) else { return nil }
+        let now = Int((row.volume * 100).rounded())
+        let next = up ? (now / 5 + 1) * 5 : ((now + 4) / 5 - 1) * 5
+        guard (0...100).contains(next), next != now else { return nil }
+        return next
+    }
+
+    /// Steps a stream's volume by 5 percent and says the new volume
+    /// ("Volume 95%"), without adding it to the log.
+    func stepVolume(_ id: String, up: Bool) {
+        guard let next = volumeStep(id, up: up) else { return }
+        updateVolume(id) { $0.volume = Double(next) / 100 }
+        AccessibilityNotification.Announcement("Volume \(next)%").post()
+    }
+
+    /// Mutes or unmutes a stream and says which (not logged).
+    func toggleMute(_ id: String) {
+        guard streams.contains(where: { $0.id == id }) else { return }
+        updateVolume(id) { $0.muted.toggle() }
+        let muted = streams.first { $0.id == id }?.muted ?? false
+        AccessibilityNotification.Announcement(muted ? "Muted" : "Unmuted").post()
+    }
+
+    /// A stream's volume in words: "80 percent", "80 percent, muted".
+    func volumeText(_ row: StreamRow) -> String {
+        let percent = Int((row.volume * 100).rounded())
+        return row.muted ? "\(percent) percent, muted" : "\(percent) percent"
+    }
+
     /// A stream's mute switch, applied at once.
     func muted(_ id: String) -> Binding<Bool> {
         Binding(get: { self.streams.first { $0.id == id }?.muted ?? false },
@@ -514,7 +546,10 @@ final class AppModel: ObservableObject {
         case .connected:
             connectedAccounts.insert(account)
             let how = isVisible(account) ? "visible to your other devices" : "not visible to your other devices"
-            announce(accounts.count > 1
+            // Logged, not announced: connections come in bursts (at launch,
+            // and when a server restarts), and a burst of announcements can
+            // make VoiceOver stop speaking.
+            note(accounts.count > 1
                 ? "Connected to \(name(account)), \(how)."
                 : "Connected, \(how).")
             refreshLocalAudio()
@@ -534,7 +569,7 @@ final class AppModel: ObservableObject {
                 list[i] = device
             } else {
                 list.append(device)
-                announce("\(device.name) is now visible.")
+                note("\(device.name) is now visible.")  // logged: these come in bursts too
             }
             devicesByAccount[account] = list
             fillChoices(device)
@@ -544,7 +579,7 @@ final class AppModel: ObservableObject {
                 let gone = list.remove(at: i)
                 devicesByAccount[account] = list
                 expanded.remove(nodeId)
-                announce("\(gone.name) is no longer visible.")
+                note("\(gone.name) is no longer visible.")
             }
         case .stream(let id, let state, let detail):
             guard let i = streams.firstIndex(where: { $0.id == id }) else { return }

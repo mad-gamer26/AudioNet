@@ -248,39 +248,181 @@ struct DevicesTab: View {
 /// The streams this Mac started: state, stop, mute and volume.
 struct StreamsTab: View {
     @EnvironmentObject var model: AppModel
+    /// The selected stream (the newest, until another is chosen).
+    @State private var selection: StreamRow.ID?
+
+    private var selected: StreamRow? {
+        model.streams.first { $0.id == selection }
+    }
 
     var body: some View {
-        Form {
-            Section {
-                if model.streams.isEmpty {
-                    Text("No streams are running. Start one from Devices: open a device, then Listen or Send.")
-                } else {
-                    ForEach(model.streams) { row in
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text("\(row.title): \(row.state)")
-                                    .accessibilityIdentifier("stream")
-                                // Measurements only when "Show Measurements" is
-                                // on (Settings); never announced.
-                                if model.showMeasurements, let live = model.diagnostics[row.id] {
-                                    LiveTextRow(live: live)
-                                        .font(.callout)
-                                        .foregroundStyle(.primary)
-                                        .accessibilityIdentifier("streamDiagnostics")
-                                }
-                            }
-                            Spacer()
-                            Button("Stop") { model.stopStream(row) }
-                                .accessibilityLabel("Stop \(row.title)")
-                        }
-                        StreamVolume(row: row)
-                    }
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Streams this Mac started").font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            if model.streams.isEmpty {
+                Text("No streams are running. Start one from Devices: open a device, then Listen or Send.")
+                    .accessibilityIdentifier("noStreams")
+                Spacer()
+            } else {
+                // A standard table, like the Windows app's list: one row per
+                // stream, and one set of controls for the selected one.
+                StreamTable(rows: model.streams.map { [$0.title, $0.state, model.volumeText($0)] },
+                             ids: model.streams.map(\.id), selection: $selection)
+                .frame(minHeight: 160)
+                if let row = selected {
+                    SelectedStreamControls(row: row)
                 }
-            } header: {
-                Text("Streams this Mac started").font(.headline)
             }
         }
-        .formStyle(.grouped)
+        .padding(16)
+        .onAppear(perform: keepSelection)
+        .onChange(of: model.streams.map(\.id)) { keepSelection() }
+    }
+
+    /// Something is always selected while streams run: the chosen one, or
+    /// else the newest.
+    private func keepSelection() {
+        if selection == nil || !model.streams.contains(where: { $0.id == selection }) {
+            selection = model.streams.last?.id
+        }
+    }
+}
+
+/// The streams table: a standard AppKit table (NSTableView) with Stream,
+/// State and Volume columns and one selected row, like the Windows app's
+/// list. Its cells are plain labels, which VoiceOver reads as the row
+/// ("Listening to …, connected, 100 percent") and the column headers name.
+/// Rows are updated in place, so the selection and VoiceOver's place stay.
+struct StreamTable: NSViewRepresentable {
+    let rows: [[String]]
+    let ids: [String]
+    @Binding var selection: String?
+
+    static let columns = [("Stream", "stream", 300.0), ("State", "streamState", 140.0), ("Volume", "streamVolumeText", 150.0)]
+
+    @MainActor final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+        var parent: StreamTable
+        var rows: [[String]] = []
+        var ids: [String] = []
+        var updating = false
+        init(_ parent: StreamTable) { self.parent = parent }
+
+        func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
+        func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+            guard let column = tableColumn, let c = tableView.tableColumns.firstIndex(of: column), row < rows.count else { return nil }
+            let id = NSUserInterfaceItemIdentifier(StreamTable.columns[c].1)
+            let cell = tableView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView ?? {
+                let v = NSTableCellView()
+                v.identifier = id
+                let label = NSTextField(labelWithString: "")
+                label.translatesAutoresizingMaskIntoConstraints = false
+                label.lineBreakMode = .byTruncatingTail
+                label.setAccessibilityIdentifier(id.rawValue)
+                v.addSubview(label)
+                v.textField = label
+                NSLayoutConstraint.activate([
+                    label.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 4),
+                    label.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -4),
+                    label.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+                ])
+                return v
+            }()
+            cell.textField?.stringValue = rows[row][c]
+            return cell
+        }
+
+        func tableViewSelectionDidChange(_ notification: Notification) {
+            guard !updating, let table = notification.object as? NSTableView else { return }
+            let r = table.selectedRow
+            parent.selection = r >= 0 && r < ids.count ? ids[r] : nil
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let table = NSTableView()
+        table.usesAlternatingRowBackgroundColors = true
+        table.allowsMultipleSelection = false
+        table.allowsEmptySelection = true
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        for (title, id, width) in Self.columns {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
+            column.title = title
+            column.width = width
+            table.addTableColumn(column)
+        }
+        table.dataSource = context.coordinator
+        table.delegate = context.coordinator
+        table.setAccessibilityLabel("Streams this Mac started")
+        table.setAccessibilityIdentifier("streams")
+        let scroll = NSScrollView()
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let table = scroll.documentView as? NSTableView else { return }
+        let c = context.coordinator
+        c.parent = self
+        c.updating = true
+        defer { c.updating = false }
+        if c.ids != ids {
+            c.rows = rows
+            c.ids = ids
+            table.reloadData()
+        } else if c.rows != rows {
+            // Same streams, new words (state, volume): those rows in place.
+            let changed = IndexSet(rows.indices.filter { rows[$0] != c.rows[$0] })
+            c.rows = rows
+            table.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integersIn: 0..<Self.columns.count))
+        }
+        let want = selection.flatMap { ids.firstIndex(of: $0) } ?? -1
+        if table.selectedRow != want {
+            if want >= 0 {
+                table.selectRowIndexes(IndexSet(integer: want), byExtendingSelection: false)
+            } else {
+                table.deselectAll(nil)
+            }
+        }
+    }
+}
+
+/// Mute, volume and Stop for the stream selected in the table (their
+/// names say so; the table row says which stream), and its measurements
+/// when "Show Measurements" is on.
+struct SelectedStreamControls: View {
+    @EnvironmentObject var model: AppModel
+    let row: StreamRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Toggle("Mute the Selected Stream", isOn: model.muted(row.id))
+                    .accessibilityIdentifier("streamMute")
+                Spacer()
+                Button("Stop the Selected Stream") { model.stopStream(row) }
+                    .accessibilityIdentifier("stopStream")
+            }
+            LabeledContent("Volume of the Selected Stream") {
+                // No visible percentage: the table says it, and the
+                // slider's spoken value says it.
+                Slider(value: model.volume(row.id), in: 0...1, step: 0.05)
+                    .accessibilityLabel("Volume of the Selected Stream")
+                    .accessibilityValue(model.volumeText(row))
+                    .accessibilityIdentifier("streamVolume")
+            }
+            // Measurements only when "Show Measurements" is on (Settings);
+            // never announced.
+            if model.showMeasurements, let live = model.diagnostics[row.id] {
+                LiveTextRow(live: live)
+                    .font(.callout)
+                    .accessibilityIdentifier("streamDiagnostics")
+            }
+        }
     }
 }
 
@@ -349,26 +491,6 @@ struct AccountsTab: View {
             .accessibilityIdentifier("confirmSignOut")
             Button("Cancel", role: .cancel) { signingOut = nil }
         }
-    }
-}
-
-/// A stream's mute switch and volume slider (on this device: what it plays
-/// here, or what it sends). Their spoken names say which stream.
-struct StreamVolume: View {
-    @EnvironmentObject var model: AppModel
-    let row: StreamRow
-
-    var body: some View {
-        let percent = Int((row.volume * 100).rounded())
-        Toggle("Mute", isOn: model.muted(row.id))
-            .accessibilityLabel("Mute \(row.title)")
-            .accessibilityIdentifier("streamMute")
-        // No visible percentage: the slider's position shows it, and its
-        // spoken value says it.
-        Slider(value: model.volume(row.id), in: 0...1, step: 0.05)
-        .accessibilityLabel("Volume for \(row.title)")
-        .accessibilityValue(row.muted ? "\(percent) percent, muted" : "\(percent) percent")
-        .accessibilityIdentifier("streamVolume")
     }
 }
 

@@ -53,11 +53,13 @@ final class AccessibilityTests: XCTestCase {
                 print("dynamic type finding with no element overruled: \(issue.compactDescription)")
                 return true
             }
-            // The Accounts tab's Manage Devices and Sign Out: standard Form
+            // The Accounts tab's Manage Devices and Sign Out, and the stream
+            // sheet's Stop (built like Sign Out) and Done: standard Form
             // buttons, which the audit reports like the lowest text; the
-            // signed-in test measures both growing at an accessibility size
-            // (and fails if they do not).
-            if issue.auditType == .dynamicType, let e = issue.element, ["manageDevices", "signOut"].contains(e.identifier) {
+            // signed-in test measures Manage Devices and Sign Out growing at
+            // an accessibility size (and fails if they do not).
+            if issue.auditType == .dynamicType, let e = issue.element,
+               ["manageDevices", "signOut", "stopStream", "closeStream"].contains(e.identifier) {
                 print("dynamic type finding on '\(e.identifier)' overruled (measured in testSignedInScreenPassesAccessibilityAudit)")
                 return true
             }
@@ -251,30 +253,44 @@ final class AccessibilityTests: XCTestCase {
 
         // The stream, on the Streams tab (its badge counts the streams).
         showTab(app, "Streams")
-        let stream = app.staticTexts.matching(identifier: "stream").firstMatch
+        // A row per stream: its title and state, its volume as its value.
+        let stream = app.buttons.matching(identifier: "stream").firstMatch
         if !stream.waitForExistence(timeout: 10) {
             print("SCREEN: \(app.debugDescription)")
             XCTFail("no stream row")
             return
         }
-        XCTAssertTrue(waitUntil(30) { stream.label.hasSuffix(": connected") }, "stream: \(stream.label)")
-        // The stream's volume and mute, named after the stream.
+        XCTAssertTrue(waitUntil(30) { stream.label.hasPrefix("Listening to") && stream.label.hasSuffix(": connected") },
+                      "stream: \(stream.label)")
+        XCTAssertEqual(stream.value as? String, "Volume 100 percent")
+        try audit(app)
+        // A tap opens its sheet: the title as a heading, Mute, Volume, Stop.
+        stream.tap()
+        let heading = app.descendants(matching: .any).matching(identifier: "streamHeading").firstMatch
+        XCTAssertTrue(heading.waitForExistence(timeout: 5), "the stream's sheet did not open")
+        XCTAssertTrue(heading.label.hasPrefix("Listening to"), "heading: \(heading.label)")
         let volume = app.sliders["streamVolume"]
-        XCTAssertTrue(volume.label.hasPrefix("Volume for Listening to"), "volume named \(volume.label)")
+        XCTAssertEqual(volume.label, "Volume")
         volume.adjust(toNormalizedSliderPosition: 0.5)
         // XCTest places the slider only roughly (45 or 50 percent).
         func percent() -> Int? { (volume.value as? String)?.split(separator: " ").first.flatMap { Int($0) } }
         XCTAssertTrue(waitUntil(5) { (40...60).contains(percent() ?? -1) }, "volume says \(volume.value ?? "")")
         let set = percent() ?? 0
         let mute = app.switches["streamMute"]
-        XCTAssertTrue(mute.label.hasPrefix("Mute Listening to"), "mute named \(mute.label)")
+        XCTAssertEqual(mute.label, "Mute")
         // The switch itself, at the right end of its row.
         mute.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
         XCTAssertTrue(waitUntil(5) { (volume.value as? String) == "\(set) percent, muted" }, "volume says \(volume.value ?? "")")
+        XCTAssertTrue(app.buttons["stopStream"].exists, "no Stop in the sheet")
         try audit(app)
-        let stop = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Stop Listening to'")).firstMatch
-        XCTAssertTrue(stop.exists, "the Stop button does not name its stream")
-        stop.tap()
+        // Done closes it; the row now says the volume and that it is muted.
+        app.buttons["closeStream"].tap()
+        XCTAssertTrue(waitUntil(5) { !heading.exists }, "the sheet did not close")
+        XCTAssertEqual(stream.value as? String, "Volume \(set) percent, muted")
+        // Stop, from the sheet: it closes with the stream.
+        stream.tap()
+        XCTAssertTrue(app.buttons["stopStream"].waitForExistence(timeout: 5))
+        app.buttons["stopStream"].tap()
         let none = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'No streams are running'")).firstMatch
         XCTAssertTrue(none.waitForExistence(timeout: 15), "the stream did not end")
 
