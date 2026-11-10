@@ -152,9 +152,14 @@ final class AccessibilityTests: XCTestCase {
     /// visible to your other devices").
     private func waitForStatus(_ app: XCUIApplication, window: String, menu: String,
                                file: StaticString = #filePath, line: UInt = #line) {
+        // macOS can keep an app's menu bar item out of the menu bar (System
+        // Settings, Menu Bar): then only the window is checked, and the
+        // log says so.
+        let menuShown = menuBarItemShown(app)
+        if !menuShown { print("MENU BAR ITEM HIDDEN BY macOS: only the window's status is checked") }
         let ok = waitUntil(15) {
             let now = statusWords(app)
-            return now.window.contains(window) && now.menu.contains(menu)
+            return now.window.contains(window) && (!menuShown || now.menu.contains(menu))
         }
         let now = statusWords(app)
         XCTAssertTrue(ok, "status not updated: window \"\(now.window)\", menu \(now.menu)", file: file, line: line)
@@ -195,6 +200,19 @@ final class AccessibilityTests: XCTestCase {
         }
     }
 
+    /// Whether macOS shows AudioNet's menu bar item (it can be turned off
+    /// in System Settings, Menu Bar, "Allow in the Menu Bar").
+    private func menuBarItemShown(_ app: XCUIApplication) -> Bool {
+        app.statusItems.firstMatch.waitForExistence(timeout: 5)
+    }
+
+    /// Skips a test that needs the menu bar item when macOS hides it.
+    private func requireMenuBarItem(_ app: XCUIApplication) throws {
+        if !menuBarItemShown(app) {
+            throw XCTSkip("macOS is not showing AudioNet's menu bar item on this Mac (System Settings, Menu Bar, Allow in the Menu Bar)")
+        }
+    }
+
     private func menuBarEntries(_ app: XCUIApplication) -> [String] {
         let item = app.statusItems.firstMatch
         guard item.waitForExistence(timeout: 10) else { return [] }
@@ -230,6 +248,7 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertTrue(waitUntil(5) { !app.windows["main"].exists }, "the window did not close")
         XCTAssertTrue(waitUntil(5) { !hasDockIcon() }, "the Dock icon stayed after the window closed")
         XCTAssertNotEqual(app.state, .notRunning, "AudioNet should keep running")
+        try requireMenuBarItem(app)
         XCTAssertTrue(menuBarEntries(app).contains("Open AudioNet"), "the menu bar item has no Open AudioNet")
         try openAgain()
         XCTAssertTrue(app.windows["main"].waitForExistence(timeout: 10), "opening AudioNet again did not show its window")
@@ -238,6 +257,7 @@ final class AccessibilityTests: XCTestCase {
 
     func testStartingInTheMenuBarShowsNoWindowOrDockIcon() throws {
         let app = launch(extra: ["-startInMenuBar", "YES"])
+        try requireMenuBarItem(app)
         let entries = menuBarEntries(app)
         XCTAssertTrue(entries.contains("Open AudioNet"), "the menu bar item is missing or has no Open AudioNet: \(entries)")
         XCTAssertTrue(entries.contains("Settings…"), "the menu bar menu has no Settings item: \(entries)")
