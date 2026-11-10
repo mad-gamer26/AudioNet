@@ -209,7 +209,10 @@ export through `in-session.sh` (over SSH Xcode's account is not
 available). The App Store Connect API keys on the Mac (for notarization)
 may not use cloud signing, so the export uses Xcode's account, not
 `-authenticationKey…`. The build then appears in App Store Connect,
-TestFlight, after Apple's processing.
+TestFlight, after Apple's processing. For the public TestFlight link,
+add the build to the external group and submit it for beta review (App
+Store Connect, or its API with a key whose role allows it: the Mac's
+`~/.audionet/appstore` key does; the notarization key does not).
 
 ## Testing
 
