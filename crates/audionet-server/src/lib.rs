@@ -43,5 +43,14 @@ pub async fn security_headers(req: Request, next: Next) -> Response {
         "permissions-policy",
         HeaderValue::from_static("microphone=(self), camera=(), geolocation=()"),
     );
+    // Browsers check with the server before reusing a page file (a cheap
+    // 304 when unchanged), so an updated web client is used at once.
+    // Without this they guess how long to keep it, often for hours.
+    if !h.contains_key(axum::http::header::CACHE_CONTROL) {
+        h.insert(
+            axum::http::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        );
+    }
     resp
 }
