@@ -126,6 +126,25 @@ sudo -u audionet /opt/audionet/bin/audionet-server --config /etc/audionet/config
 Passwords must be at least 10 characters. Changing a password signs the
 user out of all browsers.
 
+To sign someone in to the web client without telling them the password,
+make a one-time sign-in link:
+
+```sh
+sudo -u audionet /opt/audionet/bin/audionet-server --config /etc/audionet/config.toml user link alice
+sudo -u audionet /opt/audionet/bin/audionet-server --config /etc/audionet/config.toml user link alice --hours 2
+```
+
+It prints the link and copies it to the clipboard of the terminal you are
+typing in, also over SSH (with an OSC 52 escape sequence: Windows
+Terminal, iTerm2, kitty, WezTerm and tmux with `set-clipboard on` allow
+it; macOS Terminal does not). The link signs one web browser in, once,
+within 24 hours unless `--hours` (1 to 168) says otherwise. It works only
+in the web client: the apps and devices still need the password, and the
+link does not let anyone change the account's email address, which asks
+for the password. Signing out ends that browser's session like any other.
+Each command makes a new link; earlier unused ones keep working until they
+expire, and `user passwd` ends them all.
+
 Email addresses are used only to reset forgotten passwords. Accounts
 created in the web client must give one, and AudioNet emails a link to
 confirm it. Until it is confirmed the address only waits: it keeps no one

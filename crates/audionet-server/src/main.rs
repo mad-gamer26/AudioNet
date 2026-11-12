@@ -71,6 +71,29 @@ enum UserAction {
     },
     /// List users and their email addresses.
     List,
+    /// Make a one-time link that signs a web browser in to a user's account
+    /// without the password, and copy it to the clipboard. It works in the
+    /// web client only (apps and devices still need the password), once.
+    Link {
+        username: String,
+        /// How long the link works, in hours (1 to 168).
+        #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u32).range(1..=168))]
+        hours: u32,
+    },
+}
+
+/// Copies `text` to the clipboard of the terminal the administrator is
+/// typing in, which also works over SSH: an OSC 52 escape sequence, written
+/// only to a terminal. Terminals that don't allow it ignore it.
+fn copy_to_terminal_clipboard(text: &str) -> bool {
+    use base64::Engine;
+    use std::io::IsTerminal;
+    let mut err = std::io::stderr();
+    if !err.is_terminal() {
+        return false;
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(text);
+    write!(err, "\x1b]52;c;{b64}\x07").is_ok() && err.flush().is_ok()
 }
 
 fn read_password() -> Result<String, String> {
@@ -160,6 +183,31 @@ fn user_command(config: &Config, action: UserAction) -> Result<(), String> {
                 println!("Deleted {username} and their devices.");
             } else {
                 return Err(format!("no user named {username}"));
+            }
+        }
+        UserAction::Link { username, hours } => {
+            let user = db
+                .with(|c| db::user_by_name(c, &username))
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("no user named {username}"))?;
+            let token = auth::new_token("anl_");
+            let hash = auth::hash_token(&token);
+            db.with(|c| db::create_sign_in_link(c, &hash, user.id, i64::from(hours) * 3600))
+                .map_err(|e| format!("could not make the link: {e}"))?;
+            let link = format!(
+                "{}/?signin={token}",
+                config.public_url.trim_end_matches('/')
+            );
+            let plural = if hours == 1 { "" } else { "s" };
+            println!("Sign-in link for: {}", user.username);
+            println!("Works: once, in a web browser only, within {hours} hour{plural}");
+            println!("Link: {link}");
+            if copy_to_terminal_clipboard(&link) {
+                println!(
+                    "Clipboard: copied, if your terminal allows it (Windows Terminal and iTerm2 do)"
+                );
+            } else {
+                println!("Clipboard: not copied (the output is not a terminal)");
             }
         }
         UserAction::List => {

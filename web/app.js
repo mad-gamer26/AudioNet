@@ -110,10 +110,12 @@ function takeLinkFromAddress() {
   const params = new URLSearchParams(location.search);
   const link = {
     verify: params.get("verify"), reset: params.get("reset"), forgot: params.has("forgot"),
+    // A one-time sign-in link from the server's administrator.
+    signin: params.get("signin"),
     // The apps' "Manage devices": opens that tab once signed in.
     manage: params.has("manage"),
   };
-  if (link.verify || link.reset || link.forgot || link.manage) history.replaceState(null, "", location.pathname);
+  if (link.verify || link.reset || link.forgot || link.manage || link.signin) history.replaceState(null, "", location.pathname);
   return link;
 }
 
@@ -131,10 +133,25 @@ async function start() {
   }
   if (link.verify) await verifyEmail(link.verify);
   state.openManage = link.manage;
+  let linkError = null;
+  if (link.signin) {
+    try {
+      const r = await api("POST", "/api/v1/login/link", { token: link.signin });
+      announce(`Signed in as ${r.username} with a sign-in link.`);
+    } catch (err) {
+      linkError = `The sign-in link did not work. ${err.message}`;
+    }
+  }
   try {
     const me = await api("GET", "/api/v1/me");
     signedIn(me, false);
+    if (linkError) showError(linkError);
   } catch (_) {
+    if (linkError) {
+      showSignIn();
+      showError(linkError);
+      return;
+    }
     if (link.forgot && state.passwordReset) showForgot();
     else {
       showSignIn();

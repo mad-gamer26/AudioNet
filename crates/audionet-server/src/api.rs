@@ -329,6 +329,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/info", get(info))
         .route("/api/v1/register", post(register))
         .route("/api/v1/login", post(login))
+        .route("/api/v1/login/link", post(login_with_link))
         .route("/api/v1/logout", post(logout))
         .route("/api/v1/me", get(me))
         .route("/api/v1/account/email", post(change_email))
@@ -622,6 +623,51 @@ async fn login(
 ) -> ApiResult<Response> {
     let username = check_credentials(&s, c).await?;
     sign_in(&s, username).await
+}
+
+#[derive(Deserialize)]
+struct SignInLink {
+    token: String,
+}
+
+/// Signs a browser in with a one-time link from the administrator
+/// (`audionet-server user link`). Only for the web client: the request must
+/// come from a page of this server, and the session goes only into the
+/// browser's cookie, never into the answer, so an app or a device cannot
+/// use a link. Devices still sign in only with the password.
+async fn login_with_link(
+    State(s): State<Shared>,
+    headers: HeaderMap,
+    _o: BrowserOrigin,
+    Json(r): Json<SignInLink>,
+) -> ApiResult<Response> {
+    if !headers.contains_key(header::ORIGIN) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "web_only",
+            "Sign-in links work only in a web browser.",
+        ));
+    }
+    let hash = hash_token(r.token.trim());
+    let user =
+        s.db.call(move |c| db::take_sign_in_link(c, &hash))
+            .await?
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "link_invalid",
+                    "This sign-in link has already been used or has expired. Ask for a new one, or sign in with your password.",
+                )
+            })?;
+    tracing::info!(user = %user.username, "browser signed in with a sign-in link");
+    let mut resp = sign_in(&s, user.username.clone()).await?;
+    // The same cookie as a password sign-in, without the token in the body.
+    let cookie = resp.headers_mut().remove(header::SET_COOKIE);
+    let mut resp = Json(json!({ "username": user.username })).into_response();
+    if let Some(cookie) = cookie {
+        resp.headers_mut().insert(header::SET_COOKIE, cookie);
+    }
+    Ok(resp)
 }
 
 /// Verifies a username and password (throttled per username, constant

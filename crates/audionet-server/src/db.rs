@@ -1,5 +1,6 @@
-//! SQLite storage: users, web sign-in sessions, devices (nodes) and email
-//! links (address confirmation, password reset).
+//! SQLite storage: users, web sign-in sessions, devices (nodes), email
+//! links (address confirmation, password reset) and the administrator's
+//! one-time sign-in links.
 //!
 //! Secrets are never stored directly: passwords are argon2id hashes and all
 //! tokens are stored as SHA-256 hashes.
@@ -11,7 +12,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::auth::TokenHash;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Clone)]
 pub struct Db {
@@ -154,6 +155,17 @@ impl Db {
                     apns_token TEXT NOT NULL,
                     sandbox INTEGER NOT NULL,
                     created_at INTEGER NOT NULL
+                );",
+            )?;
+        }
+        if version < 5 {
+            // Version 5: one-time sign-in links the administrator makes
+            // (`audionet-server user link`); each signs one browser in.
+            conn.execute_batch(
+                "CREATE TABLE sign_in_links (
+                    token_hash BLOB PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    expires_at INTEGER NOT NULL
                 );",
             )?;
         }
@@ -481,12 +493,60 @@ pub fn set_password(c: &Connection, user_id: i64, password_hash: &str) -> rusqli
         "UPDATE users SET password_hash = ?1 WHERE id = ?2",
         params![password_hash, user_id],
     )?;
-    // Changing a password signs out every web session.
+    // Changing a password signs out every web session, and its unused
+    // sign-in links, which would start new ones.
     c.execute(
         "DELETE FROM web_sessions WHERE user_id = ?1",
         params![user_id],
     )?;
+    c.execute(
+        "DELETE FROM sign_in_links WHERE user_id = ?1",
+        params![user_id],
+    )?;
     Ok(())
+}
+
+/// Stores a one-time sign-in link for `user_id`. Earlier unused links stay
+/// valid (one per browser); expired ones are dropped.
+pub fn create_sign_in_link(
+    c: &Connection,
+    hash: &TokenHash,
+    user_id: i64,
+    ttl_s: i64,
+) -> rusqlite::Result<()> {
+    let now = now_s();
+    c.execute(
+        "DELETE FROM sign_in_links WHERE expires_at <= ?1",
+        params![now],
+    )?;
+    c.execute(
+        "INSERT INTO sign_in_links (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
+        params![&hash.0[..], user_id, now + ttl_s],
+    )?;
+    Ok(())
+}
+
+/// Uses up a sign-in link: returns its user if it exists and has not
+/// expired. A link works once, whatever the outcome.
+pub fn take_sign_in_link(c: &Connection, hash: &TokenHash) -> rusqlite::Result<Option<User>> {
+    let found: Option<(i64, i64)> = c
+        .query_row(
+            "SELECT user_id, expires_at FROM sign_in_links WHERE token_hash = ?1",
+            params![&hash.0[..]],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((user_id, expires_at)) = found else {
+        return Ok(None);
+    };
+    c.execute(
+        "DELETE FROM sign_in_links WHERE token_hash = ?1",
+        params![&hash.0[..]],
+    )?;
+    if expires_at <= now_s() {
+        return Ok(None);
+    }
+    user_by_id(c, user_id)
 }
 
 pub fn list_users(c: &Connection) -> rusqlite::Result<Vec<User>> {
@@ -741,6 +801,35 @@ mod tests {
             // Several accounts may have no confirmed address.
             set_email(c, a, None)?;
             assert!(!email_taken(c, "shared@example.com", b)?);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn sign_in_links_work_once_and_end_with_a_new_password() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|c| {
+            let a = create_user(c, "alice", "h")?;
+            let (one, two) = (hash_token("anl_one"), hash_token("anl_two"));
+            create_sign_in_link(c, &one, a, 60)?;
+            create_sign_in_link(c, &two, a, 60)?;
+            // Each link signs one browser in, once.
+            assert_eq!(take_sign_in_link(c, &one)?.unwrap().username, "alice");
+            assert!(take_sign_in_link(c, &one)?.is_none());
+            assert!(take_sign_in_link(c, &hash_token("anl_unknown"))?.is_none());
+            // An expired link is refused and gone.
+            let old = hash_token("anl_old");
+            create_sign_in_link(c, &old, a, -1)?;
+            assert!(take_sign_in_link(c, &old)?.is_none());
+            // A new password ends the unused ones.
+            set_password(c, a, "h2")?;
+            assert!(take_sign_in_link(c, &two)?.is_none());
+            // Deleting the account deletes its links.
+            let three = hash_token("anl_three");
+            create_sign_in_link(c, &three, a, 60)?;
+            assert!(delete_user(c, "alice")?);
+            assert!(take_sign_in_link(c, &three)?.is_none());
             Ok(())
         })
         .unwrap();
