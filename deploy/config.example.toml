@@ -66,3 +66,12 @@ turn_urls = [
 turn_credential_ttl_s = 3600
 # Connected clients get fresh credentials this often (default: half the lifetime).
 # turn_credential_refresh_s = 1800
+
+[admin]
+# The admin page: accounts, devices, who is connected, the log. Only this
+# machine can open it by default (reach it with an SSH tunnel or a VPN).
+# bind = "127.0.0.1:8741"
+# To open it to other machines, set a password (audionet-server admin-password)
+# and a wider bind address:
+# password_hash = "$argon2id$..."
+# enabled = false   # no admin page at all

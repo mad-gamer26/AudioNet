@@ -167,6 +167,49 @@ account's confirmed address. It answers the same whether or not the
 account exists. Setting the new password signs out every browser; devices
 stay signed in. It needs the `[email]` settings.
 
+### The admin page
+
+The server has an admin page for accounts, devices, who is connected and
+what is streaming, the settings and the recent log. It runs on its own
+listener, never the public one, and by default only this machine can open
+it: `http://127.0.0.1:8741/`. From another computer, use an SSH tunnel
+(`ssh -L 8741:127.0.0.1:8741 your-server`, then open
+`http://127.0.0.1:8741/`), or a VPN such as Tailscale with a reverse proxy
+that admits only it.
+
+On the page you can:
+
+* create accounts, set passwords and email addresses (recorded as
+  confirmed), make one-time sign-in links, sign out an account's browsers,
+  and delete accounts;
+* see each account's devices, rename them, disconnect them (they stay
+  signed in and reconnect) and remove them (signed out and disconnected at
+  once);
+* see every connection (account, device or browser, address, app version,
+  sources and outputs) and every stream, live;
+* read the settings (secrets are not shown) and the last 2000 log lines.
+
+Every change is written to the log with the address it came from
+(`admin: ...` lines).
+
+To let other machines reach it directly, give it a password and a wider
+address:
+
+```sh
+sudo -u audionet /opt/audionet/bin/audionet-server admin-password   # reads the password, prints password_hash
+```
+
+```toml
+[admin]
+bind = "0.0.0.0:8741"
+password_hash = "$argon2id$..."
+```
+
+Browsers then ask for the password (any user name). The server refuses an
+address other than 127.0.0.1 or ::1 without a password. Use HTTPS in front
+of it, or a VPN, since the password otherwise travels unencrypted. To turn
+the page off: `[admin] enabled = false`.
+
 ## 5. Reverse proxy (nginx)
 
 Use `deploy/nginx/audionet.example.conf`: replace the host name and

@@ -44,6 +44,9 @@ enum Command {
         #[command(subcommand)]
         action: UserAction,
     },
+    /// Make a hash for the admin page's password ([admin] password_hash).
+    /// The password is read from standard input.
+    AdminPassword,
 }
 
 #[derive(Debug, Subcommand)]
@@ -228,6 +231,13 @@ fn user_command(config: &Config, action: UserAction) -> Result<(), String> {
     Ok(())
 }
 
+fn admin_password() -> Result<(), String> {
+    let hash = auth::hash_password(&read_password()?)?;
+    println!("Put this in the [admin] section of the configuration file, then restart the server:");
+    println!("password_hash = \"{hash}\"");
+    Ok(())
+}
+
 async fn serve(config: Config) -> Result<(), String> {
     let db = Db::open(&config.database).map_err(|e| {
         format!(
@@ -256,6 +266,31 @@ async fn serve(config: Config) -> Result<(), String> {
     let state = Arc::new(state);
     // Notifications about devices, through the configured gateway.
     audionet_server::push::start(Arc::clone(&state));
+    if state.config.admin.enabled {
+        let admin_bind = state.config.admin.bind;
+        let admin = audionet_server::admin::router(Arc::clone(&state));
+        let listener = tokio::net::TcpListener::bind(admin_bind)
+            .await
+            .map_err(|e| format!("could not listen on {admin_bind} for the admin page: {e}"))?;
+        tracing::info!(
+            "admin page on http://{admin_bind}/ ({})",
+            if state.config.admin.password_hash.is_some() {
+                "password set"
+            } else {
+                "no password; this machine only"
+            }
+        );
+        tokio::spawn(async move {
+            let served = axum::serve(
+                listener,
+                admin.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await;
+            if let Err(e) = served {
+                tracing::error!("the admin page stopped: {e}");
+            }
+        });
+    }
     let mut app = router(state);
     if let Some(dir) = downloads {
         app = app.nest_service("/downloads", ServeDir::new(dir));
@@ -284,18 +319,36 @@ async fn serve(config: Config) -> Result<(), String> {
 
 fn main() -> ExitCode {
     use std::io::IsTerminal;
-    tracing_subscriber::fmt()
-        // Plain text for journald and log files; color only on a terminal.
-        .with_ansi(std::io::stderr().is_terminal())
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "audionet_server=info,tower_http=warn".into()),
-        )
-        .init();
+    {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        use tracing_subscriber::util::SubscriberInitExt as _;
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "audionet_server=info,tower_http=warn".into()),
+            )
+            // Plain text for journald and log files; color only on a terminal.
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(std::io::stderr().is_terminal())
+                    .with_writer(std::io::stderr),
+            )
+            // The admin page's copy of the recent lines.
+            .with(audionet_server::logbuf::BufferLayer)
+            .init();
+    }
     let cli = Cli::parse();
     let loaded = match cli.command {
         Command::User { .. } => Config::load_for_admin(&cli.config),
+        Command::AdminPassword => {
+            return match admin_password() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         _ => Config::load(&cli.config),
     };
     let config = match loaded {
@@ -310,6 +363,19 @@ fn main() -> ExitCode {
             println!("Configuration is valid.");
             println!("Public URL: {}", config.public_url);
             println!("Listening address: {}", config.bind);
+            if config.admin.enabled {
+                println!(
+                    "Admin page: http://{}/ ({})",
+                    config.admin.bind,
+                    if config.admin.password_hash.is_some() {
+                        "password set"
+                    } else {
+                        "no password; this machine only"
+                    }
+                );
+            } else {
+                println!("Admin page: off");
+            }
             println!("Database: {}", config.database.display());
             println!(
                 "Web client directory: {}",
@@ -373,6 +439,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         Command::User { action } => user_command(&config, action),
+        Command::AdminPassword => unreachable!("handled before the configuration is loaded"),
         Command::Serve => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()

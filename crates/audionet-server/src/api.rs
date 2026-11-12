@@ -194,7 +194,7 @@ fn is_upgrade(parts: &Parts) -> bool {
     parts.headers.contains_key(header::UPGRADE)
 }
 
-fn platform_from(s: Option<&str>) -> Option<Platform> {
+pub(crate) fn platform_from(s: Option<&str>) -> Option<Platform> {
     s.and_then(|p| serde_json::from_value(serde_json::Value::String(p.to_owned())).ok())
 }
 
@@ -1213,9 +1213,14 @@ async fn rename_node(
 
 // ─── WebSocket signaling ────────────────────────────────────────────────────
 
-async fn ws_upgrade(State(s): State<Shared>, p: Principal, ws: WebSocketUpgrade) -> Response {
+async fn ws_upgrade(
+    State(s): State<Shared>,
+    p: Principal,
+    ClientAddress(address): ClientAddress,
+    ws: WebSocketUpgrade,
+) -> Response {
     ws.max_message_size(MAX_WS_MESSAGE)
-        .on_upgrade(move |socket| run_connection(s, p, socket))
+        .on_upgrade(move |socket| run_connection(s, p, address, socket))
 }
 
 fn ice_servers(s: &AppState, p: &Principal) -> Vec<IceServer> {
@@ -1260,7 +1265,7 @@ fn error_msg(code: &str, message: impl Into<String>) -> ServerMessage {
     }
 }
 
-async fn run_connection(s: Shared, p: Principal, socket: WebSocket) {
+async fn run_connection(s: Shared, p: Principal, address: String, socket: WebSocket) {
     let (mut sink, mut stream) = socket.split();
 
     // First message must be `hello`.
@@ -1320,6 +1325,15 @@ async fn run_connection(s: Shared, p: Principal, socket: WebSocket) {
     let (tx, mut rx) = mpsc::channel::<ServerMessage>(QUEUE_DEPTH);
     s.hub
         .register(&conn_id, p.user_id, p.node.clone(), visible, tx.clone());
+    s.hub.set_info(
+        &conn_id,
+        crate::hub::ConnInfo {
+            username: p.username.clone(),
+            software: software.clone(),
+            address,
+            since: db::now_s(),
+        },
+    );
     if let Some(n) = &p.node {
         let id = n.id.clone();
         let _ = s.db.call(move |c| db::touch_node(c, &id)).await;
@@ -1335,6 +1349,13 @@ async fn run_connection(s: Shared, p: Principal, socket: WebSocket) {
         ice_servers: ice_servers(&s, &p),
     };
     let _ = tx.try_send(welcome);
+    // Only the hub holds this connection's queue for real: when the hub
+    // drops it (the device was removed, replaced by a newer connection, or
+    // could not keep up), `rx` ends and so does the connection. Replies
+    // from here go through a weak handle, which doesn't keep it open.
+    let weak = tx.downgrade();
+    drop(tx);
+    let tx = weak;
 
     let mut ping = tokio::time::interval(WS_PING);
     ping.tick().await;
@@ -1348,19 +1369,21 @@ async fn run_connection(s: Shared, p: Principal, socket: WebSocket) {
     loop {
         tokio::select! {
             _ = ice_refresh.tick(), if refresh_every.is_some() => {
-                let _ = tx.try_send(ServerMessage::IceServers { ice_servers: ice_servers(&s, &p) });
+                if let Some(tx) = tx.upgrade() {
+                    let _ = tx.try_send(ServerMessage::IceServers { ice_servers: ice_servers(&s, &p) });
+                }
             }
             out = rx.recv() => match out {
                 Some(msg) => {
                     let text = serde_json::to_string(&msg).expect("serializes");
                     if sink.send(Message::Text(text.into())).await.is_err() { break; }
                 }
-                None => break, // hub dropped us (slow client or replaced)
+                None => break, // the hub dropped us: removed, replaced or too slow
             },
             inc = stream.next() => match inc {
                 Some(Ok(Message::Text(text))) => {
                     let reply = handle(&s, &p, &conn_id, text.as_str()).await;
-                    if let Some(r) = reply { let _ = tx.try_send(r); }
+                    if let (Some(r), Some(tx)) = (reply, tx.upgrade()) { let _ = tx.try_send(r); }
                 }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 Some(Ok(_)) => {}

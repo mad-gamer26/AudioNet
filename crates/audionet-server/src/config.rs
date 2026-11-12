@@ -75,6 +75,69 @@ pub struct Config {
     /// the app's APNs key.
     #[serde(default)]
     pub push_gateway: PushGatewayConfig,
+    /// The admin page: accounts, devices, who is connected, the log.
+    #[serde(default)]
+    pub admin: AdminConfig,
+}
+
+/// The admin page's own listener, separate from the public one so the
+/// reverse proxy never exposes it by accident.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminConfig {
+    /// Whether the admin page runs at all.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Where it listens. Only this machine by default: reach it through an
+    /// SSH tunnel, a VPN such as Tailscale, or a reverse proxy you
+    /// restrict. Anything but a loopback address needs `password_hash`.
+    #[serde(default = "default_admin_bind")]
+    pub bind: SocketAddr,
+    /// An argon2 hash of the admin password (`audionet-server
+    /// admin-password` makes one). Unset: no password, which is allowed only
+    /// on a loopback `bind`.
+    #[serde(default)]
+    pub password_hash: Option<String>,
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            bind: default_admin_bind(),
+            password_hash: None,
+        }
+    }
+}
+
+impl AdminConfig {
+    fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if let Some(h) = &self.password_hash
+            && !h.starts_with("$argon2")
+        {
+            return Err(
+                "admin.password_hash must be a hash from `audionet-server admin-password`".into(),
+            );
+        }
+        if !self.bind.ip().is_loopback() && self.password_hash.is_none() {
+            return Err(format!(
+                "admin.bind = {} is reachable from other machines, so admin.password_hash is required (make one with `audionet-server admin-password`), or listen on 127.0.0.1",
+                self.bind
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_admin_bind() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 8741))
 }
 
 /// A push gateway: relays notifications from AudioNet servers to Apple's
@@ -362,6 +425,7 @@ impl Config {
         }
         self.email.validate()?;
         self.push_gateway.validate()?;
+        self.admin.validate()?;
         if let Some(url) = &self.push_gateway_url
             && origin_of(url).is_none()
         {

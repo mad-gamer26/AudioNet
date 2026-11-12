@@ -44,6 +44,67 @@ pub struct NodeMeta {
 struct Route {
     offerer: String,
     node_conn: String,
+    /// For the admin page: what the session carries, when it began (unix
+    /// seconds) and its latest reported state.
+    media: SessionMedia,
+    started: i64,
+    state: SessionState,
+}
+
+/// What the admin page shows about a connection, beyond what routing needs.
+#[derive(Clone, Debug)]
+pub struct ConnInfo {
+    pub username: String,
+    pub software: String,
+    pub address: String,
+    pub since: i64,
+}
+
+/// One connection, for the admin page.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AdminConn {
+    pub conn_id: String,
+    pub user_id: i64,
+    pub username: String,
+    /// "device" or "browser" (browsers include visitors such as the NVDA
+    /// add-on; `software` tells them apart).
+    pub kind: &'static str,
+    pub software: String,
+    pub address: String,
+    pub since: i64,
+    pub node_id: Option<String>,
+    pub node_name: Option<String>,
+    pub platform: Option<Platform>,
+    pub visible: bool,
+    pub sources: Vec<String>,
+    pub destinations: Vec<String>,
+}
+
+/// One session, for the admin page.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AdminSession {
+    pub session_id: String,
+    /// The connection that started it, and the device it goes to.
+    pub from_conn: String,
+    pub to_conn: String,
+    /// "listen" (the device sends to the starter) or "speak".
+    pub direction: &'static str,
+    /// The device's source or output, by name.
+    pub endpoint: String,
+    pub started: i64,
+    pub state: SessionState,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AdminSnapshot {
+    pub connections: Vec<AdminConn>,
+    pub sessions: Vec<AdminSession>,
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 #[derive(Debug, Default)]
@@ -52,6 +113,8 @@ struct Inner {
     node_conn: HashMap<String, String>,
     endpoints: HashMap<String, (Vec<SourceInfo>, Vec<DestinationInfo>)>,
     sessions: HashMap<String, Route>,
+    /// Admin-page details per connection (removed with the connection).
+    info: HashMap<String, ConnInfo>,
 }
 
 /// Errors reported back to the requesting client, in words.
@@ -157,6 +220,7 @@ impl Hub {
     /// no longer visible.
     pub fn unregister(&self, conn_id: &str) {
         let mut g = self.lock();
+        g.info.remove(conn_id);
         let Some(conn) = g.conns.remove(conn_id) else {
             return;
         };
@@ -436,6 +500,9 @@ impl Hub {
             Route {
                 offerer: from.to_owned(),
                 node_conn: node_conn.clone(),
+                media: media.clone(),
+                started: unix_now(),
+                state: SessionState::Starting,
             },
         );
         Self::send(
@@ -491,6 +558,8 @@ impl Hub {
         let (to, _) = Self::peer(&g, from, &session_id)?;
         if matches!(state, SessionState::Ended | SessionState::Failed) {
             g.sessions.remove(session_id.as_str());
+        } else if let Some(r) = g.sessions.get_mut(session_id.as_str()) {
+            r.state = state;
         }
         Self::send(
             &mut g,
@@ -526,6 +595,133 @@ impl Hub {
 
     pub fn connection_count(&self) -> usize {
         self.lock().conns.len()
+    }
+
+    // ─── for the admin page ─────────────────────────────────────────────
+
+    /// Records what the admin page shows about a connection.
+    pub fn set_info(&self, conn_id: &str, info: ConnInfo) {
+        let mut g = self.lock();
+        if g.conns.contains_key(conn_id) {
+            g.info.insert(conn_id.to_owned(), info);
+        }
+    }
+
+    /// Every connection and session, now.
+    pub fn admin_snapshot(&self) -> AdminSnapshot {
+        let g = self.lock();
+        let mut connections: Vec<AdminConn> = g
+            .conns
+            .iter()
+            .map(|(id, c)| {
+                let info = g.info.get(id);
+                let (sources, destinations) = c
+                    .node
+                    .as_ref()
+                    .and_then(|n| g.endpoints.get(&n.id))
+                    .map(|(s, d)| {
+                        (
+                            s.iter().map(|x| x.name.clone()).collect(),
+                            d.iter().map(|x| x.name.clone()).collect(),
+                        )
+                    })
+                    .unwrap_or_default();
+                AdminConn {
+                    conn_id: id.clone(),
+                    user_id: c.user_id,
+                    username: info.map(|i| i.username.clone()).unwrap_or_default(),
+                    kind: if c.node.is_some() {
+                        "device"
+                    } else {
+                        "browser"
+                    },
+                    software: info.map(|i| i.software.clone()).unwrap_or_default(),
+                    address: info.map(|i| i.address.clone()).unwrap_or_default(),
+                    since: info.map_or(0, |i| i.since),
+                    node_id: c.node.as_ref().map(|n| n.id.clone()),
+                    node_name: c.node.as_ref().map(|n| n.name.clone()),
+                    platform: c.node.as_ref().and_then(|n| n.platform),
+                    visible: c.node.is_some() && c.visible,
+                    sources,
+                    destinations,
+                }
+            })
+            .collect();
+        connections.sort_by(|a, b| {
+            (a.username.to_lowercase(), a.node_name.clone(), a.since).cmp(&(
+                b.username.to_lowercase(),
+                b.node_name.clone(),
+                b.since,
+            ))
+        });
+        let endpoint_name = |node_conn: &str, media: &SessionMedia| -> String {
+            let node = g.conns.get(node_conn).and_then(|c| c.node.as_ref());
+            let eps = node.and_then(|n| g.endpoints.get(&n.id));
+            match media {
+                SessionMedia::Listen { source_id } => eps
+                    .and_then(|(s, _)| s.iter().find(|x| &x.id == source_id))
+                    .map_or_else(|| source_id.clone(), |x| x.name.clone()),
+                SessionMedia::Speak { destination_id } => eps
+                    .and_then(|(_, d)| d.iter().find(|x| &x.id == destination_id))
+                    .map_or_else(|| destination_id.clone(), |x| x.name.clone()),
+            }
+        };
+        let mut sessions: Vec<AdminSession> = g
+            .sessions
+            .iter()
+            .map(|(id, r)| AdminSession {
+                session_id: id.clone(),
+                from_conn: r.offerer.clone(),
+                to_conn: r.node_conn.clone(),
+                direction: match r.media {
+                    SessionMedia::Listen { .. } => "listen",
+                    SessionMedia::Speak { .. } => "speak",
+                },
+                endpoint: endpoint_name(&r.node_conn, &r.media),
+                started: r.started,
+                state: r.state,
+            })
+            .collect();
+        sessions.sort_by_key(|s| s.started);
+        AdminSnapshot {
+            connections,
+            sessions,
+        }
+    }
+
+    /// Disconnects one connection. Returns whether it was connected.
+    pub fn kick_conn(&self, conn_id: &str) -> bool {
+        let known = self.lock().conns.contains_key(conn_id);
+        if known {
+            self.unregister(conn_id);
+        }
+        known
+    }
+
+    /// Disconnects every connection of an account (deleted or signed out
+    /// everywhere). Returns how many there were.
+    pub fn kick_user(&self, user_id: i64) -> usize {
+        self.kick_where(|c| c.user_id == user_id)
+    }
+
+    /// Disconnects an account's browsers (not its devices), e.g. after its
+    /// browser sign-ins ended.
+    pub fn kick_user_browsers(&self, user_id: i64) -> usize {
+        self.kick_where(|c| c.user_id == user_id && c.node.is_none())
+    }
+
+    fn kick_where(&self, pick: impl Fn(&Conn) -> bool) -> usize {
+        let ids: Vec<String> = self
+            .lock()
+            .conns
+            .iter()
+            .filter(|(_, c)| pick(c))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &ids {
+            self.unregister(id);
+        }
+        ids.len()
     }
 }
 

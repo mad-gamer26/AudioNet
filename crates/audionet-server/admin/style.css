@@ -1,0 +1,42 @@
+body { font: 16px/1.5 system-ui, sans-serif; margin: 0; color: #1a1a1a; background: #fff; }
+header, main { max-width: 76rem; margin: 0 auto; padding: 0 1.25rem; }
+main { padding-bottom: 3rem; }
+h1 { margin: 0.5rem 0; }
+h2 { margin-top: 2rem; }
+ul.tabs { list-style: none; padding: 0; margin: 0.75rem 0 0; display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; }
+ul.tabs a[aria-current=page] { font-weight: 700; text-decoration: none; border-bottom: 3px solid currentColor; }
+table { border-collapse: collapse; width: 100%; margin: 0.5rem 0; }
+th, td { text-align: left; vertical-align: top; padding: 0.45rem 0.6rem; border-bottom: 1px solid #ccc; }
+thead th { border-bottom: 2px solid #555; }
+td button, .actions button { margin: 0 0.3rem 0.3rem 0; }
+button { font: inherit; padding: 0.35rem 0.8rem; }
+button.danger { border: 2px solid #a40000; }
+fieldset { border: 1px solid #ccc; margin: 0.75rem 0; padding: 0.5rem 1rem; }
+legend { font-weight: 600; }
+.field label { font-weight: 600; display: block; }
+.check { margin: 0.2rem 0; }
+.help, .note, .muted { color: #555; }
+.help { display: block; font-size: 0.9rem; }
+input:not([type=checkbox]):not([type=radio]), select { font: inherit; padding: 0.3rem 0.4rem; max-width: 100%; }
+input[type=text], input[type=password], input[type=email], input[type=search] { width: 28rem; }
+input.wide { width: 46rem; }
+.bad { color: #a40000; font-weight: 600; }
+.good { font-weight: 600; }
+#alert:not(:empty) { border: 2px solid #a40000; padding: 0.5rem 0.75rem; margin: 0.75rem 0; color: #a40000; }
+pre { white-space: pre-wrap; word-break: break-word; background: #f4f4f4; padding: 0.6rem; border: 1px solid #ccc; max-height: 40rem; overflow: auto; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
+dt { font-weight: 600; }
+dd { margin: 0; }
+.result:not(:empty) { margin: 0.5rem 0 1rem; }
+.offscreen { position: fixed; left: -9999px; top: 0; opacity: 0; }
+:focus-visible { outline: 3px solid #1a5fb4; outline-offset: 2px; }
+[aria-invalid=true] { border: 2px solid #a40000; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (prefers-color-scheme: dark) {
+  body { color: #eee; background: #161616; }
+  th, td { border-color: #444; } thead th { border-color: #999; }
+  .help, .note, .muted { color: #bbb; }
+  .bad, #alert:not(:empty) { color: #ff8a80; border-color: #ff8a80; }
+  input, select, button { color: #eee; background: #262626; border: 1px solid #777; }
+  pre { background: #222; border-color: #444; }
+}

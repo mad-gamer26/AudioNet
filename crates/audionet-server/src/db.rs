@@ -682,6 +682,163 @@ pub fn delete_node(c: &Connection, id: &str, user_id: i64) -> rusqlite::Result<b
     )? > 0)
 }
 
+// ─── for the admin page ─────────────────────────────────────────────────────
+
+/// An account as the admin page lists it.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AdminUser {
+    pub id: i64,
+    pub username: String,
+    pub email: Option<String>,
+    pub pending_email: Option<String>,
+    pub created_at: i64,
+    pub devices: i64,
+    /// The latest a device of the account connected (unix seconds).
+    pub last_seen: Option<i64>,
+    /// Live browser sign-ins.
+    pub web_sessions: i64,
+}
+
+pub fn admin_users(c: &Connection) -> rusqlite::Result<Vec<AdminUser>> {
+    let now = now_s();
+    let mut s = c.prepare(
+        "SELECT u.id, u.username, u.email,
+                CASE WHEN u.pending_email_expires_at IS NULL OR u.pending_email_expires_at > ?1
+                     THEN u.pending_email END,
+                u.created_at,
+                (SELECT COUNT(*) FROM nodes n WHERE n.user_id = u.id),
+                (SELECT MAX(n.last_seen) FROM nodes n WHERE n.user_id = u.id),
+                (SELECT COUNT(*) FROM web_sessions w WHERE w.user_id = u.id AND w.expires_at > ?1)
+         FROM users u ORDER BY u.username COLLATE NOCASE",
+    )?;
+    s.query_map(params![now], |r| {
+        Ok(AdminUser {
+            id: r.get(0)?,
+            username: r.get(1)?,
+            email: r.get(2)?,
+            pending_email: r.get(3)?,
+            created_at: r.get(4)?,
+            devices: r.get(5)?,
+            last_seen: r.get(6)?,
+            web_sessions: r.get(7)?,
+        })
+    })?
+    .collect()
+}
+
+/// A device as the admin page shows it.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AdminDevice {
+    pub id: String,
+    pub name: String,
+    pub platform: Option<String>,
+    pub created_at: i64,
+    pub last_seen: Option<i64>,
+    /// Whether it gets push notifications (an iPhone that turned them on).
+    pub push: bool,
+}
+
+pub fn admin_devices(c: &Connection, user_id: i64) -> rusqlite::Result<Vec<AdminDevice>> {
+    let mut s = c.prepare(
+        "SELECT n.id, n.name, n.platform, n.created_at, n.last_seen,
+                EXISTS (SELECT 1 FROM pushers p WHERE p.node_id = n.id)
+         FROM nodes n WHERE n.user_id = ?1 ORDER BY n.name COLLATE NOCASE, n.created_at",
+    )?;
+    s.query_map(params![user_id], |r| {
+        Ok(AdminDevice {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            platform: r.get(2)?,
+            created_at: r.get(3)?,
+            last_seen: r.get(4)?,
+            push: r.get(5)?,
+        })
+    })?
+    .collect()
+}
+
+/// A live browser sign-in, named by the start of its hash (the token
+/// itself is never stored).
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AdminSession {
+    pub id: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+
+pub fn admin_web_sessions(c: &Connection, user_id: i64) -> rusqlite::Result<Vec<AdminSession>> {
+    let mut s = c.prepare(
+        "SELECT lower(hex(substr(token_hash, 1, 8))), created_at, expires_at FROM web_sessions
+         WHERE user_id = ?1 AND expires_at > ?2 ORDER BY created_at DESC",
+    )?;
+    s.query_map(params![user_id, now_s()], |r| {
+        Ok(AdminSession {
+            id: r.get(0)?,
+            created_at: r.get(1)?,
+            expires_at: r.get(2)?,
+        })
+    })?
+    .collect()
+}
+
+/// Signs out one browser sign-in (by its id from `admin_web_sessions`).
+pub fn delete_web_session_by_id(c: &Connection, user_id: i64, id: &str) -> rusqlite::Result<bool> {
+    if id.len() != 16 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(false);
+    }
+    Ok(c.execute(
+        "DELETE FROM web_sessions WHERE user_id = ?1 AND lower(hex(substr(token_hash, 1, 8))) = ?2",
+        params![user_id, id.to_ascii_lowercase()],
+    )? > 0)
+}
+
+/// Signs out every browser of an account. Returns how many sign-ins went.
+pub fn delete_web_sessions_for_user(c: &Connection, user_id: i64) -> rusqlite::Result<usize> {
+    c.execute(
+        "DELETE FROM web_sessions WHERE user_id = ?1",
+        params![user_id],
+    )
+}
+
+/// Unused sign-in links of an account.
+pub fn sign_in_link_count(c: &Connection, user_id: i64) -> rusqlite::Result<i64> {
+    c.query_row(
+        "SELECT COUNT(*) FROM sign_in_links WHERE user_id = ?1 AND expires_at > ?2",
+        params![user_id, now_s()],
+        |r| r.get(0),
+    )
+}
+
+pub fn delete_sign_in_links(c: &Connection, user_id: i64) -> rusqlite::Result<usize> {
+    c.execute(
+        "DELETE FROM sign_in_links WHERE user_id = ?1",
+        params![user_id],
+    )
+}
+
+/// The account a device belongs to.
+pub fn node_owner(
+    c: &Connection,
+    node_id: &str,
+) -> rusqlite::Result<Option<(i64, String, String)>> {
+    c.query_row(
+        "SELECT u.id, u.username, n.name FROM nodes n JOIN users u ON u.id = n.user_id WHERE n.id = ?1",
+        params![node_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()
+}
+
+/// Counts for the admin page's overview.
+pub fn admin_counts(c: &Connection) -> rusqlite::Result<(i64, i64, i64)> {
+    c.query_row(
+        "SELECT (SELECT COUNT(*) FROM users), (SELECT COUNT(*) FROM nodes),
+                (SELECT COUNT(*) FROM web_sessions WHERE expires_at > ?1)",
+        params![now_s()],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

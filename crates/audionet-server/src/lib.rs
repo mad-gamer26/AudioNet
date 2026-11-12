@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod admin;
 pub mod api;
 pub mod apns;
 pub mod auth;
@@ -12,6 +13,7 @@ pub mod db;
 pub mod gateway;
 pub mod http_client;
 pub mod hub;
+pub mod logbuf;
 pub mod mail;
 pub mod push;
 
