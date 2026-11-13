@@ -1082,7 +1082,15 @@ async function openSession({ nodeId, media, title, localStream, stereo }) {
     const out = ctx.createMediaStreamDestination();
     out.channelCount = s.stereo ? 2 : 1;
     out.channelCountMode = "explicit";
-    source.connect(gain).connect(out);
+    // A microphone that arrives as two channels with one empty (a Mac's
+    // built-in one does) is sent as mono, in both channels.
+    let input = source;
+    if (s.stereo && localStream.getAudioTracks()[0]?.getSettings().channelCount !== 1) {
+      s.channels = micChannels(ctx, source, (live) =>
+        logEvent(`Only the ${live} channel of your microphone has sound: sending it as mono, in both channels.`));
+      input = s.channels.output;
+    }
+    input.connect(gain).connect(out);
     s.audioContext = ctx;
     s.gain = gain;
     s.sent = out.stream;
@@ -1118,6 +1126,65 @@ async function openSession({ nodeId, media, title, localStream, stereo }) {
   }
 }
 
+// mic-channels:begin (scripts/test/web_mic_channels.py runs this part)
+// The microphone's two channels, watched for one being empty: a channel
+// more than 60 dB below the other for 300 ms. Then the live one is copied
+// to both, at the same level. Otherwise both pass as they are. Returns
+// {output, stop}; `onMono("left" | "right")` is told once it switches.
+function micChannels(ctx, source, onMono) {
+  const split = ctx.createChannelSplitter(2);
+  const merge = ctx.createChannelMerger(2);
+  source.connect(split);
+  // gains[from][to]: as it is to begin with.
+  const gains = [0, 1].map((from) => [0, 1].map((to) => {
+    const g = ctx.createGain();
+    g.channelCount = 1;
+    g.channelCountMode = "explicit";
+    g.gain.value = from === to ? 1 : 0;
+    split.connect(g, from);
+    g.connect(merge, 0, to);
+    return g;
+  }));
+  const analysers = [0, 1].map((i) => {
+    const a = ctx.createAnalyser();
+    a.fftSize = 1024;
+    split.connect(a, i);
+    return a;
+  });
+  const buf = new Float32Array(1024);
+  let since = 0;
+  const timer = setInterval(() => {
+    const rms = analysers.map((a) => {
+      a.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (const x of buf) sum += x * x;
+      return Math.sqrt(sum / buf.length);
+    });
+    const hi = Math.max(...rms);
+    const lo = Math.min(...rms);
+    if (hi > 1e-5 && lo < hi * 0.001) {
+      const now = performance.now();
+      since = since || now;
+      if (now - since < 300) return;
+      const live = rms[0] >= rms[1] ? 0 : 1;
+      // A 20 ms fade, so the switch doesn't click.
+      const t = ctx.currentTime;
+      for (const from of [0, 1]) for (const to of [0, 1]) {
+        const g = gains[from][to].gain;
+        g.setValueAtTime(g.value, t);
+        g.linearRampToValueAtTime(from === live ? 1 : 0, t + 0.02);
+      }
+      clearInterval(timer);
+      for (const a of analysers) a.disconnect();
+      onMono(live === 0 ? "left" : "right");
+    } else {
+      since = 0;
+    }
+  }, 50);
+  return { output: merge, stop: () => clearInterval(timer) };
+}
+// mic-channels:end
+
 function startListen(nodeId, sourceId, label) {
   openSession({ nodeId, media: { kind: "listen", source_id: sourceId }, title: `Listening to ${label}` });
 }
@@ -1151,7 +1218,7 @@ async function startSpeak(nodeId, destinationId, label, voice, micId, micLabel) 
   // Allowed now: the browser tells the microphones' names.
   refreshMicrophones();
   const settings = stream.getAudioTracks()[0]?.getSettings() || {};
-  const channels = voice ? "mono" : settings.channelCount === 1 ? "stereo (this microphone records one channel)" : "stereo";
+  const channels = voice ? "mono" : settings.channelCount === 1 ? "stereo (this microphone records one channel, sent in both)" : "stereo";
   const name = micId ? micLabel : settings.deviceId && state.microphones.find((m) => m.id === settings.deviceId)?.label;
   openSession({
     nodeId,
@@ -1170,6 +1237,7 @@ function stopSession(s, reason, notifyServer) {
   try { s.pc.close(); } catch (_) { /* closed */ }
   if (s.audio) { s.audio.srcObject = null; }
   if (s.localStream) for (const t of s.localStream.getTracks()) t.stop();
+  if (s.channels) s.channels.stop();
   if (s.audioContext) s.audioContext.close().catch(() => {});
   const hadFocus = s.el.contains(document.activeElement);
   s.el.remove();
