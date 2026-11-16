@@ -38,11 +38,15 @@ use tokio::sync::{mpsc, oneshot};
 
 uniffi::setup_scaffolding!();
 
+mod platform_settings;
 mod tap;
 
 // Linked in for its JNI function (AudioNetAndroid.attach).
 #[cfg(target_os = "android")]
 use audionet_android as _;
+pub use platform_settings::{
+    PlatformSoundSettings, set_platform_sound_settings, sound_settings_changed,
+};
 pub use tap::{AppSource, AudioTap};
 
 #[cfg(not(windows))]

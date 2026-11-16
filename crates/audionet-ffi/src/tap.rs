@@ -350,14 +350,17 @@ impl NodeAudio for AppAudio {
         ),
         String,
     > {
-        PlatformAudio.extra_endpoints()
+        let (disabled, mut volumes) = PlatformAudio.extra_endpoints()?;
+        volumes.extend(crate::platform_settings::volumes());
+        Ok((disabled, volumes))
     }
 
     fn control(&self, action: &audionet_protocol::signal::ControlAction) -> Result<(), String> {
-        PlatformAudio.control(action)
+        crate::platform_settings::control(action).unwrap_or_else(|| PlatformAudio.control(action))
     }
 
     fn watch_changes(&self, changed: audionet_node::audio::ChangeWaker) {
+        crate::platform_settings::watch(std::sync::Arc::clone(&changed));
         PlatformAudio.watch_changes(changed);
     }
 
