@@ -21,12 +21,58 @@
 
 #pragma plugin audionet
 
+// A device's own sound settings for one of its microphones or outputs
+// (AudioNet 1.4): what it is now, and what can be changed (with
+// audionet_client's set_device_* methods).
+class audionet_sound_control {
+	// 0 to 1; has_volume false when the device doesn't say.
+	float volume;
+	bool has_volume;
+	bool muted;
+	bool has_mute;
+	bool enabled;
+	bool is_default_communications;
+	bool can_set_volume;
+	bool can_mute;
+	bool can_set_default;
+	bool can_set_default_communications;
+	bool can_enable;
+	// "60%, muted, default for communications".
+	string describe() {
+		string[] parts;
+		if (has_volume) parts.insert_last(round(volume * 100, 0) + "%");
+		if (has_mute and muted) parts.insert_last("muted");
+		if (is_default_communications) parts.insert_last("default for communications");
+		return join(parts, ", ");
+	}
+}
+
+// A disabled microphone or output, listed so it can be enabled.
+class audionet_disabled_info {
+	string id;
+	string name;
+	bool is_input;
+}
+
+// One of a phone's own volumes ("Media volume", "Ring volume"...).
+class audionet_volume_info {
+	string id;
+	string name;
+	float volume;
+	bool muted;
+	bool has_mute;
+	bool can_mute;
+}
+
 // One of a device's sounds (a microphone, or what an output plays).
 class audionet_sound_info {
 	string id;
 	string name;
 	bool is_input;
 	bool is_default;
+	// Microphones' settings (null for what an output plays, and devices
+	// before 1.4).
+	audionet_sound_control@ control;
 	// "Speakers (Realtek), what it plays, default".
 	string describe() {
 		return name + (is_input ? ", input" : ", what it plays") + (is_default ? ", default" : "");
@@ -38,6 +84,8 @@ class audionet_output_info {
 	string id;
 	string name;
 	bool is_default;
+	// Its settings (null from devices before 1.4).
+	audionet_sound_control@ control;
 	string describe() {
 		return name + (is_default ? ", default" : "");
 	}
@@ -56,6 +104,11 @@ class audionet_device {
 	bool sharing;
 	audionet_sound_info@[] sources;
 	audionet_output_info@[] outputs;
+	// AudioNet 1.4: whether it lets other devices change its sound
+	// settings, its disabled microphones and outputs, and a phone's volumes.
+	bool allows_control;
+	audionet_disabled_info@[] disabled;
+	audionet_volume_info@[] volumes;
 	// "Studio PC".
 	string describe() {
 		return name;
@@ -66,8 +119,12 @@ class audionet_device {
 class audionet_event {
 	// "connected", "disconnected", "status", "devices", "device" (a visible
 	// device appeared or changed), "device_gone" (it is no longer visible),
-	// "stream", "stream_ended", "diagnostics", "server_problem", "stopped".
+	// "stream", "stream_ended", "diagnostics", "server_problem", "stopped",
+	// "control_result" (the answer to a set_device_* call: request_id, and
+	// text "" when done or the reason it wasn't; the device's new settings
+	// come as a "device" event).
 	string type;
+	string request_id;
 	// What happened, in words (for speaking and the log).
 	string text;
 	string session_id;
@@ -88,6 +145,37 @@ bool audionet_json_bool(json_object@ o, const string&in key) {
 	return b;
 }
 
+bool audionet_json_has(json_object@ o, const string&in key) {
+	return @o != null and o.exists(key) and !o.is_null(key);
+}
+
+float audionet_json_float(json_object@ o, const string&in key) {
+	if (!audionet_json_has(o, key)) return 0;
+	double d = o[key];
+	return float(d);
+}
+
+audionet_sound_control@ audionet_parse_control(json_object@ c) {
+	if (@c == null) return null;
+	audionet_sound_control s;
+	s.has_volume = audionet_json_has(c, "volume");
+	s.volume = audionet_json_float(c, "volume");
+	s.has_mute = audionet_json_has(c, "muted");
+	s.muted = audionet_json_bool(c, "muted");
+	s.enabled = audionet_json_bool(c, "enabled");
+	s.is_default_communications = audionet_json_bool(c, "is_default_communications");
+	s.can_set_volume = audionet_json_bool(c, "can_set_volume");
+	s.can_mute = audionet_json_bool(c, "can_mute");
+	s.can_set_default = audionet_json_bool(c, "can_set_default");
+	s.can_set_default_communications = audionet_json_bool(c, "can_set_default_communications");
+	s.can_enable = audionet_json_bool(c, "can_enable");
+	return s;
+}
+
+json_object@ audionet_json_object(json_object@ o, const string&in key) {
+	return audionet_json_has(o, key) ? o.get_object(key) : null;
+}
+
 audionet_device@ audionet_parse_device(json_object@ o) {
 	audionet_device d;
 	d.node_id = audionet_json_string(o, "node_id");
@@ -103,6 +191,7 @@ audionet_device@ audionet_parse_device(json_object@ o) {
 		info.name = audionet_json_string(s, "name");
 		info.is_input = audionet_json_bool(s, "is_input");
 		info.is_default = audionet_json_bool(s, "is_default");
+		@info.control = audionet_parse_control(audionet_json_object(s, "control"));
 		d.sources.insert_last(info);
 	}
 	json_array@ outputs = o.get_array("outputs");
@@ -112,9 +201,44 @@ audionet_device@ audionet_parse_device(json_object@ o) {
 		info.id = audionet_json_string(s, "id");
 		info.name = audionet_json_string(s, "name");
 		info.is_default = audionet_json_bool(s, "is_default");
+		@info.control = audionet_parse_control(audionet_json_object(s, "control"));
 		d.outputs.insert_last(info);
 	}
+	d.allows_control = audionet_json_bool(o, "allows_control");
+	json_array@ disabled = o.get_array("disabled");
+	for (uint i = 0; @disabled != null and i < disabled.length(); i++) {
+		json_object@ s = disabled.get_object(i);
+		audionet_disabled_info info;
+		info.id = audionet_json_string(s, "id");
+		info.name = audionet_json_string(s, "name");
+		info.is_input = audionet_json_bool(s, "is_input");
+		d.disabled.insert_last(info);
+	}
+	json_array@ volumes = o.get_array("volumes");
+	for (uint i = 0; @volumes != null and i < volumes.length(); i++) {
+		json_object@ s = volumes.get_object(i);
+		audionet_volume_info info;
+		info.id = audionet_json_string(s, "id");
+		info.name = audionet_json_string(s, "name");
+		info.volume = audionet_json_float(s, "volume");
+		info.has_mute = audionet_json_has(s, "muted");
+		info.muted = audionet_json_bool(s, "muted");
+		info.can_mute = audionet_json_bool(s, "can_mute");
+		d.volumes.insert_last(info);
+	}
 	return d;
+}
+
+// A string as JSON text (quotes and backslashes escaped).
+string audionet_json_quote(const string&in s) {
+	string out = "\"";
+	for (uint i = 0; i < s.length(); i++) {
+		string c = s.substr(i, 1);
+		if (c == "\"" or c == "\\") out += "\\" + c;
+		else if (c[0] < 32) out += " ";
+		else out += c;
+	}
+	return out + "\"";
 }
 
 // A connection to an AudioNet account, as a visitor.
@@ -226,6 +350,10 @@ class audionet_client {
 			e.text = "Stopped: " + audionet_json_string(o, "reason");
 		} else if (e.type == "diagnostics") {
 			e.text = audionet_json_string(o, "text");
+		} else if (e.type == "control_result") {
+			e.request_id = audionet_json_string(o, "request_id");
+			e.text = audionet_json_string(o, "error");
+			@e.device = find_device(audionet_json_string(o, "node_id"));
 		} else if (e.type == "server_problem") {
 			e.text = audionet_json_string(o, "message");
 		} else if (e.type == "stopped") {
@@ -263,6 +391,40 @@ class audionet_client {
 	// A stream's volume (0 to 1) and mute, applied by AudioNet itself.
 	void set_volume(const string&in session_id, float volume, bool muted) {
 		if (handle != 0) audionet_client_set_volume(handle, session_id, volume, muted);
+	}
+
+	// Another device's own sound settings (AudioNet 1.4; the device must
+	// allow it: device.allows_control). `target` is a source's, output's,
+	// disabled device's or volume's id. Each returns the request id ("" with
+	// `error`); a "control_result" event answers.
+	string set_device_volume(const string&in node_id, const string&in target, float volume) {
+		if (volume < 0) volume = 0;
+		if (volume > 1) volume = 1;
+		return control(node_id, '{"kind":"set_volume","target":' + audionet_json_quote(target) + ',"volume":' + volume + '}');
+	}
+
+	string set_device_muted(const string&in node_id, const string&in target, bool muted) {
+		return control(node_id, '{"kind":"set_muted","target":' + audionet_json_quote(target) + ',"muted":' + (muted ? "true" : "false") + '}');
+	}
+
+	// Makes it the default (communications: the default for
+	// communications, on Windows).
+	string set_device_default(const string&in node_id, const string&in target, bool communications = false) {
+		return control(node_id, '{"kind":"set_default","target":' + audionet_json_quote(target) + ',"communications":' + (communications ? "true" : "false") + '}');
+	}
+
+	string set_device_enabled(const string&in node_id, const string&in target, bool enabled) {
+		return control(node_id, '{"kind":"set_enabled","target":' + audionet_json_quote(target) + ',"enabled":' + (enabled ? "true" : "false") + '}');
+	}
+
+	private string control(const string&in node_id, const string&in action) {
+		if (handle == 0) {
+			error = "Not connected.";
+			return "";
+		}
+		string id = audionet_client_control(handle, node_id, action);
+		if (id == "") error = audionet_last_error();
+		return id;
 	}
 }
 

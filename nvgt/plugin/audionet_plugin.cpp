@@ -76,6 +76,12 @@ void client_set_volume(unsigned int c, const std::string& session, float volume,
 	an_client_set_volume(c, session.c_str(), volume, muted ? 1 : 0);
 }
 
+// Asks a device to change a sound setting; `action` is the JSON the C
+// interface takes. The request id, or "" (see audionet_last_error()).
+std::string client_control(unsigned int c, const std::string& node, const std::string& action) {
+	return text([&](char* out, int cap) { return an_client_control(c, node.c_str(), action.c_str(), out, cap); });
+}
+
 std::string local_audio() {
 	return text([](char* out, int cap) { return an_local_audio(out, cap); });
 }
@@ -150,6 +156,7 @@ plugin_main(nvgt_plugin_shared* shared) {
 	reg("string audionet_client_send(uint client, const string&in node_id, const string&in source_id, const string&in output_id)", asFUNCTION(client_send));
 	reg("void audionet_client_stop(uint client, const string&in session_id)", asFUNCTION(client_stop));
 	reg("void audionet_client_set_volume(uint client, const string&in session_id, float volume, bool muted)", asFUNCTION(client_set_volume));
+	reg("string audionet_client_control(uint client, const string&in node_id, const string&in action)", asFUNCTION(client_control));
 	reg("string audionet_local_audio()", asFUNCTION(local_audio));
 	reg("uint audionet_tap_create(const string&in name, uint sample_rate, uint channels)", asFUNCTION(tap_create));
 	reg("void audionet_tap_destroy(uint tap)", asFUNCTION(tap_destroy));
