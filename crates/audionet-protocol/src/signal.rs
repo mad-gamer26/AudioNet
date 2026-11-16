@@ -41,6 +41,13 @@ pub struct ClientInfo {
     /// `null` (and clients that predate visibility): visible.
     #[serde(default)]
     pub visible: Option<bool>,
+    /// Devices: whether the account's other devices, visitors and browsers
+    /// may change this device's sound settings (volumes, mute, defaults,
+    /// enabled devices) from the moment it connects (see
+    /// [`ClientMessage::AllowControl`]). `null` (and clients before 1.4):
+    /// not offered (such clients can't be controlled).
+    #[serde(default)]
+    pub allow_control: Option<bool>,
 }
 
 /// What a source captures.
@@ -54,24 +61,123 @@ pub enum SourceType {
 }
 
 /// A source a node offers. `id` is opaque and stable while the node runs.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SourceInfo {
     pub id: String,
     pub name: String,
     pub source_type: SourceType,
     pub is_default: bool,
+    /// Input sources on devices that report their sound settings (1.4):
+    /// the microphone's volume, mute and roles, and what can be changed.
+    /// `null` for loopback sources (their output carries it) and devices
+    /// before 1.4.
+    #[serde(default)]
+    pub control: Option<EndpointControl>,
 }
 
 /// A destination (output device) a node offers.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DestinationInfo {
     pub id: String,
     pub name: String,
     pub is_default: bool,
+    /// The output's volume, mute and roles, and what can be changed (1.4);
+    /// `null` from devices before 1.4.
+    #[serde(default)]
+    pub control: Option<EndpointControl>,
+}
+
+/// An audio device's sound settings as its system has them, and which of
+/// them the device can change when asked ([`ControlAction`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EndpointControl {
+    /// 0.0 to 1.0 (the system's own scale, as its volume slider), `null`
+    /// when the system doesn't say.
+    pub volume: Option<f32>,
+    pub muted: Option<bool>,
+    /// Off: disabled on the device (listed in `disabled` instead of the
+    /// sources and destinations, to be turned back on).
+    pub enabled: bool,
+    /// The default for communications (Windows); the main default is the
+    /// endpoint's `is_default`.
+    pub is_default_communications: bool,
+    pub can_set_volume: bool,
+    pub can_mute: bool,
+    pub can_set_default: bool,
+    pub can_set_default_communications: bool,
+    pub can_enable: bool,
+}
+
+/// Whether an endpoint records or plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndpointKind {
+    Input,
+    Output,
+}
+
+/// A disabled audio device a node lists so it can be turned back on (it
+/// offers nothing to listen to or send to while disabled).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DisabledEndpoint {
+    pub id: String,
+    pub name: String,
+    pub kind: EndpointKind,
+    pub control: EndpointControl,
+}
+
+/// A volume of the device's own that isn't one endpoint's (Android's media,
+/// call, ring, alarm and notification volumes).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeviceVolume {
+    /// Opaque, stable while the node runs (such as `stream:music`).
+    pub id: String,
+    pub name: String,
+    /// 0.0 to 1.0.
+    pub volume: f32,
+    pub muted: Option<bool>,
+    pub can_mute: bool,
+}
+
+/// A change to a device's sound settings, asked of the device.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ControlAction {
+    /// `target`: a source, destination, disabled endpoint or device volume
+    /// id; `volume` 0.0 to 1.0.
+    SetVolume {
+        target: String,
+        volume: f32,
+    },
+    SetMuted {
+        target: String,
+        muted: bool,
+    },
+    /// Makes the endpoint the default (`communications`: the default for
+    /// communications, on Windows).
+    SetDefault {
+        target: String,
+        communications: bool,
+    },
+    SetEnabled {
+        target: String,
+        enabled: bool,
+    },
+}
+
+impl ControlAction {
+    pub fn target(&self) -> &str {
+        match self {
+            ControlAction::SetVolume { target, .. }
+            | ControlAction::SetMuted { target, .. }
+            | ControlAction::SetDefault { target, .. }
+            | ControlAction::SetEnabled { target, .. } => target,
+        }
+    }
 }
 
 /// A node as the server presents it to the node's owner.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodeSummary {
     pub node_id: NodeId,
     pub name: String,
@@ -92,6 +198,16 @@ pub struct NodeSummary {
     pub sharing: bool,
     pub sources: Vec<SourceInfo>,
     pub destinations: Vec<DestinationInfo>,
+    /// Disabled audio devices (1.4; `[]` before).
+    #[serde(default)]
+    pub disabled: Vec<DisabledEndpoint>,
+    /// The device's own volumes (1.4; `[]` before).
+    #[serde(default)]
+    pub volumes: Vec<DeviceVolume>,
+    /// The device lets the account change its sound settings (1.4; `false`
+    /// before).
+    #[serde(default)]
+    pub allows_control: bool,
 }
 
 fn sharing_when_unsaid() -> bool {
@@ -126,7 +242,7 @@ pub struct IceServer {
 }
 
 /// Messages a client sends to the server.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
     /// First message on every connection.
@@ -148,10 +264,38 @@ pub enum ClientMessage {
     Sharing {
         sharing: bool,
     },
-    /// Nodes: the sources and destinations currently available.
+    /// Nodes: the sources and destinations currently available, and (1.4)
+    /// the disabled devices and the device's own volumes. Sent whenever any
+    /// of them changes, a volume or mute included, so others see changes
+    /// made at the device itself at once.
     Endpoints {
         sources: Vec<SourceInfo>,
         destinations: Vec<DestinationInfo>,
+        #[serde(default)]
+        disabled: Vec<DisabledEndpoint>,
+        #[serde(default)]
+        volumes: Vec<DeviceVolume>,
+    },
+    /// Nodes (1.4): turns on or off whether the account may change this
+    /// device's sound settings. Its starting value is
+    /// [`ClientInfo::allow_control`].
+    AllowControl {
+        allowed: bool,
+    },
+    /// Anyone of the account → a visible device that allows it (1.4):
+    /// change a sound setting. `request_id` is the asker's own, echoed in
+    /// the `control_result`.
+    Control {
+        request_id: String,
+        node_id: NodeId,
+        action: ControlAction,
+    },
+    /// The device → the asker (1.4): the change made (`error` `null`), or
+    /// why not, in words. `to` is the asker's connection (from `control`).
+    ControlResult {
+        request_id: String,
+        to: String,
+        error: Option<String>,
     },
     /// Browsers: request the list of the user's nodes.
     ListNodes,
@@ -184,7 +328,7 @@ pub enum ClientMessage {
 }
 
 /// Messages the server sends to a client.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     Welcome {
@@ -242,6 +386,20 @@ pub enum ServerMessage {
     },
     Pong {
         nonce: u64,
+    },
+    /// To a device (1.4): someone of the account asks it to change a sound
+    /// setting; `from` is their connection (for the `control_result`).
+    Control {
+        request_id: String,
+        from: String,
+        action: ControlAction,
+    },
+    /// To the asker (1.4): the device made the change (`error` `null`), or
+    /// why not.
+    ControlResult {
+        request_id: String,
+        node_id: NodeId,
+        error: Option<String>,
     },
 }
 
@@ -306,6 +464,67 @@ mod tests {
         let old = r#"{"kind":"node","software":"audionet-node 1.2.5","platform":"windows"}"#;
         let c: ClientInfo = serde_json::from_str(old).unwrap();
         assert_eq!(c.visible, None);
+    }
+
+    #[test]
+    fn device_control_on_the_wire() {
+        let m = ClientMessage::Control {
+            request_id: "r1".into(),
+            node_id: NodeId::new("n1").unwrap(),
+            action: ControlAction::SetVolume {
+                target: "output:x".into(),
+                volume: 0.5,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({"type": "control", "request_id": "r1", "node_id": "n1",
+                "action": {"kind": "set_volume", "target": "output:x", "volume": 0.5}})
+        );
+        let r = ServerMessage::ControlResult {
+            request_id: "r1".into(),
+            node_id: NodeId::new("n1").unwrap(),
+            error: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            serde_json::json!({"type": "control_result", "request_id": "r1", "node_id": "n1", "error": null})
+        );
+        for a in [
+            r#"{"kind":"set_muted","target":"input:m","muted":true}"#,
+            r#"{"kind":"set_default","target":"output:x","communications":true}"#,
+            r#"{"kind":"set_enabled","target":"output:y","enabled":false}"#,
+        ] {
+            let parsed: ControlAction = serde_json::from_str(a).unwrap();
+            assert_eq!(serde_json::to_string(&parsed).unwrap(), a);
+        }
+        assert_eq!(
+            serde_json::to_string(&ClientMessage::AllowControl { allowed: true }).unwrap(),
+            r#"{"type":"allow_control","allowed":true}"#
+        );
+        // From devices and servers before 1.4: no settings, not allowed.
+        let old_endpoints = r#"{"type":"endpoints","sources":[{"id":"a","name":"Mic","source_type":"input","is_default":true}],"destinations":[]}"#;
+        let ClientMessage::Endpoints {
+            sources,
+            disabled,
+            volumes,
+            ..
+        } = serde_json::from_str(old_endpoints).unwrap()
+        else {
+            panic!("endpoints");
+        };
+        assert_eq!(sources[0].control, None);
+        assert!(disabled.is_empty() && volumes.is_empty());
+        let old = r#"{"node_id":"n1","name":"PC","platform":null,"online":true,"sharing":true,"sources":[],"destinations":[]}"#;
+        let n: NodeSummary = serde_json::from_str(old).unwrap();
+        assert!(!n.allows_control);
+        let hello = r#"{"kind":"node","software":"audionet-node 1.3.0","platform":"windows","visible":true}"#;
+        assert_eq!(
+            serde_json::from_str::<ClientInfo>(hello)
+                .unwrap()
+                .allow_control,
+            None
+        );
     }
 
     #[test]

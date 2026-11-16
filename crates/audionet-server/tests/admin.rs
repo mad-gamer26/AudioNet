@@ -224,6 +224,7 @@ impl Servers {
                     },
                     platform: Some(Platform::Windows),
                     visible: None,
+                    allow_control: None,
                 },
             },
         )
@@ -469,8 +470,11 @@ async fn devices_browsers_and_streams_live() {
                 name: "Speakers".into(),
                 source_type: SourceType::Loopback,
                 is_default: true,
+                control: None,
             }],
             destinations: vec![],
+            disabled: vec![],
+            volumes: vec![],
         },
     )
     .await;

@@ -503,6 +503,7 @@ fn android_endpoints(host: &cpal::Host) -> (Vec<SourceInfo>, Vec<DestinationInfo
             name: MICROPHONE.into(),
             source_type: SourceType::Input,
             is_default: true,
+            control: None,
         })
         .into_iter()
         .collect();
@@ -513,6 +514,7 @@ fn android_endpoints(host: &cpal::Host) -> (Vec<SourceInfo>, Vec<DestinationInfo
             id: format!("output:{id}"),
             name: OUTPUT.into(),
             is_default: true,
+            control: None,
         })
         .into_iter()
         .collect();
@@ -575,6 +577,7 @@ impl NodeAudio for CpalNodeAudio {
                         name: format!("Sound playing on {output_name}"),
                         source_type: SourceType::Loopback,
                         is_default: default_out.as_ref().is_some_and(|o| o.id() == output),
+                        control: None,
                     });
                 } else {
                     sources.push(SourceInfo {
@@ -582,6 +585,7 @@ impl NodeAudio for CpalNodeAudio {
                         name: input_name,
                         source_type: SourceType::Input,
                         is_default: default_in.as_ref() == Some(&id),
+                        control: None,
                     });
                 }
             }
@@ -592,11 +596,13 @@ impl NodeAudio for CpalNodeAudio {
                     name: format!("Sound playing on {name}"),
                     source_type: SourceType::Loopback,
                     is_default: default_out.as_ref() == Some(&id),
+                    control: None,
                 });
                 destinations.push(DestinationInfo {
                     id: format!("output:{id}"),
                     name: output_name,
                     is_default: default_out.as_ref() == Some(&id),
+                    control: None,
                 });
             }
         }

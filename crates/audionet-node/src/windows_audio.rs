@@ -94,6 +94,7 @@ impl NodeAudio for WasapiNodeAudio {
                     name: e.name.clone(),
                     source_type: SourceType::Input,
                     is_default,
+                    control: None,
                 }),
                 Direction::Output => {
                     sources.push(SourceInfo {
@@ -101,11 +102,13 @@ impl NodeAudio for WasapiNodeAudio {
                         name: format!("Sound playing on {}", e.name),
                         source_type: SourceType::Loopback,
                         is_default,
+                        control: None,
                     });
                     destinations.push(DestinationInfo {
                         id: format!("output:{}", e.id.native_id()),
                         name: e.name.clone(),
                         is_default,
+                        control: None,
                     });
                 }
             }

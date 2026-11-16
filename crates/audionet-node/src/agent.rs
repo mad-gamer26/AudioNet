@@ -23,8 +23,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 use audionet_protocol::signal::{
-    ClientInfo, ClientKind, ClientMessage, DestinationInfo, IceServer, NodeSummary, ServerMessage,
-    SessionMedia, SessionState, SourceInfo,
+    ClientInfo, ClientKind, ClientMessage, ControlAction, DestinationInfo, IceServer, NodeSummary,
+    ServerMessage, SessionMedia, SessionState, SourceInfo,
 };
 use audionet_protocol::{NodeId, PROTOCOL_VERSION, Platform, SessionId};
 use futures_util::{SinkExt, StreamExt};
@@ -38,6 +38,10 @@ use crate::config::NodeConfig;
 use crate::session::{self, LocalMedia, Negotiation, SessionEvent, SessionHandle};
 
 const ENDPOINT_REFRESH: Duration = Duration::from_secs(5);
+/// The longest a sound setting change may take on the device.
+const CONTROL_LIMIT: Duration = Duration::from_secs(5);
+/// How long a burst of sound setting notices settles before re-reading.
+const CHANGE_SETTLE: Duration = Duration::from_millis(150);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// A connection signed in for at least this long counts as having worked:
 /// the next wait starts again at 1 second. Shorter ones (a server that
@@ -92,6 +96,18 @@ pub enum Command {
     SetVisibility {
         visible: bool,
     },
+    /// Turns on or off whether the account may change this device's sound
+    /// settings (see [`Agent::allow_control`]).
+    SetAllowControl {
+        allowed: bool,
+    },
+    /// Asks another device of the account to change a sound setting
+    /// (answered with [`AppEvent::ControlResult`]).
+    Control {
+        request_id: String,
+        node_id: NodeId,
+        action: ControlAction,
+    },
 }
 
 /// What the agent tells an app.
@@ -127,6 +143,13 @@ pub enum AppEvent {
     Diagnostics {
         session_id: SessionId,
         text: String,
+    },
+    /// The answer to a [`Command::Control`]: the change made (`error`
+    /// `None`), or why not, in words.
+    ControlResult {
+        request_id: String,
+        node_id: NodeId,
+        error: Option<String>,
     },
     /// A problem the server reported, in words.
     ServerError {
@@ -184,6 +207,11 @@ pub struct Agent {
     /// it still sees the visible devices, listens to them and sends to them.
     /// Changed with [`Command::SetVisibility`] (the app keeps its choice).
     pub visible: Arc<AtomicBool>,
+    /// Whether the account (its other devices, visitors and browsers) may
+    /// change this device's sound settings: volumes, mute, defaults, devices
+    /// turned on and off (1.4). Changed with [`Command::SetAllowControl`]
+    /// (the app keeps its choice; on unless the person turns it off).
+    pub allow_control: Arc<AtomicBool>,
     /// Connect as a visitor rather than a device: `config.token` is a web
     /// session (`ans_…`), and nothing about this computer's audio is
     /// announced (as in the web client).
@@ -267,11 +295,21 @@ impl Agent {
 
     async fn endpoints(&self) -> Option<ClientMessage> {
         let audio = Arc::clone(&self.audio);
-        match tokio::task::spawn_blocking(move || audio.endpoints()).await {
-            Ok(Ok((sources, destinations))) => Some(ClientMessage::Endpoints {
-                sources,
-                destinations,
-            }),
+        match tokio::task::spawn_blocking(move || {
+            audio
+                .endpoints()
+                .map(|e| (e, audio.extra_endpoints().unwrap_or_default()))
+        })
+        .await
+        {
+            Ok(Ok(((sources, destinations), (disabled, volumes)))) => {
+                Some(ClientMessage::Endpoints {
+                    sources,
+                    destinations,
+                    disabled,
+                    volumes,
+                })
+            }
             Ok(Err(e)) => {
                 (self.status)(&format!("Could not list audio devices: {e}"));
                 None
@@ -317,6 +355,7 @@ impl Agent {
                 software: self.software.clone(),
                 platform: Some(self.platform),
                 visible: (!self.visitor).then(|| self.visible.load(Relaxed)),
+                allow_control: (!self.visitor).then(|| self.allow_control.load(Relaxed)),
             },
         };
         let send =
@@ -393,6 +432,13 @@ impl Agent {
             let _ = event_tx.send(e);
         });
         let mut sessions: HashMap<String, SessionHandle> = HashMap::new();
+        // Sound settings changed on the device (volumes, mute, defaults,
+        // devices on or off): the backend says so as it happens.
+        let changed = Arc::new(tokio::sync::Notify::new());
+        if !self.visitor {
+            let n = Arc::clone(&changed);
+            self.audio.watch_changes(Arc::new(move || n.notify_one()));
+        }
         let mut refresh = tokio::time::interval(ENDPOINT_REFRESH);
         refresh.tick().await;
         let mut keepalive = tokio::time::interval(KEEPALIVE);
@@ -426,7 +472,7 @@ impl Agent {
                                     continue;
                                 }
                                 let (sources, destinations) = match &last_endpoints {
-                                    Some(ClientMessage::Endpoints { sources, destinations }) => (sources.as_slice(), destinations.as_slice()),
+                                    Some(ClientMessage::Endpoints { sources, destinations, .. }) => (sources.as_slice(), destinations.as_slice()),
                                     _ => (&[][..], &[][..]),
                                 };
                                 (self.status)(&format!("Session {session_id} requested: {}.", describe(&media, sources, destinations)));
@@ -508,6 +554,42 @@ impl Agent {
                             ServerMessage::Error { message, .. } => {
                                 (self.status)(&format!("Server reported a problem: {message}"));
                                 self.emit(AppEvent::ServerError { message });
+                            }
+                            // Someone of the account asks this device to
+                            // change a sound setting (1.4): only while it
+                            // allows that; done off the async loop's thread.
+                            ServerMessage::Control { request_id, from, action } if !self.visitor => {
+                                let error = if self.allow_control.load(Relaxed) {
+                                    let audio = Arc::clone(&self.audio);
+                                    let a = action.clone();
+                                    match tokio::time::timeout(CONTROL_LIMIT, tokio::task::spawn_blocking(move || audio.control(&a))).await {
+                                        Ok(Ok(Ok(()))) => None,
+                                        Ok(Ok(Err(e))) => Some(e),
+                                        _ => Some("The device's sound settings didn't answer in time.".into()),
+                                    }
+                                } else {
+                                    Some(format!("\"{}\" doesn't let other devices change its sound settings.", self.config.name))
+                                };
+                                (self.status)(&match &error {
+                                    None => format!("Sound settings changed by another device: {}.", describe_control(&action)),
+                                    Some(e) => format!("Another device's change to the sound settings ({}) wasn't made: {e}", describe_control(&action)),
+                                });
+                                let reply = ClientMessage::ControlResult { request_id, to: from, error };
+                                if sink.send(send(&reply)).await.is_err() {
+                                    break Outcome::Retry("the connection closed".into());
+                                }
+                                // The new state, at once.
+                                let now = self.endpoints().await;
+                                if now.is_some() && now != last_endpoints {
+                                    if let Some(m) = &now
+                                        && sink.send(send(m)).await.is_err() {
+                                            break Outcome::Retry("the connection closed".into());
+                                        }
+                                    last_endpoints = now;
+                                }
+                            }
+                            ServerMessage::ControlResult { request_id, node_id, error } => {
+                                self.emit(AppEvent::ControlResult { request_id, node_id, error });
                             }
                             _ => {}
                         }
@@ -625,6 +707,18 @@ impl Agent {
                                 None
                             }
                         }
+                        Command::SetAllowControl { allowed } => {
+                            self.allow_control.store(allowed, Relaxed);
+                            (self.status)(if allowed {
+                                "Your other devices may change this device's sound settings."
+                            } else {
+                                "Your other devices may not change this device's sound settings."
+                            });
+                            Some(ClientMessage::AllowControl { allowed })
+                        }
+                        Command::Control { request_id, node_id, action } => {
+                            Some(ClientMessage::Control { request_id, node_id, action })
+                        }
                         Command::SetVisibility { visible } => {
                             self.visible.store(visible, Relaxed);
                             (self.status)(if visible {
@@ -659,6 +753,19 @@ impl Agent {
                         && sink.send(send(&m)).await.is_err() {
                             break Outcome::Retry("the connection closed".into());
                         }
+                }
+                // The system's sound settings changed (a backend's notice):
+                // the account sees it at once (a burst comes as one).
+                _ = changed.notified(), if !self.visitor => {
+                    tokio::time::sleep(CHANGE_SETTLE).await;
+                    let now = self.endpoints().await;
+                    if now.is_some() && now != last_endpoints {
+                        if let Some(m) = &now
+                            && sink.send(send(m)).await.is_err() {
+                                break Outcome::Retry("the connection closed".into());
+                            }
+                        last_endpoints = now;
+                    }
                 }
                 _ = refresh.tick(), if !self.visitor => {
                     let now = self.endpoints().await;
@@ -736,6 +843,34 @@ fn tls_config() -> Result<tokio_tungstenite::Connector, rustls::Error> {
     Ok(tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(
         config,
     )))
+}
+
+/// A sound setting change in words, for the status log.
+fn describe_control(a: &ControlAction) -> String {
+    match a {
+        ControlAction::SetVolume { target, volume } => {
+            format!("volume of {target} to {}%", (volume * 100.0).round())
+        }
+        ControlAction::SetMuted { target, muted } => {
+            format!("{target} {}", if *muted { "muted" } else { "unmuted" })
+        }
+        ControlAction::SetDefault {
+            target,
+            communications,
+        } => {
+            format!(
+                "{target} made the default{}",
+                if *communications {
+                    " for communications"
+                } else {
+                    ""
+                }
+            )
+        }
+        ControlAction::SetEnabled { target, enabled } => {
+            format!("{target} {}", if *enabled { "enabled" } else { "disabled" })
+        }
+    }
 }
 
 #[cfg(test)]

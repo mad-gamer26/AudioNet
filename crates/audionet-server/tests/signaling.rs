@@ -127,6 +127,7 @@ fn hello(kind: ClientKind) -> ClientMessage {
             software: "test".into(),
             platform: Some(Platform::Windows),
             visible: None,
+            allow_control: None,
         },
     }
 }
@@ -237,12 +238,16 @@ async fn browser_and_device_negotiate_through_the_hub() {
                 name: "Speakers".into(),
                 source_type: SourceType::Loopback,
                 is_default: true,
+                control: None,
             }],
             destinations: vec![DestinationInfo {
                 id: "out:1".into(),
                 name: "Speakers".into(),
                 is_default: true,
+                control: None,
             }],
+            disabled: vec![],
+            volumes: vec![],
         },
     )
     .await;

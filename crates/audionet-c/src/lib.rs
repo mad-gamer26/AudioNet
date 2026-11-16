@@ -32,8 +32,8 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use audionet_ffi::{
-    AppSource, AudioTap, Client, Device, Event, EventListener, Output, Source, StreamState,
-    VisitorLogin,
+    AppSource, AudioTap, Client, Device, Event, EventListener, Output, SoundChange, SoundControl,
+    Source, StreamState, VisitorLogin,
 };
 use serde_json::{Value, json};
 
@@ -92,11 +92,30 @@ fn client(handle: u32) -> Option<Arc<ClientEntry>> {
 }
 
 fn source_json(s: &Source) -> Value {
-    json!({ "id": s.id, "name": s.name, "is_input": s.is_input, "is_default": s.is_default })
+    json!({
+        "id": s.id, "name": s.name, "is_input": s.is_input, "is_default": s.is_default,
+        "control": s.control.as_ref().map(control_json),
+    })
 }
 
 fn output_json(o: &Output) -> Value {
-    json!({ "id": o.id, "name": o.name, "is_default": o.is_default })
+    json!({
+        "id": o.id, "name": o.name, "is_default": o.is_default,
+        "control": o.control.as_ref().map(control_json),
+    })
+}
+
+/// A device's sound settings (1.4): `volume` 0.0 to 1.0 or null, `muted`
+/// true/false/null, and what can be changed.
+fn control_json(c: &SoundControl) -> Value {
+    json!({
+        "volume": c.volume, "muted": c.muted, "enabled": c.enabled,
+        "is_default_communications": c.is_default_communications,
+        "can_set_volume": c.can_set_volume, "can_mute": c.can_mute,
+        "can_set_default": c.can_set_default,
+        "can_set_default_communications": c.can_set_default_communications,
+        "can_enable": c.can_enable,
+    })
 }
 
 /// A device as JSON. Only visible devices are listed, so `online` and
@@ -110,6 +129,13 @@ fn device_json(d: &Device) -> Value {
         "platform": d.platform,
         "sources": d.sources.iter().map(source_json).collect::<Vec<_>>(),
         "outputs": d.outputs.iter().map(output_json).collect::<Vec<_>>(),
+        "disabled": d.disabled.iter().map(|x| json!({
+            "id": x.id, "name": x.name, "is_input": x.is_input, "control": control_json(&x.control),
+        })).collect::<Vec<_>>(),
+        "volumes": d.volumes.iter().map(|v| json!({
+            "id": v.id, "name": v.name, "volume": v.volume, "muted": v.muted, "can_mute": v.can_mute,
+        })).collect::<Vec<_>>(),
+        "allows_control": d.allows_control,
     })
 }
 
@@ -149,6 +175,13 @@ fn event_json(e: &Event) -> Value {
             json!({ "type": "diagnostics", "session_id": session_id, "text": text })
         }
         Event::ServerProblem { message } => json!({ "type": "server_problem", "message": message }),
+        Event::ControlResult {
+            request_id,
+            node_id,
+            error,
+        } => json!({
+            "type": "control_result", "request_id": request_id, "node_id": node_id, "error": error,
+        }),
         Event::Stopped { error } => json!({ "type": "stopped", "error": error }),
     }
 }
@@ -378,6 +411,65 @@ pub extern "C" fn an_client_set_volume(
             .client
             .set_stream_volume(id, volume.clamp(0.0, 1.0), muted != 0);
     }
+}
+
+/// Asks device `node_id` to change a sound setting (1.4). `action` is JSON:
+/// `{"kind": "set_volume", "target": id, "volume": 0.5}`, `{"kind":
+/// "set_muted", "target": id, "muted": true}`, `{"kind": "set_default",
+/// "target": id, "communications": false}` or `{"kind": "set_enabled",
+/// "target": id, "enabled": true}`. Writes the request id; a
+/// `control_result` event follows.
+#[unsafe(no_mangle)]
+pub extern "C" fn an_client_control(
+    handle: u32,
+    node_id: *const c_char,
+    action: *const c_char,
+    out_request: *mut c_char,
+    cap: i32,
+) -> i32 {
+    let Some(entry) = client(handle) else {
+        return 0;
+    };
+    let (Some(node), Some(action)) = (cstr(node_id), cstr(action)) else {
+        fail("the device and the change are needed");
+        return 0;
+    };
+    let Some(change) = parse_change(&action) else {
+        fail("That change isn't understood (see an_client_control).");
+        return 0;
+    };
+    match entry.client.control(node, change) {
+        Ok(id) => write_out(&id, out_request, cap),
+        Err(e) => {
+            fail(format!("Could not ask: {e}"));
+            0
+        }
+    }
+}
+
+fn parse_change(text: &str) -> Option<SoundChange> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let target = v.get("target")?.as_str()?.to_owned();
+    let flag = |k: &str| v.get(k).and_then(Value::as_bool);
+    Some(match v.get("kind")?.as_str()? {
+        "set_volume" => SoundChange::Volume {
+            target,
+            volume: (v.get("volume")?.as_f64()? as f32).clamp(0.0, 1.0),
+        },
+        "set_muted" => SoundChange::Mute {
+            target,
+            muted: flag("muted")?,
+        },
+        "set_default" => SoundChange::Default {
+            target,
+            communications: flag("communications").unwrap_or(false),
+        },
+        "set_enabled" => SoundChange::Enabled {
+            target,
+            enabled: flag("enabled")?,
+        },
+        _ => return None,
+    })
 }
 
 /// This computer's sources and outputs as JSON: `{"sources": [...],

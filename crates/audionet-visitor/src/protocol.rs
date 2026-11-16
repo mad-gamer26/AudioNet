@@ -73,6 +73,16 @@ pub enum Cmd {
     Stop {
         session_id: String,
     },
+    /// Asks a device of the account to change a sound setting (1.4):
+    /// `{request_id}`; a `control_result` event follows, and the device's
+    /// new state comes as `device_update`. `action` is the protocol's
+    /// `ControlAction` (`{"kind": "set_volume", "target": …, "volume": …}`,
+    /// `set_muted`, `set_default`, `set_enabled`).
+    Control {
+        account: String,
+        node_id: String,
+        action: audionet_protocol::signal::ControlAction,
+    },
     /// A stream's volume on this computer (0.0 to 1.0, the slider position)
     /// and mute.
     SetVolume {

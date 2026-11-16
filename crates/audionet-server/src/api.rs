@@ -1273,7 +1273,7 @@ async fn run_connection(s: Shared, p: Principal, address: String, socket: WebSoc
     let Ok(Some(Ok(Message::Text(text)))) = hello else {
         return;
     };
-    let (version, kind, visible, software) =
+    let (version, kind, visible, allow_control, software) =
         match serde_json::from_str::<ClientMessage>(text.as_str()) {
             Ok(ClientMessage::Hello {
                 protocol_version,
@@ -1282,6 +1282,8 @@ async fn run_connection(s: Shared, p: Principal, address: String, socket: WebSoc
                 protocol_version,
                 client.kind,
                 client.visible.unwrap_or(true),
+                // Devices before 1.4 can't be controlled: not offered.
+                client.allow_control.unwrap_or(false),
                 client.software,
             ),
             _ => return,
@@ -1325,6 +1327,7 @@ async fn run_connection(s: Shared, p: Principal, address: String, socket: WebSoc
     let (tx, mut rx) = mpsc::channel::<ServerMessage>(QUEUE_DEPTH);
     s.hub
         .register(&conn_id, p.user_id, p.node.clone(), visible, tx.clone());
+    s.hub.set_allow_control(&conn_id, allow_control).ok();
     s.hub.set_info(
         &conn_id,
         crate::hub::ConnInfo {
@@ -1416,12 +1419,49 @@ async fn handle(s: &Shared, p: &Principal, conn_id: &str, text: &str) -> Option<
         ClientMessage::Endpoints {
             sources,
             destinations,
+            disabled,
+            volumes,
         } => {
-            if sources.len() > 256 || destinations.len() > 256 {
+            if sources.len() > 256
+                || destinations.len() > 256
+                || disabled.len() > 256
+                || volumes.len() > 64
+            {
                 return Some(error_msg("too_many", "Too many endpoints."));
             }
-            s.hub.set_endpoints(conn_id, sources, destinations)
+            s.hub.set_endpoints(
+                conn_id,
+                crate::hub::NodeEndpoints {
+                    sources,
+                    destinations,
+                    disabled,
+                    volumes,
+                },
+            )
         }
+        ClientMessage::AllowControl { allowed } => s.hub.set_allow_control(conn_id, allowed),
+        // A change to a device's sound settings: refused ones are answered
+        // as results, so the asker knows which request failed and why.
+        ClientMessage::Control {
+            request_id,
+            node_id,
+            action,
+        } => {
+            return s
+                .hub
+                .control(conn_id, &request_id, &node_id, action)
+                .err()
+                .map(|e| ServerMessage::ControlResult {
+                    request_id: request_id.chars().take(64).collect(),
+                    node_id,
+                    error: Some(e.message),
+                });
+        }
+        ClientMessage::ControlResult {
+            request_id,
+            to,
+            error,
+        } => s.hub.control_result(conn_id, request_id, &to, error),
         ClientMessage::ListNodes => {
             let uid = p.user_id;
             let rows = match s.db.call(move |c| db::nodes_for_user(c, uid)).await {

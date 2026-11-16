@@ -15,7 +15,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use audionet_protocol::signal::{
-    DestinationInfo, NodeSummary, ServerMessage, SessionMedia, SessionState, SourceInfo,
+    ControlAction, DestinationInfo, DeviceVolume, DisabledEndpoint, NodeSummary, ServerMessage,
+    SessionMedia, SessionState, SourceInfo,
 };
 use audionet_protocol::{NodeId, Platform, SessionId};
 use tokio::sync::mpsc;
@@ -30,7 +31,20 @@ struct Conn {
     /// Nodes: whether the device is visible (from its hello; devices that
     /// predate visibility start visible and say "sharing" to change it).
     visible: bool,
+    /// Nodes (1.4): whether the account may change the device's sound
+    /// settings (from its hello; `allow_control` changes it).
+    allow_control: bool,
     tx: mpsc::Sender<ServerMessage>,
+}
+
+/// What a node reported of its audio: sources, destinations, and (1.4) its
+/// disabled devices and own volumes.
+#[derive(Clone, Debug, Default)]
+pub struct NodeEndpoints {
+    pub sources: Vec<SourceInfo>,
+    pub destinations: Vec<DestinationInfo>,
+    pub disabled: Vec<DisabledEndpoint>,
+    pub volumes: Vec<DeviceVolume>,
 }
 
 #[derive(Clone, Debug)]
@@ -111,7 +125,7 @@ fn unix_now() -> i64 {
 struct Inner {
     conns: HashMap<String, Conn>,
     node_conn: HashMap<String, String>,
-    endpoints: HashMap<String, (Vec<SourceInfo>, Vec<DestinationInfo>)>,
+    endpoints: HashMap<String, NodeEndpoints>,
     sessions: HashMap<String, Route>,
     /// Admin-page details per connection (removed with the connection).
     info: HashMap<String, ConnInfo>,
@@ -192,7 +206,7 @@ impl Hub {
         let mut g = self.lock();
         if let Some(n) = &node {
             g.node_conn.insert(n.id.clone(), conn_id.to_owned());
-            g.endpoints.insert(n.id.clone(), (vec![], vec![]));
+            g.endpoints.insert(n.id.clone(), NodeEndpoints::default());
         }
         g.conns.insert(
             conn_id.to_owned(),
@@ -200,6 +214,7 @@ impl Hub {
                 user_id,
                 node,
                 visible,
+                allow_control: false,
                 tx,
             },
         );
@@ -297,7 +312,17 @@ impl Hub {
     /// whether it is visible (the second for apps that predate visibility).
     fn summary(g: &Inner, meta: &NodeMeta) -> NodeSummary {
         let visible = Self::is_visible(g, &meta.id);
-        let (sources, destinations) = g.endpoints.get(&meta.id).cloned().unwrap_or_default();
+        let NodeEndpoints {
+            sources,
+            destinations,
+            disabled,
+            volumes,
+        } = g.endpoints.get(&meta.id).cloned().unwrap_or_default();
+        let allows_control = visible
+            && g.node_conn
+                .get(&meta.id)
+                .and_then(|c| g.conns.get(c))
+                .is_some_and(|c| c.allow_control);
         NodeSummary {
             node_id: NodeId::new(meta.id.clone())
                 .unwrap_or_else(|_| NodeId::new("invalid").expect("valid")),
@@ -307,6 +332,9 @@ impl Hub {
             sharing: visible,
             sources,
             destinations,
+            disabled,
+            volumes,
+            allows_control,
         }
     }
 
@@ -347,13 +375,9 @@ impl Hub {
         }
     }
 
-    /// Records a node's current sources and destinations.
-    pub fn set_endpoints(
-        &self,
-        conn_id: &str,
-        sources: Vec<SourceInfo>,
-        destinations: Vec<DestinationInfo>,
-    ) -> Result<(), HubError> {
+    /// Records a node's current sources and destinations (and its disabled
+    /// devices and volumes).
+    pub fn set_endpoints(&self, conn_id: &str, endpoints: NodeEndpoints) -> Result<(), HubError> {
         let mut g = self.lock();
         let conn = g
             .conns
@@ -365,10 +389,135 @@ impl Hub {
             .ok_or_else(|| herr("not_a_node", "Only devices can report endpoints."))?;
         let user_id = conn.user_id;
         let visible = conn.visible;
-        g.endpoints.insert(meta.id.clone(), (sources, destinations));
+        g.endpoints.insert(meta.id.clone(), endpoints);
         if visible {
             Self::broadcast_node(&mut g, user_id, &meta);
         }
+        Ok(())
+    }
+
+    /// A node turns on or off whether the account may change its sound
+    /// settings (1.4); the account is told when it's visible.
+    pub fn set_allow_control(&self, conn_id: &str, allowed: bool) -> Result<(), HubError> {
+        let mut g = self.lock();
+        let conn = g
+            .conns
+            .get_mut(conn_id)
+            .ok_or_else(|| herr("gone", "Connection closed."))?;
+        let Some(meta) = conn.node.clone() else {
+            return Err(herr(
+                "not_a_node",
+                "Only devices have sound settings to change.",
+            ));
+        };
+        if conn.allow_control == allowed {
+            return Ok(());
+        }
+        conn.allow_control = allowed;
+        let (user_id, visible) = (conn.user_id, conn.visible);
+        if visible {
+            Self::broadcast_node(&mut g, user_id, &meta);
+        }
+        Ok(())
+    }
+
+    /// Passes a change to a device's sound settings from `from` to the
+    /// device (1.4): only within an account, to a visible device that
+    /// allows it.
+    pub fn control(
+        &self,
+        from: &str,
+        request_id: &str,
+        node_id: &NodeId,
+        action: ControlAction,
+    ) -> Result<(), HubError> {
+        if request_id.is_empty() || request_id.len() > 64 {
+            return Err(herr("invalid", "That request has no proper identifier."));
+        }
+        if action.target().len() > 512 {
+            return Err(herr(
+                "invalid",
+                "That sound device's identifier is too long.",
+            ));
+        }
+        if let ControlAction::SetVolume { volume, .. } = &action
+            && !(volume.is_finite() && (0.0..=1.0).contains(volume))
+        {
+            return Err(herr("invalid", "A volume is between 0 and 100 percent."));
+        }
+        let mut g = self.lock();
+        let user_id = g
+            .conns
+            .get(from)
+            .ok_or_else(|| herr("gone", "Connection closed."))?
+            .user_id;
+        // As for sessions: someone else's, hidden or gone, the same answer.
+        let not_visible = || herr("node_offline", "That device is not visible.");
+        let node_conn = g
+            .node_conn
+            .get(node_id.as_str())
+            .cloned()
+            .ok_or_else(not_visible)?;
+        let node = g.conns.get(&node_conn).ok_or_else(not_visible)?;
+        if node.user_id != user_id || !node.visible {
+            return Err(not_visible());
+        }
+        if !node.allow_control {
+            let name = node
+                .node
+                .as_ref()
+                .map_or("That device", |n| n.name.as_str());
+            return Err(herr(
+                "control_off",
+                format!("\"{name}\" doesn't let other devices change its sound settings."),
+            ));
+        }
+        Self::send(
+            &mut g,
+            &node_conn,
+            ServerMessage::Control {
+                request_id: request_id.to_owned(),
+                from: from.to_owned(),
+                action,
+            },
+        );
+        Ok(())
+    }
+
+    /// A device's answer to a control request, to the asker (of the same
+    /// account) if still connected.
+    pub fn control_result(
+        &self,
+        from: &str,
+        request_id: String,
+        to: &str,
+        error: Option<String>,
+    ) -> Result<(), HubError> {
+        let mut g = self.lock();
+        let node = g
+            .conns
+            .get(from)
+            .ok_or_else(|| herr("gone", "Connection closed."))?;
+        let Some(meta) = node.node.clone() else {
+            return Err(herr("not_a_node", "Only devices answer control requests."));
+        };
+        let user_id = node.user_id;
+        if g.conns.get(to).is_none_or(|c| c.user_id != user_id) {
+            // The asker left meanwhile: nothing to tell.
+            return Ok(());
+        }
+        let node_id =
+            NodeId::new(meta.id).map_err(|_| herr("invalid", "Bad device identifier."))?;
+        let error = error.map(|e| e.chars().take(500).collect());
+        Self::send(
+            &mut g,
+            to,
+            ServerMessage::ControlResult {
+                request_id: request_id.chars().take(64).collect(),
+                node_id,
+                error,
+            },
+        );
         Ok(())
     }
 
@@ -619,7 +768,8 @@ impl Hub {
                     .node
                     .as_ref()
                     .and_then(|n| g.endpoints.get(&n.id))
-                    .map(|(s, d)| {
+                    .map(|e| {
+                        let (s, d) = (&e.sources, &e.destinations);
                         (
                             s.iter().map(|x| x.name.clone()).collect(),
                             d.iter().map(|x| x.name.clone()).collect(),
@@ -659,10 +809,10 @@ impl Hub {
             let eps = node.and_then(|n| g.endpoints.get(&n.id));
             match media {
                 SessionMedia::Listen { source_id } => eps
-                    .and_then(|(s, _)| s.iter().find(|x| &x.id == source_id))
+                    .and_then(|e| e.sources.iter().find(|x| &x.id == source_id))
                     .map_or_else(|| source_id.clone(), |x| x.name.clone()),
                 SessionMedia::Speak { destination_id } => eps
-                    .and_then(|(_, d)| d.iter().find(|x| &x.id == destination_id))
+                    .and_then(|e| e.destinations.iter().find(|x| &x.id == destination_id))
                     .map_or_else(|| destination_id.clone(), |x| x.name.clone()),
             }
         };
@@ -779,6 +929,128 @@ mod tests {
             Ok(ServerMessage::SessionEnd { .. })
         ));
         assert!(hub.end("b1", sid("s1"), "again".into()).is_err());
+    }
+
+    fn vol(target: &str, volume: f32) -> ControlAction {
+        ControlAction::SetVolume {
+            target: target.into(),
+            volume,
+        }
+    }
+
+    #[test]
+    fn control_reaches_a_device_that_allows_it_and_the_answer_comes_back() {
+        let hub = Hub::default();
+        let (btx, mut brx) = mpsc::channel(8);
+        let (ntx, mut nrx) = mpsc::channel(8);
+        hub.register("b1", 1, None, true, btx);
+        hub.register("n1c", 1, Some(meta("n1")), true, ntx);
+        let _ = brx.try_recv();
+        let n1 = NodeId::new("n1").unwrap();
+        // Off (and so for devices before 1.4): refused, by name.
+        let e = hub
+            .control("b1", "r1", &n1, vol("output:x", 0.5))
+            .unwrap_err();
+        assert_eq!(e.code, "control_off");
+        assert!(e.message.contains("Node n1"), "{}", e.message);
+        assert!(nrx.try_recv().is_err());
+        // On: the account is told, and the request goes through.
+        hub.set_allow_control("n1c", true).unwrap();
+        assert!(
+            matches!(brx.try_recv(), Ok(ServerMessage::NodeUpdate { node }) if node.allows_control)
+        );
+        hub.control("b1", "r2", &n1, vol("output:x", 0.5)).unwrap();
+        assert!(matches!(
+            nrx.try_recv(),
+            Ok(ServerMessage::Control { request_id, from, action })
+                if request_id == "r2" && from == "b1" && action == vol("output:x", 0.5)
+        ));
+        hub.control_result("n1c", "r2".into(), "b1", None).unwrap();
+        assert!(matches!(
+            brx.try_recv(),
+            Ok(ServerMessage::ControlResult { request_id, node_id, error: None })
+                if request_id == "r2" && node_id.as_str() == "n1"
+        ));
+        // Turned off again: refused again.
+        hub.set_allow_control("n1c", false).unwrap();
+        assert!(
+            matches!(brx.try_recv(), Ok(ServerMessage::NodeUpdate { node }) if !node.allows_control)
+        );
+        assert_eq!(
+            hub.control("b1", "r3", &n1, vol("output:x", 0.5))
+                .unwrap_err()
+                .code,
+            "control_off"
+        );
+    }
+
+    #[test]
+    fn control_stays_within_the_account_and_visible_devices() {
+        let hub = Hub::default();
+        let (mtx, mut mrx) = mpsc::channel(8);
+        let (ntx, mut nrx) = mpsc::channel(8);
+        let (btx, _brx) = mpsc::channel(8);
+        hub.register("mallory", 2, None, true, mtx);
+        hub.register("b1", 1, None, true, btx);
+        hub.register("n1c", 1, Some(meta("n1")), true, ntx);
+        hub.set_allow_control("n1c", true).unwrap();
+        let n1 = NodeId::new("n1").unwrap();
+        // Someone else's device: the same answer as a missing one.
+        assert_eq!(
+            hub.control("mallory", "r", &n1, vol("x", 0.1))
+                .unwrap_err()
+                .code,
+            "node_offline"
+        );
+        assert_eq!(
+            hub.control("b1", "r", &NodeId::new("nope").unwrap(), vol("x", 0.1))
+                .unwrap_err()
+                .code,
+            "node_offline"
+        );
+        // Not visible: unreachable.
+        hub.set_visible("n1c", false).unwrap();
+        assert_eq!(
+            hub.control("b1", "r", &n1, vol("x", 0.1)).unwrap_err().code,
+            "node_offline"
+        );
+        hub.set_visible("n1c", true).unwrap();
+        // A device can't send its answer to another account's connection.
+        hub.control_result("n1c", "r".into(), "mallory", Some("x".into()))
+            .unwrap();
+        assert!(mrx.try_recv().is_err());
+        // Bad requests.
+        assert_eq!(
+            hub.control("b1", "r", &n1, vol("x", 1.5)).unwrap_err().code,
+            "invalid"
+        );
+        assert_eq!(
+            hub.control("b1", "r", &n1, vol("x", f32::NAN))
+                .unwrap_err()
+                .code,
+            "invalid"
+        );
+        assert_eq!(
+            hub.control("b1", "", &n1, vol("x", 0.1)).unwrap_err().code,
+            "invalid"
+        );
+        while let Ok(m) = nrx.try_recv() {
+            assert!(
+                !matches!(m, ServerMessage::Control { .. }),
+                "nothing reached the device"
+            );
+        }
+        // Browsers aren't devices: no switch, no answers.
+        assert_eq!(
+            hub.set_allow_control("b1", true).unwrap_err().code,
+            "not_a_node"
+        );
+        assert_eq!(
+            hub.control_result("b1", "r".into(), "b1", None)
+                .unwrap_err()
+                .code,
+            "not_a_node"
+        );
     }
 
     #[test]
@@ -933,7 +1205,7 @@ mod tests {
         let (htx, _hrx) = mpsc::channel(16);
         hub.register("b1", 1, None, true, btx);
         hub.register("hc", 1, Some(meta("hidden")), false, htx);
-        hub.set_endpoints("hc", vec![], vec![]).unwrap();
+        hub.set_endpoints("hc", NodeEndpoints::default()).unwrap();
         hub.node_renamed(1, meta("hidden"));
         assert!(brx.try_recv().is_err(), "nothing said about it");
         assert!(hub.visible_summaries(&[meta("hidden")]).is_empty());
@@ -962,7 +1234,7 @@ mod tests {
         let (ntx, _nrx) = mpsc::channel(8);
         hub.register("slow", 1, None, true, btx);
         hub.register("n1c", 1, Some(meta("n1")), true, ntx); // fills slow's queue
-        hub.set_endpoints("n1c", vec![], vec![]).unwrap(); // overflows it
+        hub.set_endpoints("n1c", NodeEndpoints::default()).unwrap(); // overflows it
         assert_eq!(
             hub.connection_count(),
             1,

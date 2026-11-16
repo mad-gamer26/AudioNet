@@ -28,13 +28,18 @@ uint32_t an_client_create(const char* server, const char* username, const char* 
 void an_client_destroy(uint32_t client);
 /* Next event as JSON: {"type": "connected" | "disconnected" | "status" |
  * "devices" | "device" | "stream" | "stream_ended" | "diagnostics" |
- * "server_problem" | "stopped", ...}. 0 when none. */
+ * "server_problem" | "control_result" | "stopped", ...}. 0 when none. */
 int32_t an_client_poll(uint32_t client, char* out, int32_t cap);
 void an_client_refresh(uint32_t client);
 int32_t an_client_listen(uint32_t client, const char* node_id, const char* source_id, const char* output_id, char* out_session, int32_t cap);
 int32_t an_client_send(uint32_t client, const char* node_id, const char* source_id, const char* output_id, char* out_session, int32_t cap);
 void an_client_stop(uint32_t client, const char* session_id);
 void an_client_set_volume(uint32_t client, const char* session_id, float volume, int32_t muted);
+/* Asks a device to change a sound setting (1.4). action is JSON:
+ * {"kind": "set_volume", "target": id, "volume": 0.5} | "set_muted" (muted)
+ * | "set_default" (communications) | "set_enabled" (enabled). Writes the
+ * request id; a "control_result" event follows. 0 on failure. */
+int32_t an_client_control(uint32_t client, const char* node_id, const char* action, char* out_request, int32_t cap);
 
 /* This computer's sources and outputs as JSON. */
 int32_t an_local_audio(char* out, int32_t cap);

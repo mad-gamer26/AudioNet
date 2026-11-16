@@ -221,6 +221,7 @@ pub fn run(config: Option<PathBuf>, background: bool) -> Result<(), String> {
         control: None,
         relay_only: false,
         visitor: false,
+        allow_control: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         measurements_in_status: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         // A plain device is visible: that is what it runs for.
         visible: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),

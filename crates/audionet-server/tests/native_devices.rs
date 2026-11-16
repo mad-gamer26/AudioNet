@@ -10,11 +10,12 @@ use std::time::{Duration, Instant};
 use audionet_audio::render::RenderSource;
 use audionet_audio::ring::audio_ring;
 use audionet_node::agent::{Agent, AppEvent, Command, Control};
-use audionet_node::audio::{NodeAudio, OpenCapture, StreamGuard};
+use audionet_node::audio::{ChangeWaker, NodeAudio, OpenCapture, StreamGuard};
 use audionet_node::config::NodeConfig;
 use audionet_node::session::LocalMedia;
 use audionet_protocol::signal::{
-    DestinationInfo, SessionMedia, SessionState, SourceInfo, SourceType,
+    ControlAction, DestinationInfo, EndpointControl, NodeSummary, SessionMedia, SessionState,
+    SourceInfo, SourceType,
 };
 use audionet_protocol::{NodeId, Platform, SessionId};
 use audionet_server::api::{AppState, router};
@@ -31,6 +32,36 @@ const TONE_HZ: f64 = 997.0;
 #[derive(Default)]
 struct FakeAudio {
     played: Arc<Mutex<Vec<f32>>>,
+    /// The speakers' volume and mute as the "system" has them.
+    speakers: Mutex<(f32, bool)>,
+    /// Told when the settings change at the device itself.
+    changed: Mutex<Option<ChangeWaker>>,
+    /// The changes other devices asked for.
+    asked: Mutex<Vec<ControlAction>>,
+}
+
+impl FakeAudio {
+    /// The person changes the speakers' volume at the device itself.
+    fn turn_speakers_to(&self, volume: f32) {
+        self.speakers.lock().unwrap().0 = volume;
+        if let Some(w) = self.changed.lock().unwrap().as_ref() {
+            w();
+        }
+    }
+}
+
+fn speaker_control(volume: f32, muted: bool) -> EndpointControl {
+    EndpointControl {
+        volume: Some(volume),
+        muted: Some(muted),
+        enabled: true,
+        is_default_communications: true,
+        can_set_volume: true,
+        can_mute: true,
+        can_set_default: true,
+        can_set_default_communications: false,
+        can_enable: false,
+    }
 }
 
 struct Guard(Arc<AtomicBool>);
@@ -55,13 +86,40 @@ impl NodeAudio for FakeAudio {
                 name: "Test microphone".into(),
                 source_type: SourceType::Input,
                 is_default: true,
+                control: None,
             }],
             vec![DestinationInfo {
                 id: "output:speakers".into(),
                 name: "Test speakers".into(),
                 is_default: true,
+                control: Some({
+                    let (v, m) = *self.speakers.lock().unwrap();
+                    speaker_control(v, m)
+                }),
             }],
         ))
+    }
+
+    fn control(&self, action: &ControlAction) -> Result<(), String> {
+        self.asked.lock().unwrap().push(action.clone());
+        let mut sp = self.speakers.lock().unwrap();
+        match action {
+            ControlAction::SetVolume { target, volume } if target == "output:speakers" => {
+                sp.0 = *volume
+            }
+            ControlAction::SetMuted { target, muted } if target == "output:speakers" => {
+                sp.1 = *muted
+            }
+            ControlAction::SetEnabled { .. } => {
+                return Err("Test speakers can't be turned off.".into());
+            }
+            _ => return Err("No such sound device.".into()),
+        }
+        Ok(())
+    }
+
+    fn watch_changes(&self, changed: ChangeWaker) {
+        *self.changed.lock().unwrap() = Some(changed);
     }
 
     fn open_source(&self, _id: &str) -> Result<OpenCapture, String> {
@@ -267,6 +325,7 @@ fn agent_with(
         relay_only,
         visible: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         visitor: false,
+        allow_control: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         measurements_in_status: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     }
 }
@@ -1099,5 +1158,178 @@ async fn an_app_listens_into_an_audio_tap() {
         "{level:.1} dBFS, {hz:.0} Hz"
     );
     assert_eq!(silent_runs(&heard), 0, "no gaps in the last second read");
+    let _ = stop_tx.send(true);
+}
+
+/// Another device changes this one's sound settings; a change made at the
+/// device itself reaches the others at once; turned off, nothing is changed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn devices_change_each_others_sound_settings() {
+    let base = start_server().await;
+    let pc_config = sign_in(&base, "Studio PC");
+    let pc_id = NodeId::new(pc_config.node_id.clone()).unwrap();
+    let phone_config = sign_in(&base, "Phone");
+    let pc_audio = Arc::new(FakeAudio::default());
+    pc_audio.speakers.lock().unwrap().0 = 0.8;
+    let (ptx, mut phone_events) = mpsc::unbounded_channel();
+    let (phone_control, phone) = Control::new(Arc::new(move |e| {
+        let _ = ptx.send(e);
+    }));
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let pc_agent = agent(pc_config, Arc::clone(&pc_audio), None);
+    let pc_allows = Arc::clone(&pc_agent.allow_control);
+    let (pctx, pc_commands) = Control::new(Arc::new(|_| {}));
+    let mut pc_agent = pc_agent;
+    pc_agent.control = Some(pctx);
+    let mut stop = stop_rx.clone();
+    tokio::spawn(pc_agent.run(async move {
+        let _ = stop.changed().await;
+    }));
+    let mut stop = stop_rx.clone();
+    tokio::spawn(
+        agent(
+            phone_config,
+            Arc::new(FakeAudio::default()),
+            Some(phone_control),
+        )
+        .run(async move {
+            let _ = stop.changed().await;
+        }),
+    );
+    let speakers = |n: &NodeSummary| {
+        n.destinations
+            .iter()
+            .find(|d| d.id == "output:speakers")
+            .and_then(|d| d.control.clone())
+    };
+    let pc_with = |want: f32, muted: bool| {
+        move |e: &AppEvent| {
+            let ok = |n: &NodeSummary| {
+                n.name == "Studio PC"
+                    && n.allows_control
+                    && speakers(n).is_some_and(|c| c.volume == Some(want) && c.muted == Some(muted))
+            };
+            match e {
+                AppEvent::Devices(nodes) => nodes.iter().any(ok),
+                AppEvent::DeviceUpdate(n) => ok(n),
+                _ => false,
+            }
+        }
+    };
+    next_event(
+        &mut phone_events,
+        "the PC with its speakers at 80%",
+        pc_with(0.8, false),
+    )
+    .await;
+
+    // 1. The phone turns the PC's speakers down and mutes them.
+    phone
+        .send(Command::Control {
+            request_id: "r1".into(),
+            node_id: pc_id.clone(),
+            action: ControlAction::SetVolume {
+                target: "output:speakers".into(),
+                volume: 0.3,
+            },
+        })
+        .unwrap();
+    next_event(&mut phone_events, "done", |e| {
+        matches!(e, AppEvent::ControlResult { request_id, error: None, .. } if request_id == "r1")
+    })
+    .await;
+    let started = Instant::now();
+    next_event(&mut phone_events, "the PC at 30%", pc_with(0.3, false)).await;
+    phone
+        .send(Command::Control {
+            request_id: "r2".into(),
+            node_id: pc_id.clone(),
+            action: ControlAction::SetMuted {
+                target: "output:speakers".into(),
+                muted: true,
+            },
+        })
+        .unwrap();
+    next_event(&mut phone_events, "the PC muted", pc_with(0.3, true)).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "at once, not on the 5-second re-read"
+    );
+
+    // 2. A change the device can't make: the reason comes back.
+    phone
+        .send(Command::Control {
+            request_id: "r3".into(),
+            node_id: pc_id.clone(),
+            action: ControlAction::SetEnabled {
+                target: "output:speakers".into(),
+                enabled: false,
+            },
+        })
+        .unwrap();
+    let e = next_event(
+        &mut phone_events,
+        "refused",
+        |e| matches!(e, AppEvent::ControlResult { request_id, .. } if request_id == "r3"),
+    )
+    .await;
+    assert!(
+        matches!(&e, AppEvent::ControlResult { error: Some(m), .. } if m.contains("can't be turned off")),
+        "{e:?}"
+    );
+
+    // 3. Changed at the PC itself: the phone sees it at once.
+    let started = Instant::now();
+    pc_audio.turn_speakers_to(0.55);
+    next_event(
+        &mut phone_events,
+        "the PC's own change",
+        pc_with(0.55, true),
+    )
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "at once: {:?}",
+        started.elapsed()
+    );
+
+    // 4. The PC turns the switch off: the phone sees it, and is refused.
+    pc_commands
+        .send(Command::SetAllowControl { allowed: false })
+        .unwrap();
+    next_event(
+        &mut phone_events,
+        "the PC no longer allows it",
+        |e| matches!(e, AppEvent::DeviceUpdate(n) if n.name == "Studio PC" && !n.allows_control),
+    )
+    .await;
+    assert!(!pc_allows.load(Relaxed));
+    let before = pc_audio.asked.lock().unwrap().len();
+    phone
+        .send(Command::Control {
+            request_id: "r4".into(),
+            node_id: pc_id.clone(),
+            action: ControlAction::SetVolume {
+                target: "output:speakers".into(),
+                volume: 1.0,
+            },
+        })
+        .unwrap();
+    let e = next_event(
+        &mut phone_events,
+        "refused by the server",
+        |e| matches!(e, AppEvent::ControlResult { request_id, .. } if request_id == "r4"),
+    )
+    .await;
+    assert!(
+        matches!(&e, AppEvent::ControlResult { error: Some(m), .. } if m.contains("doesn't let other devices")),
+        "{e:?}"
+    );
+    assert_eq!(
+        pc_audio.asked.lock().unwrap().len(),
+        before,
+        "nothing reached the PC"
+    );
+    assert_eq!(pc_audio.speakers.lock().unwrap().0, 0.55);
     let _ = stop_tx.send(true);
 }

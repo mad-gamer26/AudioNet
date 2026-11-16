@@ -6,7 +6,10 @@
 
 use audionet_audio::render::RenderSource;
 use audionet_audio::ring::RingConsumer;
-use audionet_protocol::signal::{DestinationInfo, SourceInfo};
+use audionet_protocol::signal::{
+    ControlAction, DestinationInfo, DeviceVolume, DisabledEndpoint, SourceInfo,
+};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How a [`StreamGuard::failure`] starts when the device is still there
@@ -84,7 +87,33 @@ pub trait NodeAudio: Send + Sync + 'static {
         destination_id: &str,
         source: Box<dyn RenderSource>,
     ) -> Result<(Box<dyn StreamGuard>, String), String>;
+
+    /// Disabled audio devices (to be turned back on) and the device's own
+    /// volumes (Android's streams), for the account's device control (1.4).
+    /// Control path. Backends that can't say report none.
+    fn extra_endpoints(&self) -> Result<(Vec<DisabledEndpoint>, Vec<DeviceVolume>), String> {
+        Ok((Vec::new(), Vec::new()))
+    }
+
+    /// Changes a sound setting the account asked for (a volume, mute,
+    /// default or enabled device). Control path, never a real-time thread.
+    /// The error is a sentence for people.
+    fn control(&self, action: &ControlAction) -> Result<(), String> {
+        let _ = action;
+        Err("This device can't change its sound settings.".into())
+    }
+
+    /// Gives the backend a function to call (from any thread) when the
+    /// system's sound settings change (a volume, mute, default or device
+    /// turned on or off), so the account sees it at once; backends without
+    /// such notices are re-read every few seconds instead.
+    fn watch_changes(&self, changed: ChangeWaker) {
+        let _ = changed;
+    }
 }
+
+/// Called by a backend when the system's sound settings change.
+pub type ChangeWaker = Arc<dyn Fn() + Send + Sync>;
 
 /// How many audio streams this device has open, and how many of them record
 /// a microphone.

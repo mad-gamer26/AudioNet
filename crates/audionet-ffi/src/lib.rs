@@ -30,7 +30,8 @@ use audionet_node::audio::NodeAudio;
 use audionet_node::config::NodeConfig;
 use audionet_node::session::LocalMedia;
 use audionet_protocol::signal::{
-    DestinationInfo, NodeSummary, SessionMedia, SessionState, SourceInfo, SourceType,
+    ControlAction, DestinationInfo, EndpointControl, EndpointKind, NodeSummary, SessionMedia,
+    SessionState, SourceInfo, SourceType,
 };
 use audionet_protocol::{NodeId, Platform, SessionId};
 use tokio::sync::{mpsc, oneshot};
@@ -120,25 +121,107 @@ impl From<Account> for NodeConfig {
 }
 
 /// A sound a device can share.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct Source {
     pub id: String,
     pub name: String,
     /// A microphone or other input; otherwise what an output is playing.
     pub is_input: bool,
     pub is_default: bool,
+    /// Its sound settings (microphones on devices from 1.4).
+    pub control: Option<SoundControl>,
 }
 
 /// Somewhere a device can play sound.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct Output {
     pub id: String,
     pub name: String,
     pub is_default: bool,
+    /// Its sound settings (devices from 1.4).
+    pub control: Option<SoundControl>,
+}
+
+/// An audio device's sound settings, and which of them can be changed
+/// from another device ([`Client::control`]).
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct SoundControl {
+    /// 0.0 to 1.0; `None` when the system doesn't say.
+    pub volume: Option<f32>,
+    pub muted: Option<bool>,
+    pub enabled: bool,
+    pub is_default_communications: bool,
+    pub can_set_volume: bool,
+    pub can_mute: bool,
+    pub can_set_default: bool,
+    pub can_set_default_communications: bool,
+    pub can_enable: bool,
+}
+
+/// A disabled audio device, listed so it can be turned back on.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct DisabledDevice {
+    pub id: String,
+    pub name: String,
+    pub is_input: bool,
+    pub control: SoundControl,
+}
+
+/// One of a device's own volumes (Android's media, call, ring, alarm and
+/// notification volumes).
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct DeviceVolume {
+    pub id: String,
+    pub name: String,
+    pub volume: f32,
+    pub muted: Option<bool>,
+    pub can_mute: bool,
+}
+
+/// A change to another device's sound settings.
+#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+pub enum SoundChange {
+    /// `target`: a source, output, disabled device or device volume id.
+    Volume {
+        target: String,
+        volume: f32,
+    },
+    Mute {
+        target: String,
+        muted: bool,
+    },
+    /// The default (`communications`: the default for communications).
+    Default {
+        target: String,
+        communications: bool,
+    },
+    Enabled {
+        target: String,
+        enabled: bool,
+    },
+}
+
+impl From<SoundChange> for ControlAction {
+    fn from(c: SoundChange) -> Self {
+        match c {
+            SoundChange::Volume { target, volume } => ControlAction::SetVolume { target, volume },
+            SoundChange::Mute { target, muted } => ControlAction::SetMuted { target, muted },
+            SoundChange::Default {
+                target,
+                communications,
+            } => ControlAction::SetDefault {
+                target,
+                communications,
+            },
+            SoundChange::Enabled { target, enabled } => {
+                ControlAction::SetEnabled { target, enabled }
+            }
+        }
+    }
 }
 
 /// One of the account's devices.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct Device {
     pub node_id: String,
     pub name: String,
@@ -146,10 +229,16 @@ pub struct Device {
     pub platform: String,
     pub sources: Vec<Source>,
     pub outputs: Vec<Output>,
+    /// Its disabled audio devices (1.4).
+    pub disabled: Vec<DisabledDevice>,
+    /// Its own volumes (1.4; Android's).
+    pub volumes: Vec<DeviceVolume>,
+    /// It lets the account change its sound settings (1.4).
+    pub allows_control: bool,
 }
 
 /// This device's own sound sources and outputs.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct LocalAudio {
     pub sources: Vec<Source>,
     pub outputs: Vec<Output>,
@@ -164,7 +253,7 @@ pub enum StreamState {
 }
 
 /// Everything the app hears from the engine.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
 pub enum Event {
     /// Signed in to the server (visible to the account's other devices, or
     /// not, as set with `set_visible`).
@@ -206,6 +295,13 @@ pub enum Event {
     Diagnostics {
         session_id: String,
         text: String,
+    },
+    /// The answer to [`Client::control`]: done (`error` `None`), or why
+    /// not, in words. The device's new state comes as `DeviceChanged`.
+    ControlResult {
+        request_id: String,
+        node_id: String,
+        error: Option<String>,
     },
     /// A problem the server reported, in words.
     ServerProblem {
@@ -401,6 +497,21 @@ fn source(s: &SourceInfo) -> Source {
         name: s.name.clone(),
         is_input: s.source_type == SourceType::Input,
         is_default: s.is_default,
+        control: s.control.as_ref().map(sound_control),
+    }
+}
+
+fn sound_control(c: &EndpointControl) -> SoundControl {
+    SoundControl {
+        volume: c.volume,
+        muted: c.muted,
+        enabled: c.enabled,
+        is_default_communications: c.is_default_communications,
+        can_set_volume: c.can_set_volume,
+        can_mute: c.can_mute,
+        can_set_default: c.can_set_default,
+        can_set_default_communications: c.can_set_default_communications,
+        can_enable: c.can_enable,
     }
 }
 
@@ -409,6 +520,7 @@ fn output(d: &DestinationInfo) -> Output {
         id: d.id.clone(),
         name: d.name.clone(),
         is_default: d.is_default,
+        control: d.control.as_ref().map(sound_control),
     }
 }
 
@@ -419,6 +531,28 @@ fn device(n: NodeSummary) -> Device {
         platform: n.platform.map(platform_name).unwrap_or_default(),
         sources: n.sources.iter().map(source).collect(),
         outputs: n.destinations.iter().map(output).collect(),
+        disabled: n
+            .disabled
+            .iter()
+            .map(|d| DisabledDevice {
+                id: d.id.clone(),
+                name: d.name.clone(),
+                is_input: d.kind == EndpointKind::Input,
+                control: sound_control(&d.control),
+            })
+            .collect(),
+        volumes: n
+            .volumes
+            .iter()
+            .map(|v| DeviceVolume {
+                id: v.id.clone(),
+                name: v.name.clone(),
+                volume: v.volume,
+                muted: v.muted,
+                can_mute: v.can_mute,
+            })
+            .collect(),
+        allows_control: n.allows_control,
     }
 }
 
@@ -472,6 +606,9 @@ pub struct Client {
     /// Whether this device is visible in this account (see `set_visible`);
     /// read on every connection.
     visible: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the account may change this device's sound settings (see
+    /// `set_allow_control`); read on every connection.
+    allow_control: Arc<std::sync::atomic::AtomicBool>,
     /// A visitor, not a device (see [`Client::visitor`]).
     visitor: bool,
 }
@@ -503,6 +640,7 @@ impl Client {
             running: Mutex::new(None),
             me: Arc::new(Mutex::new(None)),
             visible: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            allow_control: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             visitor: false,
         })
     }
@@ -529,6 +667,7 @@ impl Client {
             running: Mutex::new(None),
             me: Arc::new(Mutex::new(None)),
             visible: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            allow_control: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             visitor: true,
         })
     }
@@ -549,6 +688,37 @@ impl Client {
 
     pub fn is_visible(&self) -> bool {
         self.visible.load(Relaxed)
+    }
+
+    /// Whether the account's other devices, visitors and browsers may
+    /// change this device's sound settings (volumes, mute, defaults,
+    /// devices on and off). On by default ("Let my other devices change my
+    /// sound settings"); set before `start` (the app keeps the choice), and
+    /// changing it while running tells the server at once.
+    pub fn set_allow_control(&self, allowed: bool) {
+        self.allow_control.store(allowed, Relaxed);
+        if self.is_running() && !self.visitor {
+            let _ = self.command(Command::SetAllowControl { allowed });
+        }
+    }
+
+    pub fn allows_control(&self) -> bool {
+        self.allow_control.load(Relaxed)
+    }
+
+    /// Asks another device of the account to change one of its sound
+    /// settings. Returns the request's id; the answer comes as
+    /// `Event::ControlResult`, and the device's new state as
+    /// `Event::DeviceChanged`.
+    pub fn control(&self, node_id: String, change: SoundChange) -> Result<String, AudioNetError> {
+        let node_id = NodeId::new(node_id).map_err(|e| AudioNetError::from(e.to_string()))?;
+        let request_id = new_session_id().as_str().replacen("app-", "ctl-", 1);
+        self.command(Command::Control {
+            request_id: request_id.clone(),
+            node_id,
+            action: change.into(),
+        })?;
+        Ok(request_id)
     }
 
     /// Connects this device to its account (visible or not, as set), with
@@ -608,6 +778,15 @@ impl Client {
                     text,
                 },
                 AppEvent::ServerError { message } => Event::ServerProblem { message },
+                AppEvent::ControlResult {
+                    request_id,
+                    node_id,
+                    error,
+                } => Event::ControlResult {
+                    request_id,
+                    node_id: node_id.as_str().to_owned(),
+                    error,
+                },
             };
             listener.on_event(event);
         });
@@ -637,6 +816,7 @@ impl Client {
             control: Some(control),
             relay_only: false,
             visitor: self.visitor,
+            allow_control: Arc::clone(&self.allow_control),
             measurements_in_status: Arc::clone(&MEASUREMENTS),
             visible: Arc::clone(&self.visible),
         };

@@ -91,6 +91,9 @@ fn new_session_id() -> Result<SessionId, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Numbers control requests.
+static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+
 /// An agent event as the add-on reads it.
 fn event_json(account: &str, e: AppEvent) -> Value {
     match e {
@@ -120,6 +123,14 @@ fn event_json(account: &str, e: AppEvent) -> Value {
         }),
         AppEvent::Diagnostics { session_id, text } => json!({
             "event": "diagnostics", "account": account, "session_id": session_id, "text": text,
+        }),
+        AppEvent::ControlResult {
+            request_id,
+            node_id,
+            error,
+        } => json!({
+            "event": "control_result", "account": account, "request_id": request_id,
+            "node_id": node_id, "error": error,
         }),
         AppEvent::ServerError { message } => {
             json!({ "event": "server_error", "account": account, "message": message })
@@ -175,6 +186,7 @@ impl Engine {
             relay_only: false,
             visible: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             visitor: true,
+            allow_control: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             measurements_in_status: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
@@ -348,6 +360,24 @@ impl Engine {
                 self.command(&account, Command::Stop { session_id })
                     .map(|()| json!({}))
             }),
+            Cmd::Control {
+                account,
+                node_id,
+                action,
+            } => NodeId::new(node_id)
+                .map_err(|e| e.to_string())
+                .and_then(|node_id| {
+                    let request_id = format!("nvda-ctl-{}", NEXT_REQUEST.fetch_add(1, Relaxed));
+                    self.command(
+                        &account,
+                        Command::Control {
+                            request_id: request_id.clone(),
+                            node_id,
+                            action,
+                        },
+                    )
+                    .map(|()| json!({ "request_id": request_id }))
+                }),
             Cmd::SetVolume {
                 session_id,
                 volume,

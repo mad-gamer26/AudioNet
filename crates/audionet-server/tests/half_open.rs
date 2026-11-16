@@ -165,6 +165,7 @@ async fn a_silently_dead_connection_is_noticed_and_replaced() {
         relay_only: false,
         visible: Arc::new(AtomicBool::new(true)),
         visitor: false,
+        allow_control: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         measurements_in_status: Arc::new(AtomicBool::new(false)),
     };
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();

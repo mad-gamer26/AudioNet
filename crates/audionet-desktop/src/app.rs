@@ -204,6 +204,7 @@ impl Running {
                 control: Some(control),
                 relay_only: false,
                 visitor: false,
+                allow_control: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 measurements_in_status: Arc::clone(&MEASUREMENTS),
                 visible: agent_visible,
             };

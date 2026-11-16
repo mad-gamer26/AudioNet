@@ -254,10 +254,13 @@ pings every 20 seconds.
 
 | `type` | Fields | Sent by |
 | --- | --- | --- |
-| `hello` | `protocol_version`, `client { kind: "node" \| "browser", software, platform, visible }` | everyone, first. `visible` (devices): whether the device is visible from the moment it connects; `null` or absent (clients before 1.3) means visible |
+| `hello` | `protocol_version`, `client { kind: "node" \| "browser", software, platform, visible, allow_control }` | everyone, first. `visible` (devices): whether the device is visible from the moment it connects; `null` or absent (clients before 1.3) means visible. `allow_control` (devices, 1.4): whether the account may change its sound settings from the moment it connects; `null` or absent (clients before 1.4) means no |
 | `visibility` | `visible: bool` | devices, whenever it changes: turns this device's visibility on or off (see **Visibility** below) |
 | `sharing` | `sharing: bool` | devices before 1.3: the same as `visibility` (sharing on meant visible) |
-| `endpoints` | `sources: [SourceInfo]`, `destinations: [DestinationInfo]` | devices, whenever they change |
+| `endpoints` | `sources: [SourceInfo]`, `destinations: [DestinationInfo]`, `disabled: [DisabledEndpoint]`, `volumes: [DeviceVolume]` (1.4; absent before: `[]`) | devices, whenever any of it changes, a volume or mute included (from the system's change notices, so a change made at the device reaches the others at once) |
+| `allow_control` | `allowed: bool` | devices (1.4), whenever it changes: whether the account may change this device's sound settings (see **Device control** below) |
+| `control` | `request_id` (the asker's, at most 64 characters), `node_id`, `action: ControlAction` | anyone of the account (1.4): change a device's sound setting |
+| `control_result` | `request_id`, `to` (the `from` of the `control`), `error` (`null` when done, else a sentence) | the device (1.4), answering a `control` |
 | `list_nodes` | none | browsers |
 | `session_offer` | `session_id`, `node_id`, `media`, `sdp` | the side starting a session: a browser, or a device (native apps listen to and talk to other devices of the same account) |
 | `session_answer` | `session_id`, `sdp` | the device |
@@ -277,6 +280,8 @@ pings every 20 seconds.
 | `session_answer`, `session_status`, `session_end` | as sent by the other side |
 | `error` | `code`, `message` (plain language, suitable for users), `session_id` (the session a refused `session_offer` would have started, so the offerer can end it with the reason; otherwise `null`) |
 | `pong` | `nonce` |
+| `control` | `request_id`, `from` (the asker's connection id), `action: ControlAction`: to a device that allows it (1.4) |
+| `control_result` | `request_id`, `node_id`, `error`: to the asker (1.4). Also the server's refusal, with the reason in `error` (not visible, someone else's, or `"Studio PC" doesn't let other devices change its sound settings.`) |
 
 `session_status.state` is `starting`, `active`, `ended` or `failed`, and
 `detail` is a plain-language sentence for people. A session can go from
@@ -305,6 +310,21 @@ sessions it started go on. `nodes` lists only visible devices, so
 it out, meaning "sharing whenever online"). Progress or an end for a
 session that is already over is ignored.
 
+**Device control (1.4).** A device reports its sound settings with its
+endpoints: each microphone source and each destination has `control`
+(`null` for loopback sources, and from devices before 1.4), disabled
+devices are listed in `disabled` so they can be turned back on, and a
+device's own volumes that aren't one endpoint's (Android's media, call,
+ring, alarm and notification volumes) in `volumes`. With "Let my other
+devices change my sound settings" on (`allow_control`, on by default in
+the apps), `NodeSummary.allows_control` is `true` and anyone of the
+account (its other devices, visitors, browsers) may send `control`; the
+server passes it on only within the account, to a visible device that
+allows it. The device makes the change off its real-time threads (within
+5 seconds, or it answers that it didn't), answers with `control_result`,
+and sends its new `endpoints` at once. Changes made at the device itself
+reach the account the same way, as `node_update`.
+
 Types:
 
 ```json
@@ -315,7 +335,21 @@ Types:
   "sharing": true, "sources": [ … ], "destinations": [ … ] }          // NodeSummary
 { "kind": "listen", "source_id": "…" }                                // media: device sends audio
 { "kind": "speak", "destination_id": "…" }                            // media: device plays received audio
+{ "volume": 0.8, "muted": false, "enabled": true, "is_default_communications": true,
+  "can_set_volume": true, "can_mute": true, "can_set_default": true,
+  "can_set_default_communications": true, "can_enable": true }        // EndpointControl (SourceInfo/DestinationInfo.control)
+{ "id": "output:…", "name": "Headphones", "kind": "output", "control": { … } }   // DisabledEndpoint
+{ "id": "stream:music", "name": "Media", "volume": 0.6, "muted": null, "can_mute": true }  // DeviceVolume
+{ "kind": "set_volume", "target": "output:…", "volume": 0.5 }        // ControlAction: 0.0 to 1.0
+{ "kind": "set_muted", "target": "input:…", "muted": true }
+{ "kind": "set_default", "target": "output:…", "communications": false }
+{ "kind": "set_enabled", "target": "output:…", "enabled": true }
 ```
+
+`NodeSummary` also has `disabled`, `volumes` and `allows_control` (1.4;
+`[]`, `[]` and `false` from servers before). `volume` is the system's own
+scale (as its volume slider), `null` when the system doesn't say; `muted`
+is `null` when the device has no mute.
 
 `state` is `starting`, `active`, `ended` or `failed`. Source and
 destination ids are opaque; Windows devices use `input:`, `loopback:` and
@@ -329,7 +363,7 @@ receives `session_end`.
 
 Error codes include `protocol_version`, `wrong_client_kind`,
 `client_too_old`, `bad_message`, `node_offline`, `no_session`,
-`duplicate_session`, `too_many_sessions`, `invalid`.
+`duplicate_session`, `too_many_sessions`, `invalid`, `control_off`.
 
 **Client versions.** Every client names itself and its version in
 `hello.client.software`, version last ("audionet-desktop 1.3.0",
