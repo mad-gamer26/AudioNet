@@ -533,6 +533,9 @@ class AppModel(private val context: Context) {
                 if (streams.any { it.id == event.sessionId }) diagnostics[event.sessionId] = event.text
             }
             is Event.ServerProblem -> announce(event.message)
+            // A change to another device's sound settings: its new state
+            // comes as DeviceChanged; a refusal is said.
+            is Event.ControlResult -> event.error?.let { announce(it); note(it) }
             is Event.Stopped -> {
                 clients.remove(account)
                 disconnect(account)
