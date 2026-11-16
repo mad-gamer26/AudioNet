@@ -26,6 +26,8 @@ pub mod notify;
 pub mod process;
 #[cfg(windows)]
 pub mod render;
+#[cfg(windows)]
+pub mod settings;
 
 use audionet_audio::{BackendError, EndpointEnumerator, EndpointInventory, EnumerationOptions};
 use audionet_protocol::AudioBackend;

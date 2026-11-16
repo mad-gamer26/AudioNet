@@ -7,7 +7,10 @@
 use audionet_audio::capture::CaptureMode;
 use audionet_audio::render::RenderSource;
 use audionet_audio::{EndpointEnumerator, EnumerationOptions};
-use audionet_protocol::signal::{DestinationInfo, SourceInfo, SourceType};
+use audionet_protocol::signal::{
+    ControlAction, DestinationInfo, DeviceVolume, DisabledEndpoint, EndpointControl, EndpointKind,
+    SourceInfo, SourceType,
+};
 use audionet_protocol::{AudioBackend, DefaultRole, Direction, EndpointId, EndpointState};
 use audionet_wasapi::WasapiEnumerator;
 use audionet_wasapi::capture::{CaptureConfig, CaptureStream};
@@ -68,6 +71,22 @@ fn endpoint_name(id: &EndpointId) -> String {
         .unwrap_or_else(|| id.native_id().to_owned())
 }
 
+/// An active endpoint's settings for the account's device control.
+fn endpoint_control(native_id: &str, is_default_communications: bool) -> Option<EndpointControl> {
+    let s = audionet_wasapi::settings::settings(native_id);
+    Some(EndpointControl {
+        volume: s.as_ref().map(|s| s.volume),
+        muted: s.as_ref().map(|s| s.muted),
+        enabled: true,
+        is_default_communications,
+        can_set_volume: s.is_some(),
+        can_mute: s.is_some(),
+        can_set_default: true,
+        can_set_default_communications: true,
+        can_enable: true,
+    })
+}
+
 fn parse_id(prefixed: &str, prefix: &str) -> Result<EndpointId, String> {
     let native = prefixed
         .strip_prefix(prefix)
@@ -88,13 +107,17 @@ impl NodeAudio for WasapiNodeAudio {
             .filter(|e| e.state == EndpointState::Active)
         {
             let is_default = e.default_roles.contains(&DefaultRole::Console);
+            let control = endpoint_control(
+                e.id.native_id(),
+                e.default_roles.contains(&DefaultRole::Communications),
+            );
             match e.direction {
                 Direction::Input => sources.push(SourceInfo {
                     id: format!("input:{}", e.id.native_id()),
                     name: e.name.clone(),
                     source_type: SourceType::Input,
                     is_default,
-                    control: None,
+                    control,
                 }),
                 Direction::Output => {
                     sources.push(SourceInfo {
@@ -108,12 +131,79 @@ impl NodeAudio for WasapiNodeAudio {
                         id: format!("output:{}", e.id.native_id()),
                         name: e.name.clone(),
                         is_default,
-                        control: None,
+                        control,
                     });
                 }
             }
         }
         Ok((sources, destinations))
+    }
+
+    fn extra_endpoints(&self) -> Result<(Vec<DisabledEndpoint>, Vec<DeviceVolume>), String> {
+        let inv = WasapiEnumerator
+            .enumerate(EnumerationOptions::default())
+            .map_err(|e| e.to_string())?;
+        let disabled = inv
+            .endpoints()
+            .iter()
+            .filter(|e| e.state == EndpointState::Disabled)
+            .map(|e| {
+                let input = e.direction == Direction::Input;
+                DisabledEndpoint {
+                    id: format!(
+                        "{}:{}",
+                        if input { "input" } else { "output" },
+                        e.id.native_id()
+                    ),
+                    name: e.name.clone(),
+                    kind: if input {
+                        EndpointKind::Input
+                    } else {
+                        EndpointKind::Output
+                    },
+                    control: EndpointControl {
+                        volume: None,
+                        muted: None,
+                        enabled: false,
+                        is_default_communications: false,
+                        can_set_volume: false,
+                        can_mute: false,
+                        can_set_default: false,
+                        can_set_default_communications: false,
+                        can_enable: true,
+                    },
+                }
+            })
+            .collect();
+        Ok((disabled, Vec::new()))
+    }
+
+    fn control(&self, action: &ControlAction) -> Result<(), String> {
+        use audionet_wasapi::settings;
+        let target = action.target();
+        // The sound playing on an output ("loopback:") is that output's.
+        let native = ["input:", "output:", "loopback:"]
+            .iter()
+            .find_map(|p| target.strip_prefix(p))
+            .ok_or_else(|| "That isn't one of this computer's sound devices.".to_owned())?;
+        match action {
+            ControlAction::SetVolume { volume, .. } => settings::set_volume(native, *volume),
+            ControlAction::SetMuted { muted, .. } => settings::set_muted(native, *muted),
+            ControlAction::SetDefault { communications, .. } => {
+                settings::set_default(native, *communications)
+            }
+            ControlAction::SetEnabled { enabled, .. } => settings::set_enabled(native, *enabled),
+        }
+    }
+
+    fn watch_changes(&self, changed: crate::audio::ChangeWaker) {
+        // One watch at a time (a newer connection's replaces it).
+        static WATCH: std::sync::Mutex<Option<audionet_wasapi::settings::SettingsWatch>> =
+            std::sync::Mutex::new(None);
+        let watch = audionet_wasapi::settings::watch(changed);
+        if let Ok(mut w) = WATCH.lock() {
+            *w = watch.ok();
+        }
     }
 
     fn open_source(&self, source_id: &str) -> Result<OpenCapture, String> {

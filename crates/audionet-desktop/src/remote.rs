@@ -1163,6 +1163,14 @@ pub fn on_event(hwnd: HWND, account: &str, event: AppEvent) {
         AppEvent::ServerError { message } => {
             announce(hwnd, &message);
         }
+        // A change to another device's sound settings: its new state comes
+        // as a device update; a refusal is said.
+        AppEvent::ControlResult { error, .. } => {
+            if let Some(e) = error {
+                announce(hwnd, &e);
+                log(hwnd, &e);
+            }
+        }
     }
 }
 
