@@ -341,6 +341,26 @@ impl NodeAudio for AppAudio {
         PlatformAudio.endpoints()
     }
 
+    fn extra_endpoints(
+        &self,
+    ) -> Result<
+        (
+            Vec<audionet_protocol::signal::DisabledEndpoint>,
+            Vec<audionet_protocol::signal::DeviceVolume>,
+        ),
+        String,
+    > {
+        PlatformAudio.extra_endpoints()
+    }
+
+    fn control(&self, action: &audionet_protocol::signal::ControlAction) -> Result<(), String> {
+        PlatformAudio.control(action)
+    }
+
+    fn watch_changes(&self, changed: audionet_node::audio::ChangeWaker) {
+        PlatformAudio.watch_changes(changed);
+    }
+
     fn open_source(&self, source_id: &str) -> Result<OpenCapture, String> {
         if !source_id.starts_with(SOURCE_PREFIX) {
             return PlatformAudio.open_source(source_id);

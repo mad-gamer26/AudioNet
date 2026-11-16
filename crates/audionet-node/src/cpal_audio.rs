@@ -33,7 +33,9 @@ use std::time::Duration;
 use audionet_audio::clock;
 use audionet_audio::render::RenderSource;
 use audionet_audio::ring::audio_ring;
-use audionet_protocol::signal::{DestinationInfo, SourceInfo, SourceType};
+use audionet_protocol::signal::{
+    ControlAction, DestinationInfo, EndpointControl, SourceInfo, SourceType,
+};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 #[cfg(target_os = "macos")]
@@ -585,7 +587,7 @@ impl NodeAudio for CpalNodeAudio {
                         name: input_name,
                         source_type: SourceType::Input,
                         is_default: default_in.as_ref() == Some(&id),
-                        control: None,
+                        control: device_control(&id.to_string(), true),
                     });
                 }
             }
@@ -602,11 +604,22 @@ impl NodeAudio for CpalNodeAudio {
                     id: format!("output:{id}"),
                     name: output_name,
                     is_default: default_out.as_ref() == Some(&id),
-                    control: None,
+                    control: device_control(&id.to_string(), false),
                 });
             }
         }
         Ok((sources, destinations))
+    }
+
+    fn control(&self, action: &ControlAction) -> Result<(), String> {
+        control_device(action)
+    }
+
+    fn watch_changes(&self, changed: crate::audio::ChangeWaker) {
+        #[cfg(target_os = "macos")]
+        audionet_coreaudio::settings::watch(changed);
+        #[cfg(not(target_os = "macos"))]
+        let _ = changed;
     }
 
     fn open_source(&self, source_id: &str) -> Result<OpenCapture, String> {
@@ -770,6 +783,73 @@ impl NodeAudio for CpalNodeAudio {
             description,
         ))
     }
+}
+
+/// A device's sound settings for the account's device control (macOS:
+/// Core Audio's; elsewhere none yet). `cpal_id` is cpal's device id
+/// ("coreaudio:<UID>" on macOS).
+#[cfg(target_os = "macos")]
+fn device_control(cpal_id: &str, input: bool) -> Option<EndpointControl> {
+    let uid = cpal_id.split_once(':').map_or(cpal_id, |(_, u)| u);
+    let s = audionet_coreaudio::settings::settings(uid, input)?;
+    Some(EndpointControl {
+        volume: s.volume,
+        muted: s.muted,
+        enabled: true,
+        is_default_communications: false,
+        can_set_volume: s.can_set_volume,
+        can_mute: s.can_mute,
+        can_set_default: true,
+        can_set_default_communications: false,
+        // macOS can't turn a device off.
+        can_enable: false,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn device_control(_cpal_id: &str, _input: bool) -> Option<EndpointControl> {
+    None
+}
+
+/// Which device (cpal id) and direction an endpoint id names: `input:` a
+/// microphone, `output:` an output, `loopback:` the output it plays.
+fn endpoint_target(target: &str) -> Result<(&str, bool), String> {
+    if let Some(id) = target.strip_prefix("input:") {
+        Ok((id, true))
+    } else if let Some(id) = target
+        .strip_prefix("output:")
+        .or_else(|| target.strip_prefix("loopback:"))
+    {
+        Ok((id, false))
+    } else {
+        Err("That isn't one of this device's sound devices.".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn control_device(action: &ControlAction) -> Result<(), String> {
+    use audionet_coreaudio::settings;
+    let (id, input) = endpoint_target(action.target())?;
+    let uid = id.split_once(':').map_or(id, |(_, u)| u);
+    match action {
+        ControlAction::SetVolume { volume, .. } => settings::set_volume(uid, input, *volume),
+        ControlAction::SetMuted { muted, .. } => settings::set_muted(uid, input, *muted),
+        ControlAction::SetDefault {
+            communications: false,
+            ..
+        } => settings::set_default(uid, input),
+        ControlAction::SetDefault {
+            communications: true,
+            ..
+        } => Err("A Mac has no separate default for communications.".into()),
+        ControlAction::SetEnabled { .. } => Err("A Mac can't turn sound devices off.".into()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn control_device(action: &ControlAction) -> Result<(), String> {
+    endpoint_target(action.target())?;
+    Err("This device can't change its sound settings.".into())
 }
 
 #[cfg(test)]

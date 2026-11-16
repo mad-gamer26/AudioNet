@@ -13,12 +13,19 @@
 //! belongs to AudioNet's process: if AudioNet quits or crashes, macOS
 //! removes it and the sound comes back.
 //!
+//! [`settings`]: the devices' own volume, mute and defaults (the ones in
+//! Control Center), read and changed for the account's device control,
+//! with notices when they change.
+//!
 //! Threads: Core Audio's tap calls are made from whichever thread holds an
 //! [`OutputMute`] (the thread that owns the capture stream), never from an
 //! audio callback. No COM-like apartment rules apply on macOS.
 
 #[cfg(target_os = "macos")]
 mod mute;
+/// A device's sound settings (volume, mute, defaults) and their changes.
+#[cfg(target_os = "macos")]
+pub mod settings;
 
 #[cfg(target_os = "macos")]
 pub use mute::OutputMute;
