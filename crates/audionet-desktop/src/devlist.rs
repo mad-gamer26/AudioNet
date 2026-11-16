@@ -41,6 +41,8 @@ use crate::ui::wide;
 
 /// The panel's own id (its tab shows and hides it).
 pub const ID_PANEL: i32 = 201;
+/// Posted to the panel: focus its first control (after a rebuild).
+const WM_FOCUS_FIRST: u32 = WM_APP + 1;
 /// Ids of the controls inside the panel: from here up.
 const FIRST_ID: i32 = 3000;
 
@@ -102,6 +104,13 @@ thread_local! {
 
 fn with<T>(f: impl FnOnce(&mut List) -> T) -> T {
     LIST.with(|l| f(&mut l.borrow_mut()))
+}
+
+/// For notifications, which Windows can send while the panel is being
+/// changed (a focused control destroyed sends one at once): `None` then,
+/// and the notification is ignored.
+fn try_with<T>(f: impl FnOnce(&mut List) -> T) -> Option<T> {
+    LIST.with(|l| l.try_borrow_mut().ok().map(|mut l| f(&mut l)))
 }
 
 /// A device in a list: "Studio PC, Windows".
@@ -690,7 +699,7 @@ fn scroll_to(l: &mut List, pos: i32) {
 
 /// Scrolls so the control `h` is in view.
 fn reveal(h: HWND) {
-    with(|l| {
+    try_with(|l| {
         let mut r = RECT::default();
         let mut p = RECT::default();
         // SAFETY: rectangles of our own windows.
@@ -711,14 +720,23 @@ fn reveal(h: HWND) {
 
 /// Focus to the panel's first control (the Devices tab opening).
 pub fn focus_first() {
-    let first = with(|l| {
+    // During a rebuild (Windows gives the panel focus as a focused control
+    // is destroyed): once it is done.
+    let Some(first) = try_with(|l| {
         l.rows
             .first()
             .map(|r| r.controls[0].1)
             .or((!l.empty.is_invalid()).then_some(l.empty))
             .unwrap_or(l.panel)
-    });
-    if first == with(|l| l.panel) {
+    }) else {
+        let panel = LIST.with(|l| l.try_borrow().map(|l| l.panel).unwrap_or_default());
+        // SAFETY: posting to our own panel (handled below).
+        unsafe {
+            let _ = PostMessageW(Some(panel), WM_FOCUS_FIRST, WPARAM(0), LPARAM(0));
+        }
+        return;
+    };
+    if Some(first) == try_with(|l| l.panel) {
         return;
     }
     // SAFETY: focusing one of our windows.
@@ -734,7 +752,7 @@ pub fn owns(id: i32) -> bool {
 
 /// What a control id is.
 fn find(id: i32) -> Option<(usize, Kind, HWND)> {
-    with(|l| {
+    try_with(|l| {
         l.rows.iter().enumerate().find_map(|(i, r)| {
             r.controls
                 .iter()
@@ -742,6 +760,7 @@ fn find(id: i32) -> Option<(usize, Kind, HWND)> {
                 .map(|(k, h, _)| (i, *k, *h))
         })
     })
+    .flatten()
 }
 
 /// A Listen, Send or Sound Settings press: what to start or open.
@@ -878,7 +897,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_VSCROLL => {
-            with(|l| {
+            try_with(|l| {
                 let s = |v: i32| (v as f32 * l.scale) as i32;
                 let page = s(l.height);
                 let pos = match (wparam.0 & 0xFFFF) as i32 {
@@ -899,15 +918,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32;
-            with(|l| {
+            try_with(|l| {
                 let s = |v: i32| (v as f32 * l.scale) as i32;
                 scroll_to(l, l.scroll - delta * s(60) / 120);
             });
             LRESULT(0)
         }
         // Focus given to the panel (its tab opening) goes to its first control.
-        WM_SETFOCUS => {
-            focus_first();
+        WM_SETFOCUS | WM_FOCUS_FIRST => {
+            // (Only if focus is still on the panel itself by then.)
+            // SAFETY: reading the focus.
+            if msg == WM_SETFOCUS || unsafe { GetFocus() } == hwnd {
+                focus_first();
+            }
             LRESULT(0)
         }
         WM_CTLCOLORSTATIC => {

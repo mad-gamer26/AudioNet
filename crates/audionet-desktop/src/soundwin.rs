@@ -261,8 +261,11 @@ thread_local! {
     static NEXT_ID: Cell<i32> = const { Cell::new(FIRST_ID) };
 }
 
+/// `None` when no window is open, or while it is being changed (Windows
+/// can send a notification then, as a focused control is destroyed: it is
+/// ignored).
 fn with<T>(f: impl FnOnce(&mut Window) -> T) -> Option<T> {
-    WIN.with(|w| w.borrow_mut().as_mut().map(f))
+    WIN.with(|w| w.try_borrow_mut().ok().and_then(|mut w| w.as_mut().map(f)))
 }
 
 /// The open window (for keyboard handling).

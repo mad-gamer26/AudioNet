@@ -49,6 +49,20 @@ mod update;
 
 #[cfg(windows)]
 fn main() {
+    // A panic in a window procedure ends the process at once (it can't
+    // unwind through Windows): keep what it said, for the report.
+    std::panic::set_hook(Box::new(|info| {
+        let path = std::env::temp_dir().join("AudioNet-desktop-crash.txt");
+        let text = format!(
+            "{} AudioNet {}: {info}\n{}\n",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+            env!("CARGO_PKG_VERSION"),
+            std::backtrace::Backtrace::force_capture()
+        );
+        let _ = std::fs::write(path, text);
+    }));
     let args: Vec<String> = std::env::args().collect();
     let value = |flag: &str| {
         args.iter()
