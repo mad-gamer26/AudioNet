@@ -78,6 +78,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		super().__init__()
 		self._inLayer = False
 		self.window = None
+		# Another device's sound settings, while open.
+		self.sound_dialog = None
 		self.disabled = bool(globalVars.appArgs.secure)
 		if self.disabled:
 			# Never on secure screens (sign-in, UAC).
@@ -245,6 +247,11 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 				s.diagnostics = msg["text"]
 			self._refresh_log()
 			return
+		elif kind == "control_result":
+			# Done: the device's new state comes as device_update.
+			if msg.get("error"):
+				self.model.add_log(f"{name}: {msg['error']}")
+				self.say(msg["error"])
 		elif kind == "server_error":
 			self.model.add_log(f"{name}: {msg['message']}")
 			self.say(_("AudioNet: {message}").format(message=msg["message"]))
@@ -253,6 +260,19 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def _refresh(self):
 		if self.window:
 			self.window.refresh()
+		if self.sound_dialog:
+			self.sound_dialog.refresh()
+
+	def control(self, account_id, node_id, action):
+		"""Asks a device to change one of its sound settings."""
+		if not self.ensure_engine():
+			return
+
+		def got(result, error):
+			if error:
+				self.say(_("The change couldn't be sent: {error}").format(error=error))
+
+		self.engine.request("control", got, account=account_id, node_id=node_id, action=action)
 
 	def _refresh_log(self):
 		if self.window:

@@ -7,6 +7,8 @@
 # is expanded, the selection and NVDA's position are kept.
 # Copyright (c) 2026 The AudioNet contributors. Licensed under the MIT license.
 
+import time
+
 import addonHandler
 import config
 import gui
@@ -16,7 +18,7 @@ from gui import guiHelper
 from gui.message import MessageDialog, ReturnCode
 from gui.settingsDialogs import NVDASettingsDialog, SettingsPanel
 
-from .model import device_label, source_label
+from .model import device_label, sound_rows, source_label
 
 addonHandler.initTranslation()
 
@@ -202,6 +204,9 @@ class MainWindow(wx.Dialog):
 		self.listenButton.Bind(wx.EVT_BUTTON, lambda e: self.listen())
 		self.sendButton = actions.addButton(self, label=_("S&end"))
 		self.sendButton.Bind(wx.EVT_BUTTON, lambda e: self.send())
+		# Translators: opens the selected device's sound settings.
+		self.soundButton = actions.addButton(self, label=_("Sound setti&ngs..."))
+		self.soundButton.Bind(wx.EVT_BUTTON, lambda e: self.open_sound_settings())
 		sHelper.addItem(actions)
 		self.streams = sHelper.addLabeledControl(_("S&treams:"), wx.ListBox, choices=[], size=(520, 110))
 		self.streams.Bind(wx.EVT_LISTBOX, lambda e: self.update_stream_controls())
@@ -414,6 +419,7 @@ class MainWindow(wx.Dialog):
 		kind = key[0] if key else None
 		self.listenButton.Enable(kind == "source" and self.playOn.GetCount() > 0)
 		self.sendButton.Enable(kind == "dest" and self.sendFrom.GetCount() > 0)
+		self.soundButton.Enable(len(key) > 1)
 
 	# ─── actions ───────────────────────────────────────────────────────────
 
@@ -434,6 +440,19 @@ class MainWindow(wx.Dialog):
 		if not key or key[0] != "dest" or not st or not source:
 			return
 		self.owner.send(st.account.id, key[1], key[2], source)
+
+	def open_sound_settings(self):
+		key, st = self.selected_key(), self.current_account()
+		if not key or len(key) < 2 or not st:
+			return
+		dlg = SoundSettingsDialog(self, st.account.id, key[1])
+		self.owner.sound_dialog = dlg
+		try:
+			dlg.ShowModal()
+		finally:
+			self.owner.sound_dialog = None
+			dlg.Destroy()
+		self.tree.SetFocus()
 
 	def onActivate(self, evt):
 		key = self.tree.GetItemData(evt.GetItem()) or ()
@@ -482,6 +501,107 @@ class MainWindow(wx.Dialog):
 		self._closing = True
 		self.tree.Unbind(wx.EVT_TREE_SEL_CHANGED)
 		self.Destroy()
+
+
+class SoundSettingsDialog(wx.Dialog):
+	"""Another device's sound settings, kept up to date while open: values
+	change in place (focus stays put); when its controls change, it is
+	rebuilt with focus on the same control, or the one in its place."""
+
+	def __init__(self, parent, account_id, node_id):
+		super().__init__(parent, title=_("Sound settings"))
+		self.owner = parent.owner
+		self.account_id = account_id
+		self.node_id = node_id
+		self._sig = None
+		self._controls = {}
+		self._touched = {}
+		outer = wx.BoxSizer(wx.VERTICAL)
+		self.panel = wx.ScrolledWindow(self, size=(520, 420), style=wx.VSCROLL)
+		self.panel.SetScrollRate(0, 20)
+		outer.Add(self.panel, proportion=1, flag=wx.EXPAND | wx.ALL, border=guiHelper.BORDER_FOR_DIALOGS)
+		close = wx.Button(self, id=wx.ID_CLOSE, label=_("Close"))
+		close.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_CLOSE))
+		outer.Add(close, flag=wx.ALIGN_RIGHT | wx.ALL, border=guiHelper.BORDER_FOR_DIALOGS)
+		self.SetEscapeId(wx.ID_CLOSE)
+		self.SetSizer(outer)
+		self.refresh()
+		outer.Fit(self)
+		self.CentreOnScreen()
+		first = next(iter(self._controls.values()), close)
+		first.SetFocus()
+
+	def device(self):
+		return self.owner.model.device(self.account_id, self.node_id)
+
+	def change(self, action):
+		self.owner.control(self.account_id, self.node_id, action)
+
+	def refresh(self):
+		d = self.device()
+		# Translators: title of another device's sound settings.
+		self.SetTitle(_("Sound settings of {device}").format(device=d["name"] if d else _("the device")))
+		rows = sound_rows(d)
+		sig = [(r["type"], r["key"], r.get("text") or r.get("name")) for r in rows]
+		if sig != self._sig:
+			self._rebuild(rows)
+			self._sig = sig
+		for r in rows:
+			c = self._controls.get(r["key"])
+			if c is None:
+				continue
+			if r["type"] == "volume":
+				# Not while it is being moved (the last second).
+				if time.monotonic() - self._touched.get(r["key"], 0) > 1 and c.GetValue() != round(r["value"] * 100):
+					c.SetValue(round(r["value"] * 100))
+			elif r["type"] == "mute" and c.GetValue() != r["value"]:
+				c.SetValue(r["value"])
+
+	def _rebuild(self, rows):
+		focused = wx.Window.FindFocus()
+		keys = list(self._controls)
+		focused_key = next((k for k, c in self._controls.items() if c is focused), None)
+		focused_at = keys.index(focused_key) if focused_key else -1
+		self.panel.DestroyChildren()
+		self._controls = {}
+		sHelper = guiHelper.BoxSizerHelper(self.panel, orientation=wx.VERTICAL)
+		for r in rows:
+			t = r["type"]
+			if t in ("note", "text", "section", "heading"):
+				label = wx.StaticText(self.panel, label=r["text"])
+				if t == "section":
+					label.SetFont(label.GetFont().Bold())
+				sHelper.addItem(label)
+			elif t == "volume":
+				# Translators: a volume slider's label.
+				slider = sHelper.addLabeledControl(_("Volume of {name}:").format(name=r["name"]), wx.Slider,
+					value=round(r["value"] * 100), minValue=0, maxValue=100)
+				slider.SetLineSize(5)
+				slider.SetPageSize(10)
+				slider.Bind(wx.EVT_SLIDER, lambda e, r=r, s=slider: self._volume(r, s))
+				self._controls[r["key"]] = slider
+			elif t == "mute":
+				# Translators: a mute check box.
+				box = sHelper.addItem(wx.CheckBox(self.panel, label=_("Mute {name}").format(name=r["name"])))
+				box.SetValue(r["value"])
+				box.Bind(wx.EVT_CHECKBOX, lambda e, r=r, b=box: self.change({"kind": "set_muted", "target": r["target"], "muted": b.GetValue()}))
+				self._controls[r["key"]] = box
+			elif t == "button":
+				b = sHelper.addItem(wx.Button(self.panel, label=r["text"]))
+				b.Bind(wx.EVT_BUTTON, lambda e, a=r["action"]: self.change(a))
+				self._controls[r["key"]] = b
+		self.panel.SetSizer(sHelper.sizer)
+		self.panel.FitInside()
+		if focused is not None and (focused_key or not self.panel.IsDescendant(focused)):
+			target = self._controls.get(focused_key)
+			if target is None and self._controls:
+				target = list(self._controls.values())[min(max(focused_at, 0), len(self._controls) - 1)]
+			(target or self.FindWindowById(wx.ID_CLOSE)).SetFocus()
+
+	def _volume(self, row, slider):
+		# Each step is sent (keyboard steps are 5 or 10 percent).
+		self._touched[row["key"]] = time.monotonic()
+		self.change({"kind": "set_volume", "target": row["target"], "volume": slider.GetValue() / 100})
 
 
 class AudioNetPanel(SettingsPanel):

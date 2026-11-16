@@ -110,3 +110,69 @@ class Model:
 
 	def streams_of(self, account_id):
 		return [s for s in self.streams.values() if s.account_id == account_id]
+
+
+def percent(v):
+	return f"{round(v * 100)}%"
+
+
+def sound_rows(d):
+	"""Another device's sound settings as rows for its dialog, or a single
+	("note", text) row when there is nothing to change. Each row is a dict
+	with "type" (section, heading, volume, mute, button, text, note) and a
+	"key" that stays the same while the device keeps that control."""
+	if d is None:
+		return [{"type": "note", "key": "note", "text": "This device is no longer visible."}]
+	if not d.get("allows_control"):
+		return [{"type": "note", "key": "note", "text": f"{d['name']} doesn't let other devices change its sound settings."}]
+	rows = []
+
+	def endpoint(e):
+		c = e["control"]
+		roles = [r for r, on in (("default", e.get("is_default")), ("default for communications", c["is_default_communications"])) if on]
+		rows.append({"type": "heading", "key": "h:" + e["id"], "text": e["name"] + (f" ({', '.join(roles)})" if roles else "")})
+		if c["volume"] is not None and c["can_set_volume"]:
+			rows.append({"type": "volume", "key": "v:" + e["id"], "target": e["id"], "name": e["name"], "value": c["volume"]})
+		elif c["volume"] is not None:
+			rows.append({"type": "text", "key": "t:" + e["id"], "text": f"Volume of {e['name']}: {percent(c['volume'])}"})
+		if c["can_mute"] and c["muted"] is not None:
+			rows.append({"type": "mute", "key": "m:" + e["id"], "target": e["id"], "name": e["name"], "value": c["muted"]})
+		if c["can_set_default"] and not e.get("is_default"):
+			rows.append({"type": "button", "key": "d:" + e["id"], "text": f"Make {e['name']} the default",
+						 "action": {"kind": "set_default", "target": e["id"], "communications": False}})
+		if c["can_set_default_communications"] and not c["is_default_communications"]:
+			rows.append({"type": "button", "key": "c:" + e["id"], "text": f"Make {e['name']} the default for communications",
+						 "action": {"kind": "set_default", "target": e["id"], "communications": True}})
+		if c["can_enable"]:
+			rows.append({"type": "button", "key": "x:" + e["id"], "text": f"Disable {e['name']}",
+						 "action": {"kind": "set_enabled", "target": e["id"], "enabled": False}})
+
+	outputs = [o for o in d.get("destinations", []) if o.get("control")]
+	mics = [s for s in d.get("sources", []) if s.get("source_type") == "input" and s.get("control")]
+	if outputs:
+		rows.append({"type": "section", "key": "s:out", "text": "Outputs"})
+		for o in outputs:
+			endpoint(o)
+	if mics:
+		rows.append({"type": "section", "key": "s:mic", "text": "Microphones"})
+		for m in mics:
+			endpoint(m)
+	volumes = d.get("volumes") or []
+	if volumes:
+		rows.append({"type": "section", "key": "s:vol", "text": "Volumes"})
+	for v in volumes:
+		rows.append({"type": "volume", "key": "v:" + v["id"], "target": v["id"], "name": v["name"], "value": v["volume"]})
+		if v["can_mute"] and v["muted"] is not None:
+			rows.append({"type": "mute", "key": "m:" + v["id"], "target": v["id"], "name": v["name"].lower(), "value": v["muted"]})
+	disabled = d.get("disabled") or []
+	if disabled:
+		rows.append({"type": "section", "key": "s:dis", "text": "Disabled"})
+	for x in disabled:
+		kind = "microphone" if x["kind"] == "input" else "output"
+		rows.append({"type": "button", "key": "e:" + x["id"], "text": f"Enable {x['name']} ({kind})",
+					 "action": {"kind": "set_enabled", "target": x["id"], "enabled": True}})
+	if not rows:
+		text = ("An iPhone's sound settings can't be changed from other devices." if d.get("platform") == "ios"
+				else f"{d['name']} doesn't report its sound settings. It may need a newer AudioNet.")
+		return [{"type": "note", "key": "note", "text": text}]
+	return rows

@@ -106,5 +106,43 @@ class WordsTests(unittest.TestCase):
 		self.assertTrue(m.log[-1].endswith(f"line {model.LOG_LINES + 19}"))
 
 
+
+def _control(volume, muted, **kw):
+	c = {"volume": volume, "muted": muted, "enabled": True, "is_default_communications": False,
+		 "can_set_volume": True, "can_mute": True, "can_set_default": True,
+		 "can_set_default_communications": False, "can_enable": False}
+	c.update(kw)
+	return c
+
+
+class SoundRowsTests(unittest.TestCase):
+	def test_a_device_that_allows_it(self):
+		d = {"name": "Studio PC", "platform": "windows", "allows_control": True,
+			 "destinations": [{"id": "output:a", "name": "Speakers", "is_default": True, "control": _control(0.6, False)},
+							  {"id": "output:b", "name": "Headphones", "is_default": False,
+							   "control": _control(0.2, True, can_set_default_communications=True, can_enable=True)}],
+			 "sources": [{"id": "loopback:a", "name": "Sound playing on Speakers", "source_type": "loopback", "control": None},
+						 {"id": "input:m", "name": "Yeti", "source_type": "input", "is_default": True, "control": _control(1.0, False)}],
+			 "disabled": [{"id": "input:s", "name": "Stereo Mix", "kind": "input", "control": _control(None, None)}],
+			 "volumes": []}
+		texts = [r.get("text") or r.get("name") for r in model.sound_rows(d)]
+		self.assertEqual(texts, [
+			"Outputs", "Speakers (default)", "Speakers", "Speakers",
+			"Headphones", "Headphones", "Headphones", "Make Headphones the default",
+			"Make Headphones the default for communications", "Disable Headphones",
+			"Microphones", "Yeti (default)", "Yeti", "Yeti",
+			"Disabled", "Enable Stereo Mix (microphone)"])
+		vol = next(r for r in model.sound_rows(d) if r["key"] == "v:output:a")
+		self.assertEqual(model.percent(vol["value"]), "60%")
+
+	def test_notes(self):
+		self.assertIn("doesn't let other devices", model.sound_rows({"name": "Laptop", "allows_control": False})[0]["text"])
+		self.assertIn("no longer visible", model.sound_rows(None)[0]["text"])
+		self.assertIn("iPhone", model.sound_rows({"name": "Phone", "platform": "ios", "allows_control": True,
+												  "destinations": [], "sources": []})[0]["text"])
+		phone = {"name": "Pixel", "allows_control": True, "destinations": [], "sources": [],
+				 "volumes": [{"id": "stream:music", "name": "Media volume", "volume": 0.5, "muted": False, "can_mute": True}]}
+		self.assertEqual([r["type"] for r in model.sound_rows(phone)], ["section", "volume", "mute"])
+
 if __name__ == "__main__":
 	unittest.main()
