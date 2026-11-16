@@ -95,9 +95,11 @@ fun Root(model: AppModel) {
     var tab by rememberSaveable { mutableStateOf(Tab.Devices) }
     var sub by rememberSaveable { mutableStateOf(Sub.None) }
     if (sub != Sub.None) BackHandler { sub = Sub.None }
+    if (model.soundSettingsOf != null) BackHandler { model.soundSettingsOf = null }
     val tabs = model.signedIn && !model.readingAccount
     val title = when {
         !tabs -> "AudioNet"
+        model.soundSettingsOf != null -> "Sound Settings of ${model.soundSettingsDevice()?.name ?: "the device"}"
         sub == Sub.StatusLog -> "Status Log"
         sub == Sub.AddAccount -> "Add Account"
         else -> tab.title
@@ -108,8 +110,8 @@ fun Root(model: AppModel) {
                 TopAppBar(
                     title = { Text(title, modifier = Modifier.semantics { heading() }) },
                     navigationIcon = {
-                        if (sub != Sub.None && tabs) {
-                            TextButton(onClick = { sub = Sub.None }) { Text("Back") }
+                        if ((sub != Sub.None || model.soundSettingsOf != null) && tabs) {
+                            TextButton(onClick = { if (model.soundSettingsOf != null) model.soundSettingsOf = null else sub = Sub.None }) { Text("Back") }
                         }
                     },
                 )
@@ -134,7 +136,7 @@ fun Root(model: AppModel) {
                         val label = if (t == Tab.Streams && model.streams.isNotEmpty()) "Streams (${model.streams.size})" else t.title
                         NavigationBarItem(
                             selected = tab == t && sub == Sub.None,
-                            onClick = { tab = t; sub = Sub.None },
+                            onClick = { tab = t; sub = Sub.None; model.soundSettingsOf = null },
                             // Decorative: the label names the tab.
                             icon = { Icon(t.icon(), contentDescription = null) },
                             label = { Text(label) },
@@ -148,6 +150,7 @@ fun Root(model: AppModel) {
         when {
             model.readingAccount -> Column(modifier.padding(16.dp)) { Text("Reading this phone's AudioNet sign-in…") }
             !model.signedIn -> SignInScreen(model, adding = false, modifier = modifier) {}
+            model.soundSettingsOf != null -> SoundSettingsScreen(model, modifier)
             sub == Sub.StatusLog -> StatusLogScreen(model, modifier)
             sub == Sub.AddAccount -> SignInScreen(model, adding = true, modifier = modifier) { sub = Sub.None }
             tab == Tab.Devices -> DevicesScreen(model, modifier)
@@ -498,6 +501,10 @@ fun DeviceControls(model: AppModel, d: Device) {
             enabled = model.online,
             modifier = Modifier.padding(top = 8.dp).semantics { contentDescription = "Send my microphone to ${d.name}" },
         ) { Text("Send My Microphone") }
+        OutlinedButton(
+            onClick = { model.openSoundSettings(d) },
+            modifier = Modifier.padding(top = 8.dp).semantics { contentDescription = "Sound Settings of ${d.name}" },
+        ) { Text("Sound Settings") }
     }
 }
 
@@ -545,6 +552,9 @@ fun StatusLogScreen(model: AppModel, modifier: Modifier) {
 @Composable
 fun SettingsScreen(model: AppModel, modifier: Modifier, openLog: () -> Unit) {
     LazyColumn(modifier.padding(horizontal = 16.dp)) {
+        item { Heading("This phone") }
+        item { SwitchRow("Let my other devices change my sound settings", model.allowControl) { model.changeAllowControl(it) } }
+        item { Text("Your other devices can change this phone's volumes (media, calls, ring, notifications, alarms, accessibility).") }
         item { Heading("Troubleshooting") }
         item { SwitchRow("Show Measurements", model.showMeasurements) { model.changeShowMeasurements(it) } }
         item { Text("Numbers about streams and the network, under each stream and in the status log, for troubleshooting.") }

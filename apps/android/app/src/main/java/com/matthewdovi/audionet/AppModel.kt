@@ -289,6 +289,7 @@ class AppModel(private val context: Context) {
         // 1.3 is not carried over: every account starts visible).
         val visible = store.settings.getBoolean("visible-$id", true)
         client.setVisible(visible)
+        client.setAllowControl(allowControl)
         if (visible) { if (!visibleAccounts.contains(id)) visibleAccounts.add(id) } else visibleAccounts.remove(id)
         clients[id] = client
         client.start()
@@ -403,6 +404,39 @@ class AppModel(private val context: Context) {
             announce("Starting: $title.")
         } catch (e: Exception) {
             announce("Could not start: ${describe(e)}")
+        }
+    }
+
+    // MARK: Device control
+
+    /** Whether the account's other devices may change this phone's volumes (on unless turned off). */
+    var allowControl by mutableStateOf(store.settings.getBoolean("allowControl", true)); private set
+
+    fun changeAllowControl(on: Boolean) {
+        allowControl = on
+        store.settings.edit().putBoolean("allowControl", on).apply()
+        clients.values.forEach { it.setAllowControl(on) }
+        announce(if (on) "Your other devices can now change this phone's volumes."
+                 else "Your other devices can no longer change this phone's volumes.")
+    }
+
+    /** The device whose sound settings are open (account, device id). */
+    var soundSettingsOf by mutableStateOf<Pair<String, String>?>(null)
+
+    fun openSoundSettings(d: Device) {
+        soundSettingsOf = (accountOf(d) ?: return) to d.nodeId
+    }
+
+    /** The open device as listed now (null once it is gone). */
+    fun soundSettingsDevice(): Device? = soundSettingsOf?.let { (a, n) -> devicesByAccount[a]?.firstOrNull { it.nodeId == n } }
+
+    /** Asks the open device to change one of its sound settings. */
+    fun changeSound(change: uniffi.audionet_ffi.SoundChange) {
+        val (account, node) = soundSettingsOf ?: return
+        try {
+            clients[account]?.control(node, change)
+        } catch (e: Exception) {
+            announce("The change couldn't be sent: ${describe(e)}")
         }
     }
 
