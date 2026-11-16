@@ -410,6 +410,26 @@ final class AppModel: ObservableObject {
         choices[d.nodeId] = c
     }
 
+    /// Whose sound settings a device's screen shows.
+    func soundTarget(_ d: Device) -> SoundSettingsTarget? {
+        client(for: d).map { SoundSettingsTarget(account: $0.account, nodeId: d.nodeId) }
+    }
+
+    /// The device as listed now (`nil` once it is gone).
+    func device(_ t: SoundSettingsTarget) -> Device? {
+        devicesByAccount[t.account]?.first { $0.nodeId == t.nodeId }
+    }
+
+    /// Asks a device to change one of its sound settings.
+    func changeSound(_ t: SoundSettingsTarget, _ change: SoundChange) {
+        guard let c = clients[t.account] else { return }
+        do {
+            _ = try c.control(nodeId: t.nodeId, change: change)
+        } catch {
+            announce("The change couldn't be sent: \(error.localizedDescription)")
+        }
+    }
+
     func listen(_ d: Device) {
         guard let (account, c) = client(for: d) else { return }
         let ch = choices[d.nodeId] ?? DeviceChoices()
@@ -601,6 +621,9 @@ final class AppModel: ObservableObject {
             } else {
                 diagnostics[id] = LiveText(text)
             }
+        case .controlResult(_, _, let error):
+            // Done: the device's new state comes as a device update.
+            if let error { announce(error) }
         case .serverProblem(let message):
             announce(message)
         case .stopped(let error):

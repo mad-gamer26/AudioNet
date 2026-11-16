@@ -99,6 +99,21 @@ final class AppModel: ObservableObject {
     /// output (the speakers, say) stays silent until the stream stops. The
     /// engine does it with its own muting tap; the system volume and mute
     /// are never changed. Microphones are not affected.
+    /// Whether the account's other devices may change this Mac's sound
+    /// settings (volumes, mute, defaults). On unless turned off; applies to
+    /// every account at once.
+    @AppStorage("allowControl", store: AccountStore.settings) var allowControl = true {
+        didSet {
+            for c in clients.values { c.setAllowControl(allowed: allowControl) }
+            announce(allowControl
+                     ? "Your other devices can now change this Mac's sound settings."
+                     : "Your other devices can no longer change this Mac's sound settings.")
+        }
+    }
+
+    /// The device whose sound settings are open (account and device id).
+    @Published var soundSettingsOf: SoundSettingsTarget?
+
     @AppStorage("muteStreamedOutput", store: AccountStore.settings) var muteStreamedOutput = false {
         didSet { setMuteStreamedOutput(on: muteStreamedOutput) }
     }
@@ -307,6 +322,7 @@ final class AppModel: ObservableObject {
         let c = Client(account: account, listener: events)
         let visible = savedVisibility(id)
         c.setVisible(visible: visible)
+        c.setAllowControl(allowed: allowControl)
         if visible { visibleAccounts.insert(id) } else { visibleAccounts.remove(id) }
         clients[id] = c
         c.start()
@@ -444,6 +460,27 @@ final class AppModel: ObservableObject {
             c.sendSource = (local.sources.first { $0.isDefault && $0.isInput } ?? local.sources.first)?.id
         }
         choices[d.nodeId] = c
+    }
+
+    /// Opens a device's sound settings.
+    func openSoundSettings(_ d: Device) {
+        guard let (account, _) = client(for: d) else { return }
+        soundSettingsOf = SoundSettingsTarget(account: account, nodeId: d.nodeId)
+    }
+
+    /// The device as listed now (`nil` once it is gone).
+    func device(_ t: SoundSettingsTarget) -> Device? {
+        devicesByAccount[t.account]?.first { $0.nodeId == t.nodeId }
+    }
+
+    /// Asks a device to change one of its sound settings.
+    func changeSound(_ t: SoundSettingsTarget, _ change: SoundChange) {
+        guard let c = clients[t.account] else { return }
+        do {
+            _ = try c.control(nodeId: t.nodeId, change: change)
+        } catch {
+            announce("The change couldn't be sent: \(error.localizedDescription)")
+        }
     }
 
     func listen(_ d: Device) {
@@ -643,6 +680,9 @@ final class AppModel: ObservableObject {
             }
         case .serverProblem(let message):
             announce(message)
+        case .controlResult(_, _, let error):
+            // Done: the device's new state comes as a device update.
+            if let error { announce(error); note(error) }
         case .stopped(let error):
             clients[account] = nil
             disconnect(account)

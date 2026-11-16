@@ -234,6 +234,9 @@ struct DevicesTab: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(item: $model.soundSettingsOf) { t in
+            SoundSettingsSheet(target: t)
+        }
     }
 
     /// An account's section shows while it connects and looks, and then
@@ -517,6 +520,9 @@ struct DeviceControls: View {
             .disabled(!model.online)
             .accessibilityLabel("Send to \(device.name)")
             .accessibilityIdentifier("send")
+        Button("Sound Settings…") { model.openSoundSettings(device) }
+            .accessibilityLabel("Sound Settings of \(device.name)…")
+            .accessibilityIdentifier("soundSettings")
     }
 }
 
@@ -678,6 +684,8 @@ struct SettingsView: View {
             Toggle("Start AudioNet in the menu bar, without its window or Dock icon", isOn: $model.startInMenuBar)
                 .onChange(of: model.startInMenuBar) { if model.startInMenuBar { model.keepInMenuBar = true } }
             Toggle("Mute this Mac's sound while it is streamed to another device", isOn: $model.muteStreamedOutput)
+            Toggle("Let my other devices change my sound settings", isOn: $model.allowControl)
+                .accessibilityIdentifier("allowControl")
                 .accessibilityIdentifier("muteStreamedOutput")
             Text("While another device listens to one of this Mac's outputs, such as its speakers, that output stays silent until the stream stops, including VoiceOver, which you then hear on the other device. AudioNet's own sound and microphones are not affected, and the volume and mute in Control Center are not changed.")
                 .font(.callout)
@@ -704,5 +712,31 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 520)
+    }
+}
+
+/// A device's sound settings, in a sheet over Devices.
+struct SoundSettingsSheet: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let target: SoundSettingsTarget
+
+    var body: some View {
+        let d = model.device(target)
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Sound Settings of \(d?.name ?? "the device")").font(.title2)
+                .accessibilityAddTraits(.isHeader)
+                .padding()
+            SoundSettingsView(device: d) { model.changeSound(target, $0) }
+                .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("soundSettingsDone")
+            }
+            .padding()
+        }
+        .frame(minWidth: 480, minHeight: 480)
     }
 }

@@ -461,6 +461,24 @@ struct DeviceControls: View {
             .disabled(!model.online)
             .accessibilityLabel("Send my microphone to \(device.name)")
             .accessibilityIdentifier("send")
+        if let t = model.soundTarget(device) {
+            NavigationLink("Sound Settings") { SoundSettingsScreen(target: t) }
+                .accessibilityLabel("Sound Settings of \(device.name)")
+                .accessibilityIdentifier("soundSettings")
+        }
+    }
+}
+
+/// A device's sound settings, a screen of its own.
+struct SoundSettingsScreen: View {
+    @EnvironmentObject var model: AppModel
+    let target: SoundSettingsTarget
+
+    var body: some View {
+        let d = model.device(target)
+        SoundSettingsView(device: d) { model.changeSound(target, $0) }
+            .navigationTitle("Sound Settings of \(d?.name ?? "the device")")
+            .navigationBarTitleDisplayMode(.inline)
     }
 }
 
