@@ -1,0 +1,36 @@
+// The include reads another device's sound settings from the engine's JSON
+// (no server needed): nvgt control_parse_test.nvgt prints PASS lines and
+// "all passed", or FAIL lines.
+#include "../include/audionet.nvgt"
+
+int failures = 0;
+void check(const string&in name, bool ok) {
+	println(name + ": " + (ok ? "PASS" : "FAIL"));
+	if (!ok) failures++;
+}
+
+void main() {
+	string c = '{"volume":0.7,"muted":false,"enabled":true,"is_default_communications":true,"can_set_volume":true,"can_mute":true,"can_set_default":true,"can_set_default_communications":true,"can_enable":true}';
+	string j = '{"node_id":"n1","name":"Studio PC","platform":"windows","online":true,"sharing":true,'
+		+ '"sources":[{"id":"input:m","name":"Yeti","is_input":true,"is_default":true,"control":' + c + '},'
+		+ '{"id":"loopback:s","name":"Sound playing on Speakers","is_input":false,"is_default":true,"control":null}],'
+		+ '"outputs":[{"id":"output:s","name":"Speakers","is_default":true,"control":{"volume":null,"muted":null,"enabled":true,"is_default_communications":false,"can_set_volume":false,"can_mute":false,"can_set_default":true,"can_set_default_communications":false,"can_enable":false}}],'
+		+ '"disabled":[{"id":"input:x","name":"Stereo Mix","is_input":true,"control":' + c + '}],'
+		+ '"volumes":[{"id":"stream:music","name":"Media volume","volume":0.5,"muted":null,"can_mute":false}],'
+		+ '"allows_control":true}';
+	audionet_device@ d = audionet_parse_device(parse_json(j));
+	check("allows control", d.allows_control);
+	check("the microphone's settings", @d.sources[0].control != null and d.sources[0].control.has_volume
+		and abs(d.sources[0].control.volume - 0.7) < 0.001 and d.sources[0].control.has_mute and !d.sources[0].control.muted);
+	check("described in words", d.sources[0].control.describe() == "70%, default for communications");
+	check("what an output plays has none", @d.sources[1].control == null);
+	check("an output without volume or mute", @d.outputs[0].control != null and !d.outputs[0].control.has_volume
+		and !d.outputs[0].control.has_mute and d.outputs[0].control.can_set_default);
+	check("a disabled microphone", d.disabled.length() == 1 and d.disabled[0].name == "Stereo Mix" and d.disabled[0].is_input);
+	check("a phone volume", d.volumes.length() == 1 and abs(d.volumes[0].volume - 0.5) < 0.001 and !d.volumes[0].has_mute);
+	check("JSON quoting", audionet_json_quote('a "b" \\ c') == '"a \\"b\\" \\\\ c"');
+	audionet_client cl;
+	check("not connected: a clear error", cl.set_device_volume("n1", "output:s", 0.5) == "" and cl.error == "Not connected.");
+	println(failures == 0 ? "all passed" : failures + " failed");
+	exit(failures == 0 ? 0 : 1);
+}

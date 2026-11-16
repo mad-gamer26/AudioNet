@@ -231,14 +231,14 @@ audionet_device@ audionet_parse_device(json_object@ o) {
 
 // A string as JSON text (quotes and backslashes escaped).
 string audionet_json_quote(const string&in s) {
-	string out = "\"";
+	string quoted = "\"";
 	for (uint i = 0; i < s.length(); i++) {
 		string c = s.substr(i, 1);
-		if (c == "\"" or c == "\\") out += "\\" + c;
-		else if (c[0] < 32) out += " ";
-		else out += c;
+		if (c == "\"" or c == "\\") quoted += "\\" + c;
+		else if (c[0] < 32) quoted += " ";
+		else quoted += c;
 	}
-	return out + "\"";
+	return quoted + "\"";
 }
 
 // A connection to an AudioNet account, as a visitor.
