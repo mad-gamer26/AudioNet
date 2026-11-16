@@ -36,7 +36,7 @@ fn noticed(n: &AtomicUsize, before: usize) -> bool {
 #[test]
 #[ignore = "needs a PulseAudio server with sinks \"speakers\" and \"headphones\""]
 fn outputs_are_read_changed_and_noticed() {
-    let audio = CpalNodeAudio::default();
+    let audio = CpalNodeAudio;
     let (o, c) = output(&audio, "speakers");
     println!("{}: {c:?}", o.name);
     assert!(c.can_set_volume && c.can_mute && c.can_set_default);
