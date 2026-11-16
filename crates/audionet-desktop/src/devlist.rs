@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 use audionet_protocol::signal::{DestinationInfo, NodeSummary, SourceInfo, SourceType};
-use windows::Win32::Foundation::{BOOL, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{GetStockObject, HBRUSH, HFONT, WHITE_BRUSH};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -35,7 +35,7 @@ use windows::Win32::UI::Accessibility::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{GUID, HSTRING, PCWSTR, implement, w};
+use windows::core::{BOOL, GUID, HSTRING, PCWSTR, implement, w};
 
 use crate::ui::wide;
 
@@ -352,6 +352,7 @@ pub fn sync(
     local_sources: &[SourceInfo],
     local_outputs: &[DestinationInfo],
 ) {
+    // SAFETY: the focused window (to keep focus somewhere if it goes).
     let focus_before = unsafe { GetFocus() };
     with(|l| {
         if l.panel.is_invalid() {
@@ -399,7 +400,7 @@ pub fn sync(
             .iter()
             .flat_map(|(id, _, _, ds)| {
                 let mut ds = ds.clone();
-                ds.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                ds.sort_by_key(|d| d.name.to_lowercase());
                 ds.into_iter().map(move |d| (id.clone(), d))
             })
             .collect();
@@ -495,7 +496,7 @@ fn sync_row(l: &mut List, i: usize) {
         let st = w!("STATIC");
         let cb = w!("COMBOBOX");
         let bt = w!("BUTTON");
-        let mut add = |l: &mut List, kind: Kind, class: PCWSTR, text: &str, style: WINDOW_STYLE| {
+        let add = |l: &mut List, kind: Kind, class: PCWSTR, text: &str, style: WINDOW_STYLE| {
             let (h, id) = new_control(l, class, text, style);
             l.rows[i].controls.push((kind, h, id));
         };
@@ -676,7 +677,7 @@ fn layout(l: &mut List) {
             nPos: l.scroll,
             nTrackPos: 0,
         };
-        SetScrollInfo(l.panel, SB_VERT, &si, true);
+        windows::Win32::UI::Controls::SetScrollInfo(l.panel, SB_VERT, &si, true);
     }
 }
 

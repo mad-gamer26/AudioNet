@@ -22,14 +22,16 @@ const ID_CHECK_UPDATES: i32 = 306;
 const ID_UPDATE_STATUS: i32 = 307;
 const ID_VERSION: i32 = 308;
 const ID_MEASUREMENTS: i32 = 309;
+const ID_ALLOW_CONTROL: i32 = 310;
 
 /// The Settings tab's controls.
-pub const PAGE: [i32; 8] = [
+pub const PAGE: [i32; 9] = [
     ID_AUTOSTART,
     ID_CLOSE_TO_TRAY,
     ID_START_IN_TRAY,
     ID_AUTO_UPDATE,
     ID_MEASUREMENTS,
+    ID_ALLOW_CONTROL,
     ID_CHECK_UPDATES,
     ID_UPDATE_STATUS,
     ID_VERSION,
@@ -54,7 +56,7 @@ pub fn build(hwnd: HWND, x: i32, y: i32, w: i32, scale: f32, font: HFONT) {
     let check = WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | tab;
     let button = WINDOW_STYLE(BS_PUSHBUTTON as u32) | tab;
     let st = WINDOW_STYLE(0);
-    let rows: [(&str, i32); 5] = [
+    let rows: [(&str, i32); 6] = [
         (
             "Start AudioNet &automatically when I sign in to Windows",
             ID_AUTOSTART,
@@ -68,6 +70,10 @@ pub fn build(hwnd: HWND, x: i32, y: i32, w: i32, scale: f32, font: HFONT) {
         (
             "Show &measurements in the status log (for troubleshooting)",
             ID_MEASUREMENTS,
+        ),
+        (
+            "&Let my other devices change my sound settings",
+            ID_ALLOW_CONTROL,
         ),
     ];
     for (i, (text, id)) in rows.iter().enumerate() {
@@ -90,7 +96,7 @@ pub fn build(hwnd: HWND, x: i32, y: i32, w: i32, scale: f32, font: HFONT) {
         button,
         WINDOW_EX_STYLE(0),
         ID_CHECK_UPDATES,
-        (x, y + 160, 230, 30),
+        (x, y + 190, 230, 30),
         scale,
         font,
     );
@@ -103,7 +109,7 @@ pub fn build(hwnd: HWND, x: i32, y: i32, w: i32, scale: f32, font: HFONT) {
         st,
         WINDOW_EX_STYLE(0),
         ID_UPDATE_STATUS,
-        (x, y + 200, w, 40),
+        (x, y + 230, w, 40),
         scale,
         font,
     );
@@ -114,7 +120,7 @@ pub fn build(hwnd: HWND, x: i32, y: i32, w: i32, scale: f32, font: HFONT) {
         st,
         WINDOW_EX_STYLE(0),
         ID_VERSION,
-        (x, y + 244, w, 22),
+        (x, y + 274, w, 22),
         scale,
         font,
     );
@@ -135,6 +141,11 @@ pub fn build(hwnd: HWND, x: i32, y: i32, w: i32, scale: f32, font: HFONT) {
         hwnd,
         ID_MEASUREMENTS,
         settings::get(settings::SHOW_MEASUREMENTS),
+    );
+    ui::set_checked(
+        hwnd,
+        ID_ALLOW_CONTROL,
+        settings::get(settings::ALLOW_CONTROL),
     );
     if update::configured().is_none() {
         // Source builds have no update source: say so through the state.
@@ -162,9 +173,11 @@ pub fn on_command(hwnd: HWND, id: i32) {
                 ui::set_checked(hwnd, ID_AUTOSTART, autostart::is_enabled());
             }
         }
-        ID_CLOSE_TO_TRAY | ID_START_IN_TRAY | ID_AUTO_UPDATE | ID_MEASUREMENTS => {
+        ID_CLOSE_TO_TRAY | ID_START_IN_TRAY | ID_AUTO_UPDATE | ID_MEASUREMENTS
+        | ID_ALLOW_CONTROL => {
             let setting = match id {
                 ID_CLOSE_TO_TRAY => settings::CLOSE_TO_TRAY,
+                ID_ALLOW_CONTROL => settings::ALLOW_CONTROL,
                 ID_START_IN_TRAY => settings::START_IN_TRAY,
                 ID_MEASUREMENTS => settings::SHOW_MEASUREMENTS,
                 _ => settings::AUTO_UPDATE,
@@ -172,6 +185,19 @@ pub fn on_command(hwnd: HWND, id: i32) {
             if let Err(e) = settings::set(setting, ui::is_checked(hwnd, id)) {
                 ui::message(hwnd, &e, true);
                 ui::set_checked(hwnd, id, settings::get(setting));
+            }
+            if id == ID_ALLOW_CONTROL {
+                let allowed = settings::get(settings::ALLOW_CONTROL);
+                crate::app::ALLOW_CONTROL.store(allowed, std::sync::atomic::Ordering::Relaxed);
+                ui::run_everywhere(|| audionet_node::agent::Command::SetAllowControl { allowed });
+                ui::announce(
+                    hwnd,
+                    if allowed {
+                        "Your other devices can now change this computer's sound settings."
+                    } else {
+                        "Your other devices can no longer change this computer's sound settings."
+                    },
+                );
             }
             if id == ID_MEASUREMENTS {
                 crate::app::MEASUREMENTS.store(

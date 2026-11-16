@@ -754,6 +754,15 @@ fn toggle_visible_everywhere(hwnd: HWND) {
 }
 
 /// Sends a command to one account's agent; false if it is not running.
+/// Sends a command to every running account's agent.
+pub(crate) fn run_everywhere(c: impl Fn() -> audionet_node::agent::Command) {
+    with_state(|s| {
+        for (_, r) in &s.running {
+            r.command(c());
+        }
+    });
+}
+
 pub(crate) fn run_command(account: &str, c: audionet_node::agent::Command) -> bool {
     with_state(|s| {
         s.running
@@ -1285,17 +1294,6 @@ impl Ctl {
             class: w!("BUTTON"),
             text: text.to_owned(),
             style: WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
-            ex: WINDOW_EX_STYLE(0),
-            id,
-        }
-    }
-
-    /// A drop-down list (choose one; no typing).
-    pub(crate) fn combo(id: i32) -> Self {
-        Self {
-            class: w!("COMBOBOX"),
-            text: String::new(),
-            style: WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
             ex: WINDOW_EX_STYLE(0),
             id,
         }
@@ -2194,6 +2192,7 @@ pub fn run(launch: Launch) {
         );
     }
     // "Show measurements" (Settings), before any account connects.
+    crate::app::ALLOW_CONTROL.store(settings::get(settings::ALLOW_CONTROL), Relaxed);
     crate::app::MEASUREMENTS.store(
         settings::get(settings::SHOW_MEASUREMENTS),
         std::sync::atomic::Ordering::Relaxed,

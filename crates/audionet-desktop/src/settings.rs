@@ -18,6 +18,8 @@ pub const AUTO_UPDATE: (PCWSTR, bool) = (w!("AutoUpdate"), true);
 /// Measurements (network details, streams' packet reports) in the status
 /// log, for troubleshooting. Off: the log says what happens in words only.
 pub const SHOW_MEASUREMENTS: (PCWSTR, bool) = (w!("ShowMeasurements"), false);
+/// "Let my other devices change my sound settings" (on by default).
+pub const ALLOW_CONTROL: (PCWSTR, bool) = (w!("AllowControl"), true);
 /// The version the last update installed (string). If the app still
 /// reports an older version afterwards, that release is not offered again.
 pub const UPDATED_TO: PCWSTR = w!("UpdatedTo");

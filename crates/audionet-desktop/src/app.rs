@@ -18,6 +18,11 @@ use tokio::sync::{mpsc, oneshot};
 pub static MEASUREMENTS: std::sync::LazyLock<Arc<AtomicBool>> =
     std::sync::LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 
+/// "Let my other devices change my sound settings" (Settings, on by
+/// default): shared by every account's agent.
+pub static ALLOW_CONTROL: std::sync::LazyLock<Arc<AtomicBool>> =
+    std::sync::LazyLock::new(|| Arc::new(AtomicBool::new(true)));
+
 /// The server URL official builds suggest, set at build time with
 /// `AUDIONET_DEFAULT_SERVER`. Source builds leave it empty: nothing in the
 /// code depends on a particular server.
@@ -204,7 +209,7 @@ impl Running {
                 control: Some(control),
                 relay_only: false,
                 visitor: false,
-                allow_control: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                allow_control: Arc::clone(&ALLOW_CONTROL),
                 measurements_in_status: Arc::clone(&MEASUREMENTS),
                 visible: agent_visible,
             };

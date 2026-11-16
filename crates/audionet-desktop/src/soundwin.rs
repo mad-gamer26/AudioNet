@@ -17,8 +17,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{GetStockObject, HBRUSH, HFONT, WHITE_BRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    TBM_GETPOS, TBM_SETLINESIZE, TBM_SETPAGESIZE, TBM_SETPOS, TBM_SETRANGEMAX, TBM_SETRANGEMIN,
-    TBS_BOTH, TBS_HORZ, TBS_NOTICKS, TRACKBAR_CLASSW,
+    BST_CHECKED, BST_UNCHECKED, TBM_SETLINESIZE, TBM_SETPAGESIZE, TBM_SETPOS, TBM_SETRANGEMAX,
+    TBM_SETRANGEMIN, TBS_BOTH, TBS_HORZ, TBS_NOTICKS, TRACKBAR_CLASSW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -27,6 +27,8 @@ use windows::core::{HSTRING, PCWSTR, w};
 use crate::ui::{self, wide};
 
 const ID_CLOSE: i32 = IDCANCEL.0;
+/// The trackbar's position (not in the bindings).
+const TBM_GETPOS: u32 = WM_USER;
 const FIRST_ID: i32 = 500;
 
 /// One line of the window.
@@ -85,7 +87,7 @@ pub fn rows(d: Option<&NodeSummary>) -> Vec<Row> {
         ))];
     }
     let mut out = Vec::new();
-    let mut endpoint =
+    let endpoint =
         |out: &mut Vec<Row>, id: &str, name: &str, is_default: bool, c: &EndpointControl| {
             let roles: Vec<&str> = [
                 (is_default, "default"),
@@ -513,11 +515,11 @@ fn refresh() {
 }
 
 fn build_row(w: &mut Window, r: &Row) {
-    let mut push = |w: &mut Window,
-                    key: Option<String>,
-                    class: PCWSTR,
-                    text: &str,
-                    style: WINDOW_STYLE|
+    let push = |w: &mut Window,
+                key: Option<String>,
+                class: PCWSTR,
+                text: &str,
+                style: WINDOW_STYLE|
      -> HWND {
         let (h, id) = new_control(w, class, text, style);
         w.controls.push((key, h, id));
@@ -646,7 +648,7 @@ fn layout(w: &mut Window) {
             nPos: w.scroll,
             nTrackPos: 0,
         };
-        SetScrollInfo(w.panel, SB_VERT, &si, true);
+        windows::Win32::UI::Controls::SetScrollInfo(w.panel, SB_VERT, &si, true);
     }
 }
 
@@ -691,20 +693,19 @@ fn change(action: ControlAction) {
     let Ok(node_id) = NodeId::new(node.as_str()) else {
         return;
     };
-    if !ui::run_command(
+    let sent = ui::run_command(
         &account,
         Command::Control {
             request_id,
             node_id,
             action,
         },
-    ) {
-        if let Some(h) = handle() {
-            ui::announce(
-                h,
-                "The change couldn't be sent: this account isn't connected.",
-            );
-        }
+    );
+    if let (false, Some(h)) = (sent, handle()) {
+        ui::announce(
+            h,
+            "The change couldn't be sent: this account isn't connected.",
+        );
     }
 }
 

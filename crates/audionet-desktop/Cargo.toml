@@ -12,6 +12,8 @@ name = "audionet-desktop"
 path = "src/main.rs"
 
 [target.'cfg(windows)'.dependencies]
+# The COM `implement` macro (an accessibility property server) needs it by name.
+windows-core.workspace = true
 audionet-protocol.workspace = true
 audionet-node.workspace = true
 audionet-wasapi.workspace = true

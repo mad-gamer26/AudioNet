@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use audionet_node::agent::{AppEvent, Command};
 use audionet_node::session::LocalMedia;
 use audionet_protocol::signal::{
-    DestinationInfo, NodeSummary, SessionMedia, SessionState, SourceInfo, SourceType,
+    DestinationInfo, NodeSummary, SessionMedia, SessionState, SourceInfo,
 };
 use audionet_protocol::{NodeId, Platform, SessionId};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -25,7 +25,7 @@ use windows::Win32::UI::Controls::{
     TBM_SETPOS, TBM_SETRANGEMAX, TBM_SETRANGEMIN, TBS_BOTH, TBS_HORZ, TBS_NOTICKS, TRACKBAR_CLASSW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{HSTRING, PWSTR};
+use windows::core::HSTRING;
 
 use crate::ui::{Ctl, add, announce, enable, item, log};
 
@@ -147,9 +147,6 @@ pub const STREAMS_FIRST: i32 = ID_STREAMS;
 pub fn build(hwnd: HWND, x: i32, y: i32, w: i32, scale: f32, font: HFONT) {
     let label = |text: &str, id: i32, y: i32| {
         add(hwnd, Ctl::label(text, id), (x, y, w, 20), scale, font);
-    };
-    let combo = |id: i32, y: i32| {
-        add(hwnd, Ctl::combo(id), (x, y, w, 300), scale, font);
     };
     // SAFETY: registering the common-controls class the volume needs.
     unsafe {
