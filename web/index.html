@@ -242,6 +242,17 @@
         <button type="button" id="close-status-log">Close</button>
       </p>
     </dialog>
+    <!-- Another device's sound settings (opened from its "Sound settings"
+         button): kept up to date while open; values change in place so
+         focus stays where it is. Escape or Close returns focus to the
+         button. -->
+    <dialog id="sound-settings" aria-labelledby="sound-settings-title">
+      <h2 id="sound-settings-title" tabindex="-1">Sound settings</h2>
+      <div id="sound-settings-body"></div>
+      <p class="dialog-buttons">
+        <button type="button" id="close-sound-settings">Close</button>
+      </p>
+    </dialog>
   </main>
 
   <footer>

@@ -730,6 +730,10 @@ function handleServer(msg) {
       if (msg.node.online && (!before || before.name !== msg.node.name)) loadManagedDevices();
       break;
     }
+    case "control_result":
+      // Done: the device's new state comes as a node_update.
+      if (msg.error) announce(msg.error);
+      break;
     case "session_answer": {
       const s = state.sessions.get(msg.session_id);
       // Sending in stereo: the device decodes stereo, but its answer does
@@ -855,6 +859,7 @@ function deviceElement(node) {
         <p><button type="submit">Send my microphone</button></p>
       </div>
     </form>
+    <p><button type="button" class="sound-settings">Sound settings</button></p>
     </div>`;
   el.querySelector(".listen").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -869,6 +874,7 @@ function deviceElement(node) {
     if (sel.value) startSpeak(node.node_id, sel.value, sel.selectedOptions[0].textContent, voice, mic.value, mic.selectedOptions[0]?.textContent || "");
   });
   el.querySelector(".mic").addEventListener("change", (e) => saveMicrophoneChoice(e.target.value));
+  el.querySelector(".sound-settings").addEventListener("click", (e) => openSoundSettings(node.node_id, e.target));
   $("devices").appendChild(el);
   return el;
 }
@@ -905,7 +911,9 @@ function renderDevices() {
     if (saved && mic.value === "" && state.microphones.some((m) => m.id === saved)) mic.value = saved;
     el.querySelector(".listen button").disabled = !state.connected;
     el.querySelector(".speak button").disabled = !state.connected;
+    el.querySelector(".sound-settings").setAttribute("aria-label", `Sound settings of ${n.name}`);
   }
+  renderSoundSettings();
 }
 
 // ─── microphones ────────────────────────────────────────────────────────────
@@ -1373,3 +1381,178 @@ $("copy-sign-in").addEventListener("click", async () => {
 });
 
 start();
+
+// ─── another device's sound settings ────────────────────────────────────────
+
+// The device whose settings are open, and the button that opened them.
+const sound = { nodeId: null, opener: null, touched: new Map() };
+
+function openSoundSettings(nodeId, opener) {
+  sound.nodeId = nodeId;
+  sound.opener = opener;
+  $("sound-settings-body").dataset.sig = "";
+  renderSoundSettings();
+  $("sound-settings").showModal();
+}
+$("close-sound-settings").addEventListener("click", () => $("sound-settings").close());
+$("sound-settings").addEventListener("close", () => {
+  sound.nodeId = null;
+  if (sound.opener && sound.opener.isConnected) sound.opener.focus();
+});
+
+function controlDevice(action) {
+  if (!sound.nodeId) return;
+  send({ type: "control", request_id: newSessionId(), node_id: sound.nodeId, action });
+}
+
+const pct = (v) => `${Math.round(v * 100)}%`;
+
+// What the dialog shows, as rows: each with a key (for focus and in-place
+// updates) and what can be done.
+function soundRows(n) {
+  const rows = [];
+  const endpoint = (e, kind) => {
+    const c = e.control;
+    const roles = [e.is_default ? "default" : null, c.is_default_communications ? "default for communications" : null].filter(Boolean);
+    rows.push({ type: "heading", key: `h:${e.id}`, text: roles.length ? `${e.name} (${roles.join(", ")})` : e.name, kind });
+    if (c.volume !== null && c.can_set_volume) rows.push({ type: "volume", key: `v:${e.id}`, target: e.id, name: e.name, value: c.volume });
+    else if (c.volume !== null) rows.push({ type: "text", key: `t:${e.id}`, text: `Volume: ${pct(c.volume)}` });
+    if (c.can_mute && c.muted !== null) rows.push({ type: "mute", key: `m:${e.id}`, target: e.id, name: e.name, value: c.muted });
+    if (c.can_set_default && !e.is_default) rows.push({ type: "button", key: `d:${e.id}`, text: `Make ${e.name} the default`, action: { kind: "set_default", target: e.id, communications: false } });
+    if (c.can_set_default_communications && !c.is_default_communications) rows.push({ type: "button", key: `c:${e.id}`, text: `Make ${e.name} the default for communications`, action: { kind: "set_default", target: e.id, communications: true } });
+    if (c.can_enable) rows.push({ type: "button", key: `x:${e.id}`, text: `Disable ${e.name}`, action: { kind: "set_enabled", target: e.id, enabled: false } });
+  };
+  const outputs = n.destinations.filter((d) => d.control);
+  const mics = n.sources.filter((s) => s.source_type === "input" && s.control);
+  if (outputs.length) rows.push({ type: "section", key: "s:out", text: "Outputs" });
+  outputs.forEach((o) => endpoint(o, "output"));
+  if (mics.length) rows.push({ type: "section", key: "s:mic", text: "Microphones" });
+  mics.forEach((m) => endpoint(m, "microphone"));
+  const volumes = n.volumes || [];
+  if (volumes.length) rows.push({ type: "section", key: "s:vol", text: "Volumes" });
+  for (const v of volumes) {
+    rows.push({ type: "volume", key: `v:${v.id}`, target: v.id, name: v.name, value: v.volume });
+    if (v.can_mute && v.muted !== null) rows.push({ type: "mute", key: `m:${v.id}`, target: v.id, name: v.name.toLowerCase(), value: v.muted });
+  }
+  const disabled = n.disabled || [];
+  if (disabled.length) rows.push({ type: "section", key: "s:dis", text: "Disabled" });
+  for (const x of disabled) {
+    rows.push({ type: "text", key: `t:${x.id}`, text: `${x.name} (${x.kind === "input" ? "microphone" : "output"}, disabled)` });
+    rows.push({ type: "button", key: `e:${x.id}`, text: `Enable ${x.name}`, action: { kind: "set_enabled", target: x.id, enabled: true } });
+  }
+  return rows;
+}
+
+function renderSoundSettings() {
+  if (!sound.nodeId) return;
+  const n = state.nodes.get(sound.nodeId);
+  const body = $("sound-settings-body");
+  $("sound-settings-title").textContent = `Sound settings of ${n ? n.name : "the device"}`;
+  let message = null;
+  let rows = [];
+  if (!n) message = "This device is no longer visible.";
+  else if (!n.allows_control) message = `${n.name} doesn't let other devices change its sound settings.`;
+  else {
+    rows = soundRows(n);
+    if (!rows.length) message = n.platform === "ios"
+      ? "An iPhone's sound settings can't be changed from other devices."
+      : `${n.name} doesn't report its sound settings. It may need a newer AudioNet.`;
+  }
+  // The structure (which rows, and their texts) changes rarely: rebuild
+  // it then, keeping focus on the same control; otherwise update values.
+  const sig = message || rows.map((r) => `${r.type}|${r.key}|${r.text || r.name || ""}`).join("\n");
+  if (body.dataset.sig !== sig) {
+    const controls = () => [...body.querySelectorAll("[data-key]")];
+    const focused = document.activeElement && body.contains(document.activeElement) ? document.activeElement : null;
+    const focusedKey = focused ? focused.dataset.key : null;
+    const focusedAt = focused ? controls().indexOf(focused) : -1;
+    body.textContent = "";
+    if (message) {
+      const p = document.createElement("p");
+      p.textContent = message;
+      body.appendChild(p);
+    }
+    for (const r of rows) body.appendChild(soundRowElement(r));
+    body.dataset.sig = sig;
+    if (focused) {
+      // The same control; if it went (a "Make default" once done), the one
+      // now in its place; else the dialog's heading. Never the page.
+      const same = focusedKey && body.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`);
+      const list = controls();
+      const next = same || list[Math.min(focusedAt, list.length - 1)];
+      if (next) next.focus();
+      else $("sound-settings-title").focus();
+    }
+  }
+  for (const r of rows) {
+    const el = body.querySelector(`[data-key="${CSS.escape(r.key)}"]`);
+    if (!el) continue;
+    if (r.type === "volume") {
+      // Not while it is being moved (the last second): the device's
+      // value then catches up.
+      const recent = Date.now() - (sound.touched.get(r.key) || 0) < 1000;
+      if (!recent) {
+        const v = String(Math.round(r.value * 100));
+        if (el.value !== v) el.value = v;
+        el.setAttribute("aria-valuetext", pct(r.value));
+      }
+    } else if (r.type === "mute") {
+      if (el.checked !== r.value) el.checked = r.value;
+    }
+  }
+}
+
+function soundRowElement(r) {
+  if (r.type === "section") {
+    const h = document.createElement("h3");
+    h.textContent = r.text;
+    return h;
+  }
+  if (r.type === "heading") {
+    const h = document.createElement("h4");
+    h.textContent = r.text;
+    return h;
+  }
+  const p = document.createElement("p");
+  if (r.type === "text") {
+    p.textContent = r.text;
+  } else if (r.type === "volume") {
+    const id = `sound-${r.key.replace(/[^a-zA-Z0-9]/g, "_")}`;
+    const label = document.createElement("label");
+    label.htmlFor = id;
+    label.textContent = `Volume of ${r.name}`;
+    const input = document.createElement("input");
+    Object.assign(input, { type: "range", id, min: "0", max: "100", step: "1" });
+    input.dataset.key = r.key;
+    let last = 0;
+    const sendNow = () => {
+      sound.touched.set(r.key, Date.now());
+      input.setAttribute("aria-valuetext", `${input.value}%`);
+      controlDevice({ kind: "set_volume", target: r.target, volume: Number(input.value) / 100 });
+    };
+    // While moving: at most every 100 ms; and when let go.
+    input.addEventListener("input", () => {
+      sound.touched.set(r.key, Date.now());
+      input.setAttribute("aria-valuetext", `${input.value}%`);
+      if (Date.now() - last >= 100) { last = Date.now(); sendNow(); }
+    });
+    input.addEventListener("change", sendNow);
+    p.append(label, " ", input);
+  } else if (r.type === "mute") {
+    const label = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.key = r.key;
+    box.addEventListener("change", () => controlDevice({ kind: "set_muted", target: r.target, muted: box.checked }));
+    label.append(box, ` Mute ${r.name}`);
+    p.appendChild(label);
+  } else if (r.type === "button") {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = r.text;
+    b.dataset.key = r.key;
+    b.addEventListener("click", () => controlDevice(r.action));
+    p.appendChild(b);
+  }
+  return p;
+}
