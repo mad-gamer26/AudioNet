@@ -37,9 +37,18 @@ fn the_default_output_volume_is_read_changed_and_noticed() {
     }
     let noticed = notices.load(SeqCst);
     settings::set_volume(&uid, false, v).expect("volume restored");
-    println!("Nudged to {after} (asked {nudged}); notices: {noticed} after {:?}", start.elapsed());
-    assert!((after - nudged).abs() < 0.02, "read back {after}, asked {nudged}");
+    println!(
+        "Nudged to {after} (asked {nudged}); notices: {noticed} after {:?}",
+        start.elapsed()
+    );
+    assert!(
+        (after - nudged).abs() < 0.02,
+        "read back {after}, asked {nudged}"
+    );
     assert!(noticed > 0, "the change was noticed");
     let restored = settings::settings(&uid, false).unwrap().volume.unwrap();
-    assert!((restored - v).abs() < 0.02, "restored to {restored}, was {v}");
+    assert!(
+        (restored - v).abs() < 0.02,
+        "restored to {restored}, was {v}"
+    );
 }

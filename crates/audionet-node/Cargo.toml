@@ -42,6 +42,11 @@ audionet-coreaudio.workspace = true
 # when no sound server runs.
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { workspace = true, features = ["pulseaudio"] }
+# The same `pulseaudio` crate cpal uses above (no new dependency): its
+# protocol functions read and change outputs' and microphones' volume,
+# mute, defaults and card profiles, and subscribe to their changes, for the
+# account's device control (src/pulse_settings.rs).
+pulseaudio = "0.3"
 
 [lints]
 workspace = true

@@ -557,6 +557,7 @@ impl NodeAudio for CpalNodeAudio {
         if cfg!(target_os = "android") {
             return Ok(android_endpoints(&host));
         }
+        let settings = settings_snapshot();
         for d in devices {
             let Ok(id) = d.id() else { continue };
             let name = device_name(&d);
@@ -587,7 +588,7 @@ impl NodeAudio for CpalNodeAudio {
                         name: input_name,
                         source_type: SourceType::Input,
                         is_default: default_in.as_ref() == Some(&id),
-                        control: device_control(&id.to_string(), true),
+                        control: device_control(&settings, &id.to_string(), true),
                     });
                 }
             }
@@ -604,7 +605,7 @@ impl NodeAudio for CpalNodeAudio {
                     id: format!("output:{id}"),
                     name: output_name,
                     is_default: default_out.as_ref() == Some(&id),
-                    control: device_control(&id.to_string(), false),
+                    control: device_control(&settings, &id.to_string(), false),
                 });
             }
         }
@@ -615,10 +616,30 @@ impl NodeAudio for CpalNodeAudio {
         control_device(action)
     }
 
+    #[cfg(target_os = "linux")]
+    fn extra_endpoints(
+        &self,
+    ) -> Result<
+        (
+            Vec<audionet_protocol::signal::DisabledEndpoint>,
+            Vec<audionet_protocol::signal::DeviceVolume>,
+        ),
+        String,
+    > {
+        Ok((
+            crate::pulse_settings::snapshot()
+                .map(|s| s.disabled())
+                .unwrap_or_default(),
+            Vec::new(),
+        ))
+    }
+
     fn watch_changes(&self, changed: crate::audio::ChangeWaker) {
         #[cfg(target_os = "macos")]
         audionet_coreaudio::settings::watch(changed);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        crate::pulse_settings::watch(changed);
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let _ = changed;
     }
 
@@ -788,8 +809,28 @@ impl NodeAudio for CpalNodeAudio {
 /// A device's sound settings for the account's device control (macOS:
 /// Core Audio's; elsewhere none yet). `cpal_id` is cpal's device id
 /// ("coreaudio:<UID>" on macOS).
+/// What `device_control` reads from, once per listing.
+#[cfg(target_os = "linux")]
+type SettingsSnapshot = Option<crate::pulse_settings::Snapshot>;
+#[cfg(not(target_os = "linux"))]
+type SettingsSnapshot = ();
+
+#[cfg(target_os = "linux")]
+fn settings_snapshot() -> SettingsSnapshot {
+    crate::pulse_settings::snapshot().ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn settings_snapshot() -> SettingsSnapshot {}
+
+#[cfg(target_os = "linux")]
+fn device_control(s: &SettingsSnapshot, cpal_id: &str, input: bool) -> Option<EndpointControl> {
+    s.as_ref()?
+        .control(cpal_id.strip_prefix("pulseaudio:")?, input)
+}
+
 #[cfg(target_os = "macos")]
-fn device_control(cpal_id: &str, input: bool) -> Option<EndpointControl> {
+fn device_control(_: &SettingsSnapshot, cpal_id: &str, input: bool) -> Option<EndpointControl> {
     let uid = cpal_id.split_once(':').map_or(cpal_id, |(_, u)| u);
     let s = audionet_coreaudio::settings::settings(uid, input)?;
     Some(EndpointControl {
@@ -806,8 +847,8 @@ fn device_control(cpal_id: &str, input: bool) -> Option<EndpointControl> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
-fn device_control(_cpal_id: &str, _input: bool) -> Option<EndpointControl> {
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn device_control(_: &SettingsSnapshot, _cpal_id: &str, _input: bool) -> Option<EndpointControl> {
     None
 }
 
@@ -846,7 +887,39 @@ fn control_device(action: &ControlAction) -> Result<(), String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn control_device(action: &ControlAction) -> Result<(), String> {
+    use crate::pulse_settings as pulse;
+    if let (Some(card), ControlAction::SetEnabled { enabled, .. }) =
+        (action.target().strip_prefix("card:"), action)
+    {
+        return pulse::set_enabled(&format!("card:{card}"), false, *enabled);
+    }
+    let (id, input) = endpoint_target(action.target())?;
+    let name = id
+        .strip_prefix("pulseaudio:")
+        .ok_or_else(|| "Without a sound server (PulseAudio or PipeWire), this computer's sound settings can't be changed.".to_owned())?;
+    // A monitor ("Sound playing on …") is its output's: change that.
+    let (name, input) = match linux_monitor(name, "") {
+        Some((output, _)) => (output, false),
+        None => (name, input),
+    };
+    match action {
+        ControlAction::SetVolume { volume, .. } => pulse::set_volume(name, input, *volume),
+        ControlAction::SetMuted { muted, .. } => pulse::set_muted(name, input, *muted),
+        ControlAction::SetDefault {
+            communications: false,
+            ..
+        } => pulse::set_default(name, input),
+        ControlAction::SetDefault {
+            communications: true,
+            ..
+        } => Err("Linux has no separate default for communications.".into()),
+        ControlAction::SetEnabled { enabled, .. } => pulse::set_enabled(name, input, *enabled),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn control_device(action: &ControlAction) -> Result<(), String> {
     endpoint_target(action.target())?;
     Err("This device can't change its sound settings.".into())

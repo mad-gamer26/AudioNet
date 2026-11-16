@@ -22,6 +22,8 @@ pub mod config;
 #[cfg(not(windows))]
 pub mod cpal_audio;
 pub mod mdns;
+#[cfg(target_os = "linux")]
+pub mod pulse_settings;
 pub mod relay;
 pub mod session;
 pub mod stun;

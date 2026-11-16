@@ -374,6 +374,7 @@ dependencies = [
  "audionet-wasapi",
  "cpal",
  "futures-util",
+ "pulseaudio",
  "rand 0.10.3",
  "rustls",
  "rustls-platform-verifier",
