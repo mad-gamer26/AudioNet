@@ -23,6 +23,8 @@ mod app;
 #[cfg(windows)]
 mod autostart;
 #[cfg(windows)]
+mod devlist;
+#[cfg(windows)]
 mod handoff;
 #[cfg(windows)]
 mod logwin;
@@ -36,6 +38,8 @@ mod profile;
 mod remote;
 #[cfg(windows)]
 mod settings;
+#[cfg(windows)]
+mod soundwin;
 #[cfg(windows)]
 mod tray;
 #[cfg(windows)]

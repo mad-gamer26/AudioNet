@@ -2,18 +2,13 @@
 //! them and sending to them (the Devices tab), and the streams this computer
 //! started (the Streams tab).
 //!
-//! Devices are a standard TreeView (the native Windows outline): each
-//! visible device is one collapsed item ("Studio PC, Windows"); expanding it shows
-//! "Sounds to listen to" and "Outputs to send to", each with its items.
-//! Screen readers get names, levels, positions and expanded states from
-//! Windows itself. A sound is played with Listen (or Enter) on this
-//! computer's "Play it on" choice; an output receives this computer's
-//! "Send from" choice with Send (or Enter).
-//!
-//! Changes are applied to the tree in place (renamed items, added or
-//! removed devices, a device's sounds and outputs), so what is expanded,
-//! the selection and a screen reader's position are kept. Starts, stops
-//! and devices becoming visible or no longer visible are announced once.
+//! Devices are disclosure buttons, as on the Mac (see `devlist`): each
+//! visible device is one button ("Studio PC, Windows") that opens its own
+//! group of controls: what to listen to and where to play it, what to send
+//! and to which of its outputs, and its Sound Settings (see `soundwin`).
+//! Changes are applied in place, so what is open and focus stay put.
+//! Starts, stops and devices becoming visible or no longer visible are
+//! announced once.
 
 use std::cell::RefCell;
 
@@ -26,12 +21,8 @@ use audionet_protocol::{NodeId, Platform, SessionId};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Gdi::HFONT;
 use windows::Win32::UI::Controls::{
-    HTREEITEM, ICC_BAR_CLASSES, ICC_TREEVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
-    NM_RETURN, NMHDR, TBM_SETLINESIZE, TBM_SETPAGESIZE, TBM_SETPOS, TBM_SETRANGEMAX,
-    TBM_SETRANGEMIN, TBS_BOTH, TBS_HORZ, TBS_NOTICKS, TRACKBAR_CLASSW, TVE_EXPAND, TVGN_CARET,
-    TVI_LAST, TVI_ROOT, TVIF_TEXT, TVINSERTSTRUCTW, TVINSERTSTRUCTW_0, TVIS_EXPANDED, TVITEMW,
-    TVM_DELETEITEM, TVM_EXPAND, TVM_GETITEMSTATE, TVM_GETNEXTITEM, TVM_INSERTITEMW, TVM_SELECTITEM,
-    TVM_SETITEMW, TVS_HASBUTTONS, TVS_HASLINES, TVS_LINESATROOT, TVS_SHOWSELALWAYS, WC_TREEVIEWW,
+    ICC_BAR_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, TBM_SETLINESIZE, TBM_SETPAGESIZE,
+    TBM_SETPOS, TBM_SETRANGEMAX, TBM_SETRANGEMIN, TBS_BOTH, TBS_HORZ, TBS_NOTICKS, TRACKBAR_CLASSW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PWSTR};
@@ -39,10 +30,6 @@ use windows::core::{HSTRING, PWSTR};
 use crate::ui::{Ctl, add, announce, enable, item, log};
 
 const ID_DEVICES: i32 = 201;
-const ID_LOCAL_OUTPUT: i32 = 205;
-const ID_LISTEN: i32 = 206;
-const ID_LOCAL_SOURCE: i32 = 208;
-const ID_SEND: i32 = 211;
 const ID_STREAMS: i32 = 213;
 const ID_STOP_STREAM: i32 = 214;
 const ID_MUTE: i32 = 215;
@@ -80,29 +67,6 @@ fn stream_row(s: &Stream) -> String {
     row
 }
 
-/// A device's items in the tree (tree item handles).
-struct TreeDevice {
-    /// The account (this computer's device id in it).
-    account: String,
-    node_id: String,
-    item: isize,
-    text: String,
-    /// "Sounds to listen to" and its items (one per source).
-    sounds: Option<(isize, Vec<isize>)>,
-    /// "Outputs to send to" and its items (one per destination).
-    outputs: Option<(isize, Vec<isize>)>,
-    sources: Vec<SourceInfo>,
-    destinations: Vec<DestinationInfo>,
-}
-
-/// What a tree item stands for.
-enum Picked {
-    Device(NodeSummary),
-    Group(NodeSummary),
-    Sound(NodeSummary, SourceInfo),
-    Output(NodeSummary, DestinationInfo),
-}
-
 /// One account this computer is signed in to, as the panel shows it.
 struct AccountView {
     /// This computer's device id in the account.
@@ -117,11 +81,6 @@ struct AccountView {
 #[derive(Default)]
 struct Remote {
     accounts: Vec<AccountView>,
-    tree: Vec<TreeDevice>,
-    /// With several accounts, one top-level tree item per account (its id,
-    /// tree item and text); the devices are inside it.
-    account_items: Vec<(String, isize, String)>,
-    grouped: bool,
     local_sources: Vec<SourceInfo>,
     local_outputs: Vec<DestinationInfo>,
     streams: Vec<Stream>,
@@ -133,15 +92,6 @@ thread_local! {
 
 fn with<T>(f: impl FnOnce(&mut Remote) -> T) -> T {
     REMOTE.with(|r| f(&mut r.borrow_mut()))
-}
-
-/// Whether any account's connection is up.
-/// Every account's devices, in account order, with the account.
-fn all_devices(r: &Remote) -> Vec<(String, NodeSummary)> {
-    r.accounts
-        .iter()
-        .flat_map(|a| a.devices.iter().map(|d| (a.id.clone(), d.clone())))
-        .collect()
 }
 
 /// Sets the accounts this computer is signed in to (device id, name), in
@@ -173,20 +123,11 @@ pub fn set_accounts(hwnd: HWND, accounts: Vec<(String, String)>) {
 
 /// Whether a control id belongs to this panel.
 pub fn owns(id: i32) -> bool {
-    (ID_DEVICES..=ID_VOLUME).contains(&id)
+    (ID_DEVICES..=ID_VOLUME).contains(&id) || crate::devlist::owns(id)
 }
 
 /// The Devices tab's controls (labels are the control's id minus one).
-pub const DEVICES_PAGE: [i32; 8] = [
-    ID_DEVICES - 1,
-    ID_DEVICES,
-    ID_LOCAL_OUTPUT - 1,
-    ID_LOCAL_OUTPUT,
-    ID_LISTEN,
-    ID_LOCAL_SOURCE - 1,
-    ID_LOCAL_SOURCE,
-    ID_SEND,
-];
+pub const DEVICES_PAGE: [i32; 2] = [ID_DEVICES - 1, ID_DEVICES];
 /// The Streams tab's controls.
 pub const STREAMS_PAGE: [i32; 6] = [
     ID_STREAMS - 1,
@@ -210,52 +151,21 @@ pub fn build(hwnd: HWND, x: i32, y: i32, w: i32, scale: f32, font: HFONT) {
     let combo = |id: i32, y: i32| {
         add(hwnd, Ctl::combo(id), (x, y, w, 300), scale, font);
     };
-    // SAFETY: registering the common-controls class the tree view needs.
+    // SAFETY: registering the common-controls class the volume needs.
     unsafe {
         let icc = INITCOMMONCONTROLSEX {
             dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_TREEVIEW_CLASSES | ICC_BAR_CLASSES,
+            dwICC: ICC_BAR_CLASSES,
         };
         let _ = InitCommonControlsEx(&icc);
     }
     // ── Devices ──
     label(
-        "De&vices (expand one to listen to it or send to it):",
+        "De&vices (press one to open its controls):",
         ID_DEVICES - 1,
         y,
     );
-    add(
-        hwnd,
-        Ctl::custom(
-            WC_TREEVIEWW,
-            WINDOW_STYLE(TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS)
-                | WS_VSCROLL
-                | WS_TABSTOP,
-            WS_EX_CLIENTEDGE,
-            ID_DEVICES,
-        ),
-        (x, y + 22, w, 250),
-        scale,
-        font,
-    );
-    label("Play it &on:", ID_LOCAL_OUTPUT - 1, y + 284);
-    combo(ID_LOCAL_OUTPUT, y + 306);
-    add(
-        hwnd,
-        Ctl::button("Lis&ten to the chosen sound", ID_LISTEN),
-        (x, y + 340, 260, 30),
-        scale,
-        font,
-    );
-    label("Send f&rom this computer:", ID_LOCAL_SOURCE - 1, y + 382);
-    combo(ID_LOCAL_SOURCE, y + 404);
-    add(
-        hwnd,
-        Ctl::button("S&end to the chosen output", ID_SEND),
-        (x, y + 438, 260, 30),
-        scale,
-        font,
-    );
+    crate::devlist::create(hwnd, (x, y + 22, w, 446), scale, font);
     // ── Streams ──
     label("Streams this computer &started:", ID_STREAMS - 1, y);
     add(
@@ -399,16 +309,7 @@ fn set_row(hwnd: HWND, id: i32, index: usize, text: &str) {
     }
 }
 
-/// A visible device (only visible devices are listed): its name and what
-/// it is.
-fn device_row(d: &NodeSummary) -> String {
-    match d.platform {
-        Some(p) => format!("{}, {}", d.name, platform_name(p)),
-        None => d.name.clone(),
-    }
-}
-
-fn platform_name(p: Platform) -> &'static str {
+pub(crate) fn platform_name(p: Platform) -> &'static str {
     match p {
         Platform::Windows => "Windows",
         Platform::MacOs => "Mac",
@@ -419,359 +320,27 @@ fn platform_name(p: Platform) -> &'static str {
     }
 }
 
-fn source_row(s: &SourceInfo) -> String {
-    let kind = match s.source_type {
-        SourceType::Input => "input",
-        SourceType::Loopback => "what it plays",
-    };
-    let default = if s.is_default { ", default" } else { "" };
-    format!("{} ({kind}{default})", s.name)
-}
+// ─── the devices ────────────────────────────────────────────────────────────
 
-fn output_row(d: &DestinationInfo) -> String {
-    let default = if d.is_default { " (default)" } else { "" };
-    format!("{}{default}", d.name)
-}
-
-fn default_index<T>(items: &[T], is_default: impl Fn(&T) -> bool) -> Option<usize> {
-    items
-        .iter()
-        .position(is_default)
-        .or((!items.is_empty()).then_some(0))
-}
-
-// ─── the device tree ────────────────────────────────────────────────────────
-
-fn tree_insert(hwnd: HWND, parent: isize, text: &str) -> isize {
-    let mut wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
-    let ins = TVINSERTSTRUCTW {
-        hParent: if parent == 0 {
-            TVI_ROOT
-        } else {
-            HTREEITEM(parent)
-        },
-        hInsertAfter: TVI_LAST,
-        Anonymous: TVINSERTSTRUCTW_0 {
-            item: TVITEMW {
-                mask: TVIF_TEXT,
-                pszText: PWSTR(wide.as_mut_ptr()),
-                ..Default::default()
-            },
-        },
-    };
-    send(
-        hwnd,
-        TVM_INSERTITEMW,
-        ID_DEVICES,
-        0,
-        &ins as *const _ as isize,
-    )
-}
-
-fn tree_set_text(hwnd: HWND, handle: isize, text: &str) {
-    let mut wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
-    let it = TVITEMW {
-        mask: TVIF_TEXT,
-        hItem: HTREEITEM(handle),
-        pszText: PWSTR(wide.as_mut_ptr()),
-        ..Default::default()
-    };
-    send(hwnd, TVM_SETITEMW, ID_DEVICES, 0, &it as *const _ as isize);
-}
-
-fn tree_delete(hwnd: HWND, handle: isize) {
-    send(hwnd, TVM_DELETEITEM, ID_DEVICES, 0, handle);
-}
-
-fn tree_expanded(hwnd: HWND, handle: isize) -> bool {
-    let state = send(
-        hwnd,
-        TVM_GETITEMSTATE,
-        ID_DEVICES,
-        handle as usize,
-        TVIS_EXPANDED.0 as isize,
-    );
-    state as u32 & TVIS_EXPANDED.0 != 0
-}
-
-fn tree_selection(hwnd: HWND) -> isize {
-    send(hwnd, TVM_GETNEXTITEM, ID_DEVICES, TVGN_CARET as usize, 0)
-}
-
-fn group_text(kind: &str, n: usize) -> String {
-    format!("{kind} ({n})")
-}
-
-/// Adds a device's "Sounds to listen to" and "Outputs to send to" groups
-/// (none for a device with neither, so it shows no expand button).
-fn add_children(hwnd: HWND, d: &mut TreeDevice) {
-    if !d.sources.is_empty() {
-        let g = tree_insert(
-            hwnd,
-            d.item,
-            &group_text("Sounds to listen to", d.sources.len()),
-        );
-        let items = d
-            .sources
-            .iter()
-            .map(|s| tree_insert(hwnd, g, &source_row(s)))
-            .collect();
-        d.sounds = Some((g, items));
-    }
-    if !d.destinations.is_empty() {
-        let g = tree_insert(
-            hwnd,
-            d.item,
-            &group_text("Outputs to send to", d.destinations.len()),
-        );
-        let items = d
-            .destinations
-            .iter()
-            .map(|o| tree_insert(hwnd, g, &output_row(o)))
-            .collect();
-        d.outputs = Some((g, items));
-    }
-}
-
-/// The top-level item of an account (with several accounts).
-fn account_text(a: &AccountView) -> String {
-    let n = a.devices.len();
-    format!(
-        "Devices in {} ({n} device{})",
-        a.name,
-        if n == 1 { "" } else { "s" }
-    )
-}
-
-/// Brings the tree in line with the device list, in place. With several
+/// Brings the devices panel in line with the device list, in place. With several
 /// accounts, each account is a top-level item holding its devices.
-fn sync_tree(hwnd: HWND) {
-    let devices = with(|r| all_devices(r));
-    let grouped = with(|r| r.accounts.len() > 1);
-    // Switching between one account and several rebuilds the tree once.
-    if with(|r| std::mem::replace(&mut r.grouped, grouped)) != grouped {
-        send(hwnd, TVM_DELETEITEM, ID_DEVICES, 0, TVI_ROOT.0);
-        with(|r| {
-            r.tree.clear();
-            r.account_items.clear();
-        });
-    }
-    let mut tree = with(|r| std::mem::take(&mut r.tree));
-    if grouped {
-        let wanted: Vec<(String, String)> = with(|r| {
+fn sync_tree(_hwnd: HWND) {
+    let (accounts, sources, outputs) = with(|r| {
+        (
             r.accounts
                 .iter()
-                .map(|a| (a.id.clone(), account_text(a)))
-                .collect()
-        });
-        let mut items = with(|r| std::mem::take(&mut r.account_items));
-        items.retain(|(id, h, _)| {
-            let keep = wanted.iter().any(|(w, _)| w == id);
-            if !keep {
-                tree_delete(hwnd, *h);
-                tree.retain(|t| &t.account != id);
-            }
-            keep
-        });
-        for (id, text) in &wanted {
-            match items.iter_mut().find(|(i, _, _)| i == id) {
-                Some(entry) => {
-                    if &entry.2 != text {
-                        tree_set_text(hwnd, entry.1, text);
-                        entry.2.clone_from(text);
-                    }
-                }
-                None => {
-                    let h = tree_insert(hwnd, 0, text);
-                    items.push((id.clone(), h, text.clone()));
-                }
-            }
-        }
-        with(|r| r.account_items = items);
-    }
-    // Devices that are gone.
-    tree.retain(|t| {
-        let keep = devices
-            .iter()
-            .any(|(a, d)| d.node_id.as_str() == t.node_id && a == &t.account);
-        if !keep {
-            tree_delete(hwnd, t.item);
-        }
-        keep
+                .map(|a| (a.id.clone(), a.name.clone(), a.online, a.devices.clone()))
+                .collect::<Vec<_>>(),
+            r.local_sources.clone(),
+            r.local_outputs.clone(),
+        )
     });
-    for (account, d) in &devices {
-        let text = device_row(d);
-        match tree
-            .iter_mut()
-            .find(|t| t.node_id == d.node_id.as_str() && &t.account == account)
-        {
-            Some(t) => {
-                if t.text != text {
-                    tree_set_text(hwnd, t.item, &text);
-                    t.text = text;
-                }
-                if t.sources != d.sources || t.destinations != d.destinations {
-                    // Rebuild its sounds and outputs, keeping what was open
-                    // and, where it still exists, the selected item.
-                    let was_open = tree_expanded(hwnd, t.item);
-                    let open_groups = (
-                        t.sounds.as_ref().is_some_and(|g| tree_expanded(hwnd, g.0)),
-                        t.outputs.as_ref().is_some_and(|g| tree_expanded(hwnd, g.0)),
-                    );
-                    let sel = tree_selection(hwnd);
-                    let picked_id = t
-                        .sounds
-                        .as_ref()
-                        .and_then(|g| g.1.iter().position(|h| *h == sel))
-                        .map(|i| t.sources[i].id.clone())
-                        .or_else(|| {
-                            t.outputs
-                                .as_ref()
-                                .and_then(|g| g.1.iter().position(|h| *h == sel))
-                                .map(|i| t.destinations[i].id.clone())
-                        });
-                    for g in [t.sounds.take(), t.outputs.take()].into_iter().flatten() {
-                        tree_delete(hwnd, g.0);
-                    }
-                    t.sources.clone_from(&d.sources);
-                    t.destinations.clone_from(&d.destinations);
-                    add_children(hwnd, t);
-                    if was_open {
-                        send(hwnd, TVM_EXPAND, ID_DEVICES, TVE_EXPAND.0 as usize, t.item);
-                    }
-                    for (open, g) in [(open_groups.0, &t.sounds), (open_groups.1, &t.outputs)] {
-                        if let (true, Some(g)) = (open, g) {
-                            send(hwnd, TVM_EXPAND, ID_DEVICES, TVE_EXPAND.0 as usize, g.0);
-                        }
-                    }
-                    if let Some(id) = picked_id {
-                        let again = t
-                            .sources
-                            .iter()
-                            .position(|s| s.id == id)
-                            .and_then(|i| t.sounds.as_ref().map(|g| g.1[i]))
-                            .or_else(|| {
-                                t.destinations
-                                    .iter()
-                                    .position(|o| o.id == id)
-                                    .and_then(|i| t.outputs.as_ref().map(|g| g.1[i]))
-                            });
-                        let target = again.unwrap_or(t.item);
-                        send(
-                            hwnd,
-                            TVM_SELECTITEM,
-                            ID_DEVICES,
-                            TVGN_CARET as usize,
-                            target,
-                        );
-                    }
-                }
-            }
-            None => {
-                let parent = with(|r| {
-                    r.account_items
-                        .iter()
-                        .find(|(id, _, _)| id == account)
-                        .map_or(0, |(_, h, _)| *h)
-                });
-                let item = tree_insert(hwnd, parent, &text);
-                if parent != 0 {
-                    // An account's devices are shown (its item open).
-                    send(hwnd, TVM_EXPAND, ID_DEVICES, TVE_EXPAND.0 as usize, parent);
-                }
-                let mut t = TreeDevice {
-                    account: account.clone(),
-                    node_id: d.node_id.as_str().to_owned(),
-                    item,
-                    text,
-                    sounds: None,
-                    outputs: None,
-                    sources: d.sources.clone(),
-                    destinations: d.destinations.clone(),
-                };
-                add_children(hwnd, &mut t);
-                tree.push(t);
-            }
-        }
-    }
-    with(|r| r.tree = tree);
-}
-
-/// What the selected tree item stands for, and its account.
-fn picked(hwnd: HWND) -> Option<(Picked, String)> {
-    let sel = tree_selection(hwnd);
-    if sel == 0 {
-        return None;
-    }
-    let found = with(|r| {
-        for t in &r.tree {
-            let device = r
-                .accounts
-                .iter()
-                .find(|a| a.id == t.account)?
-                .devices
-                .iter()
-                .find(|d| d.node_id.as_str() == t.node_id)?
-                .clone();
-            if t.item == sel {
-                return Some(Picked::Device(device));
-            }
-            if let Some((g, items)) = &t.sounds {
-                if *g == sel {
-                    return Some(Picked::Group(device));
-                }
-                if let Some(i) = items.iter().position(|h| *h == sel) {
-                    return Some(Picked::Sound(device, t.sources[i].clone()));
-                }
-            }
-            if let Some((g, items)) = &t.outputs {
-                if *g == sel {
-                    return Some(Picked::Group(device));
-                }
-                if let Some(i) = items.iter().position(|h| *h == sel) {
-                    return Some(Picked::Output(device, t.destinations[i].clone()));
-                }
-            }
-        }
-        None
-    })?;
-    let account = with(|r| {
-        r.tree
-            .iter()
-            .find(|t| {
-                t.item == sel
-                    || t.sounds
-                        .as_ref()
-                        .is_some_and(|(g, i)| *g == sel || i.contains(&sel))
-                    || t.outputs
-                        .as_ref()
-                        .is_some_and(|(g, i)| *g == sel || i.contains(&sel))
-            })
-            .map(|t| t.account.clone())
-    })?;
-    Some((found, account))
+    crate::devlist::sync(&accounts, &sources, &outputs);
 }
 
 /// Refills everything but the tree (which changes in place).
 fn refresh(hwnd: HWND) {
     sync_tree(hwnd);
-    let (sources, outputs) = with(|r| (r.local_sources.clone(), r.local_outputs.clone()));
-    fill(
-        hwnd,
-        ID_LOCAL_SOURCE,
-        &sources.iter().map(source_row).collect::<Vec<_>>(),
-        default_index(&sources, |s| {
-            s.is_default && s.source_type == SourceType::Input
-        }),
-        true,
-    );
-    fill(
-        hwnd,
-        ID_LOCAL_OUTPUT,
-        &outputs.iter().map(output_row).collect::<Vec<_>>(),
-        default_index(&outputs, |d| d.is_default),
-        true,
-    );
     let streams: Vec<String> = with(|r| r.streams.iter().map(stream_row).collect());
     // Keep the selected stream selected (its volume controls follow it).
     let keep = selected(hwnd, ID_STREAMS, false)
@@ -791,37 +360,15 @@ pub fn local_devices_changed(hwnd: HWND) {
     let Ok((sources, outputs)) = crate::app::local_endpoints() else {
         return;
     };
-    let (old_sources, old_outputs) = with(|r| (r.local_sources.clone(), r.local_outputs.clone()));
-    if sources != old_sources {
-        let chosen = selected(hwnd, ID_LOCAL_SOURCE, true)
-            .and_then(|i| old_sources.get(i))
-            .and_then(|s| sources.iter().position(|n| n.id == s.id));
-        fill(
-            hwnd,
-            ID_LOCAL_SOURCE,
-            &sources.iter().map(source_row).collect::<Vec<_>>(),
-            chosen.or(default_index(&sources, |s| {
-                s.is_default && s.source_type == SourceType::Input
-            })),
-            true,
-        );
-    }
-    if outputs != old_outputs {
-        let chosen = selected(hwnd, ID_LOCAL_OUTPUT, true)
-            .and_then(|i| old_outputs.get(i))
-            .and_then(|d| outputs.iter().position(|n| n.id == d.id));
-        fill(
-            hwnd,
-            ID_LOCAL_OUTPUT,
-            &outputs.iter().map(output_row).collect::<Vec<_>>(),
-            chosen.or(default_index(&outputs, |d| d.is_default)),
-            true,
-        );
-    }
-    with(|r| {
+    let changed = with(|r| {
+        let changed = r.local_sources != sources || r.local_outputs != outputs;
         r.local_sources = sources;
         r.local_outputs = outputs;
+        changed
     });
+    if changed {
+        sync_tree(hwnd);
+    }
 }
 
 /// The panel's controls are always enabled: a disabled control drops out of
@@ -829,25 +376,18 @@ pub fn local_devices_changed(hwnd: HWND) {
 /// (a screen reader then says nothing). Listen, Send, Stop and the volume
 /// say in words why they cannot act yet (nothing chosen, not connected).
 fn update_buttons(hwnd: HWND) {
-    for id in [
-        ID_DEVICES,
-        ID_LOCAL_OUTPUT,
-        ID_LISTEN,
-        ID_LOCAL_SOURCE,
-        ID_SEND,
-        ID_STOP_STREAM,
-        ID_MUTE,
-        ID_VOLUME,
-    ] {
+    for id in [ID_STOP_STREAM, ID_MUTE, ID_VOLUME] {
         enable(hwnd, id, true);
     }
 }
 
 /// Handles a click on one of this panel's controls.
 pub fn on_command(hwnd: HWND, id: i32, code: u32, run: &dyn Fn(&str, Command) -> bool) {
+    if let Some(action) = crate::devlist::on_command(id, code) {
+        act(hwnd, action, run);
+        return;
+    }
     match (id, code) {
-        (ID_LISTEN, BN_CLICKED) => listen(hwnd, run),
-        (ID_SEND, BN_CLICKED) => send_audio(hwnd, run),
         (ID_STREAMS, LBN_SELCHANGE) => sync_volume(hwnd),
         (ID_MUTE, BN_CLICKED) => apply_volume(hwnd, run),
         (ID_STOP_STREAM, BN_CLICKED) => {
@@ -865,24 +405,61 @@ pub fn on_command(hwnd: HWND, id: i32, code: u32, run: &dyn Fn(&str, Command) ->
     }
 }
 
-/// Whether `h` is the device tree (whose Enter key it handles itself).
-pub fn is_tree(hwnd: HWND, h: HWND) -> bool {
-    h == item(hwnd, ID_DEVICES)
-}
-
-/// Handles a notification from the device tree: Enter on a sound listens
-/// to it, on an output sends to it (arrow keys expand and collapse).
-/// Returns true when handled.
-pub fn on_notify(hwnd: HWND, header: &NMHDR, run: &dyn Fn(&str, Command) -> bool) -> bool {
-    if header.idFrom != ID_DEVICES as usize || header.code != NM_RETURN {
-        return false;
+/// Listen, Send or Sound Settings, pressed in a device's group.
+fn act(hwnd: HWND, action: crate::devlist::Action, run: &dyn Fn(&str, Command) -> bool) {
+    use crate::devlist::Action;
+    match action {
+        Action::Say(text) => announce(hwnd, &text),
+        Action::Listen {
+            account,
+            node,
+            source,
+            output,
+        } => {
+            let title = format!(
+                "Listening to {} on {}, playing on {}",
+                source.name, node.name, output.name
+            );
+            start(
+                hwnd,
+                run,
+                &account,
+                node.node_id.as_str(),
+                SessionMedia::Listen {
+                    source_id: source.id,
+                },
+                LocalMedia::Receive {
+                    destination_id: output.id,
+                },
+                title,
+            );
+        }
+        Action::Send {
+            account,
+            node,
+            source,
+            output,
+        } => {
+            let title = format!(
+                "Sending {} to {} on {}",
+                source.name, output.name, node.name
+            );
+            start(
+                hwnd,
+                run,
+                &account,
+                node.node_id.as_str(),
+                SessionMedia::Speak {
+                    destination_id: output.id,
+                },
+                LocalMedia::Send {
+                    source_id: source.id,
+                },
+                title,
+            );
+        }
+        Action::SoundSettings { account, node } => crate::soundwin::open(hwnd, &account, &node),
     }
-    match picked(hwnd) {
-        Some((Picked::Sound(..), _)) => listen(hwnd, run),
-        Some((Picked::Output(..), _)) => send_audio(hwnd, run),
-        _ => {}
-    }
-    true
 }
 
 /// A session id unique to this run (ids only need to be unique).
@@ -893,98 +470,6 @@ fn new_session_id() -> SessionId {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     SessionId::new(format!("app-{nanos:x}-{}", NEXT.fetch_add(1, Relaxed))).expect("valid id")
-}
-
-fn listen(hwnd: HWND, run: &dyn Fn(&str, Command) -> bool) {
-    let (device, source, account) = match picked(hwnd) {
-        Some((Picked::Sound(d, s), a)) => (d, s, a),
-        Some((Picked::Device(d) | Picked::Group(d) | Picked::Output(d, _), _)) => {
-            announce(
-                hwnd,
-                &format!(
-                    "Choose a sound first: expand {}, then Sounds to listen to.",
-                    d.name
-                ),
-            );
-            return;
-        }
-        None => {
-            announce(
-                hwnd,
-                "Choose a sound in Devices first: expand a device, then Sounds to listen to.",
-            );
-            return;
-        }
-    };
-    let Some(output) = selected(hwnd, ID_LOCAL_OUTPUT, true)
-        .and_then(|i| with(|r| r.local_outputs.get(i).cloned()))
-    else {
-        announce(hwnd, "Choose where to play it in Play it on.");
-        return;
-    };
-    let title = format!(
-        "Listening to {} on {}, playing on {}",
-        source.name, device.name, output.name
-    );
-    start(
-        hwnd,
-        run,
-        &account,
-        device.node_id.as_str(),
-        SessionMedia::Listen {
-            source_id: source.id,
-        },
-        LocalMedia::Receive {
-            destination_id: output.id,
-        },
-        title,
-    );
-}
-
-fn send_audio(hwnd: HWND, run: &dyn Fn(&str, Command) -> bool) {
-    let (device, output, account) = match picked(hwnd) {
-        Some((Picked::Output(d, o), a)) => (d, o, a),
-        Some((Picked::Device(d) | Picked::Group(d) | Picked::Sound(d, _), _)) => {
-            announce(
-                hwnd,
-                &format!(
-                    "Choose an output first: expand {}, then Outputs to send to.",
-                    d.name
-                ),
-            );
-            return;
-        }
-        None => {
-            announce(
-                hwnd,
-                "Choose an output in Devices first: expand a device, then Outputs to send to.",
-            );
-            return;
-        }
-    };
-    let Some(source) = selected(hwnd, ID_LOCAL_SOURCE, true)
-        .and_then(|i| with(|r| r.local_sources.get(i).cloned()))
-    else {
-        announce(hwnd, "Choose what to send in Send from this computer.");
-        return;
-    };
-    let title = format!(
-        "Sending {} to {} on {}",
-        source.name, output.name, device.name
-    );
-    start(
-        hwnd,
-        run,
-        &account,
-        device.node_id.as_str(),
-        SessionMedia::Speak {
-            destination_id: output.id,
-        },
-        LocalMedia::Send {
-            source_id: source.id,
-        },
-        title,
-    );
 }
 
 fn start(
@@ -1070,6 +555,7 @@ pub fn on_event(hwnd: HWND, account: &str, event: AppEvent) {
             if node.node_id.as_str() == account {
                 return;
             }
+            crate::soundwin::device_changed(account, node.node_id.as_str(), Some(&node));
             // A visible device appeared (announced) or changed.
             let appeared = with(|r| {
                 let a = r.accounts.iter_mut().find(|a| a.id == account)?;
@@ -1096,6 +582,7 @@ pub fn on_event(hwnd: HWND, account: &str, event: AppEvent) {
             update_buttons(hwnd);
         }
         AppEvent::DeviceGone { node_id } => {
+            crate::soundwin::device_changed(account, node_id.as_str(), None);
             // No longer visible (visibility off, or disconnected).
             let gone = with(|r| {
                 let a = r.accounts.iter_mut().find(|a| a.id == account)?;

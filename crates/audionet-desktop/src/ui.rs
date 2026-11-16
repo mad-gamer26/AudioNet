@@ -252,7 +252,7 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Option<T> {
     STATE.with(|s| s.borrow_mut().as_mut().map(f))
 }
 
-fn wide(s: &str) -> HSTRING {
+pub(crate) fn wide(s: &str) -> HSTRING {
     HSTRING::from(s)
 }
 
@@ -754,7 +754,7 @@ fn toggle_visible_everywhere(hwnd: HWND) {
 }
 
 /// Sends a command to one account's agent; false if it is not running.
-fn run_command(account: &str, c: audionet_node::agent::Command) -> bool {
+pub(crate) fn run_command(account: &str, c: audionet_node::agent::Command) -> bool {
     with_state(|s| {
         s.running
             .iter()
@@ -1823,10 +1823,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 on_tab_changed(hwnd);
                 return LRESULT(0);
             }
-            let handled = crate::remote::on_notify(hwnd, header, &run_command);
-            if handled {
-                return LRESULT(1);
-            }
             // SAFETY: default handling for other notifications.
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
@@ -2277,8 +2273,13 @@ pub fn run(launch: Launch) {
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             // The status log (when open) and the main window each get
             // keyboard navigation for their own controls.
+            // (The sound settings window likewise.)
             let owned = crate::logwin::handle()
-                .filter(|p| msg.hwnd == *p || IsChild(*p, msg.hwnd).as_bool());
+                .filter(|p| msg.hwnd == *p || IsChild(*p, msg.hwnd).as_bool())
+                .or_else(|| {
+                    crate::soundwin::handle()
+                        .filter(|p| msg.hwnd == *p || IsChild(*p, msg.hwnd).as_bool())
+                });
             // Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+Page Down and Ctrl+Page Up move
             // between tabs from anywhere in the main window.
             if owned.is_none()
@@ -2302,17 +2303,10 @@ pub fn run(launch: Launch) {
                     continue;
                 }
             }
-            // Enter in the device tree belongs to the tree (listen or send),
-            // not to the dialog manager.
-            let tree_enter = msg.message == WM_KEYDOWN
-                && msg.wParam.0
-                    == usize::from(windows::Win32::UI::Input::KeyboardAndMouse::VK_RETURN.0)
-                && crate::remote::is_tree(hwnd, msg.hwnd);
-            let handled = !tree_enter
-                && match owned {
-                    Some(p) => IsDialogMessageW(p, &msg).as_bool(),
-                    None => IsDialogMessageW(hwnd, &msg).as_bool(),
-                };
+            let handled = match owned {
+                Some(p) => IsDialogMessageW(p, &msg).as_bool(),
+                None => IsDialogMessageW(hwnd, &msg).as_bool(),
+            };
             if !handled {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
