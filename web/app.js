@@ -720,10 +720,11 @@ function handleServer(msg) {
       const before = state.nodes.get(msg.node.node_id);
       if (msg.node.online) {
         state.nodes.set(msg.node.node_id, msg.node);
-        if (!before) announce(`${msg.node.name} is now visible.`);
+        // Logged, never announced (devices come and go in bursts).
+        if (!before) logEvent(`${msg.node.name} is now visible.`);
       } else if (before) {
         state.nodes.delete(msg.node.node_id);
-        announce(`${msg.node.name} is no longer visible.`);
+        logEvent(`${msg.node.name} is no longer visible.`);
       }
       renderDevices();
       // A new device or a rename shows in Manage devices too.

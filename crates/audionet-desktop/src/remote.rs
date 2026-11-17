@@ -7,8 +7,8 @@
 //! group of controls: what to listen to and where to play it, what to send
 //! and to which of its outputs, and its Sound Settings (see `soundwin`).
 //! Changes are applied in place, so what is open and focus stay put.
-//! Starts, stops and devices becoming visible or no longer visible are
-//! announced once.
+//! Starts, stops and failures of streams are announced once; devices
+//! becoming visible or no longer visible are only logged.
 
 use std::cell::RefCell;
 
@@ -571,10 +571,9 @@ pub fn on_event(hwnd: HWND, account: &str, event: AppEvent) {
             })
             .unwrap_or(false);
             sync_tree(hwnd);
+            // Logged, never announced (devices come and go in bursts).
             if appeared {
-                let text = format!("{} is now visible.", node.name);
-                announce(hwnd, &text);
-                log(hwnd, &text);
+                log(hwnd, &format!("{} is now visible.", node.name));
             }
             update_buttons(hwnd);
         }
@@ -588,9 +587,7 @@ pub fn on_event(hwnd: HWND, account: &str, event: AppEvent) {
             });
             if let Some(name) = gone {
                 sync_tree(hwnd);
-                let text = format!("{name} is no longer visible.");
-                announce(hwnd, &text);
-                log(hwnd, &text);
+                log(hwnd, &format!("{name} is no longer visible."));
                 update_buttons(hwnd);
             }
         }

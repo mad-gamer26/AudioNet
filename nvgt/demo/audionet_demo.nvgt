@@ -455,7 +455,9 @@ void handle_events() {
 		if (@e == null) return;
 		if (e.type == "diagnostics") continue;
 		if (e.type == "devices" or e.type == "device" or e.type == "device_gone") fill_devices();
-		bool say = e.type != "status";
+		// Devices listed, appearing or going: logged, never spoken (they
+		// come and go in bursts).
+		bool say = e.type != "status" and e.type != "devices" and e.type != "device" and e.type != "device_gone";
 		if (e.type == "stream" or e.type == "stream_ended") {
 			for (uint i = 0; i < streams.length(); i++) {
 				if (streams[i].s.session_id != e.session_id) continue;

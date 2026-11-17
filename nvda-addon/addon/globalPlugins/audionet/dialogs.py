@@ -619,10 +619,6 @@ class AudioNetPanel(SettingsPanel):
 		sHelper.addItem(buttons)
 		sHelper.addItem(wx.StaticText(self, label=VISITOR_NOTE))
 		conf = config.conf["audionet"]
-		self.announceDevices = sHelper.addItem(
-			wx.CheckBox(self, label=_("Announce when devices become &visible or no longer visible"))
-		)
-		self.announceDevices.SetValue(conf["announceDevices"])
 		self.announceStreams = sHelper.addItem(
 			wx.CheckBox(self, label=_("Announce when &streams connect and end"))
 		)
@@ -666,6 +662,5 @@ class AudioNetPanel(SettingsPanel):
 
 	def onSave(self):
 		conf = config.conf["audionet"]
-		conf["announceDevices"] = self.announceDevices.GetValue()
 		conf["announceStreams"] = self.announceStreams.GetValue()
 		conf["showMeasurements"] = self.showMeasurements.GetValue()

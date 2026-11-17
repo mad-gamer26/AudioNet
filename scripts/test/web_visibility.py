@@ -4,9 +4,11 @@ against a server:
 1. A temporary device connects (as the apps do: a device WebSocket with its
    token) with visibility off. The web client does not list it under
    "Visible devices", but "Manage devices" does.
-2. The device turns visibility on: "… is now visible." is announced and it is
+2. The device turns visibility on: "… is now visible." is logged (never
+   announced: devices come and go in bursts) and it is
    listed with its sounds; Listen and Send my microphone are available.
-3. It turns visibility off: "… is no longer visible." is announced and it is
+3. It turns visibility off: "… is no longer visible." is logged (not
+   announced) and it is
    removed from the list.
 4. Manage devices renames it (a labelled form, announced) and removes it
    (focus returns to the heading).
@@ -79,6 +81,8 @@ try:
     log = lambda: drv.execute_script(
         "return [...document.querySelectorAll('#status, #event-log, #events')].map(e => e.textContent).join(' ')") or ""
     managed = lambda: drv.find_element(By.ID, "managed-devices").get_attribute("textContent")
+    # What screen readers are told (the live region), apart from the log.
+    spoken = lambda: drv.find_element(By.ID, "status").get_attribute("textContent") or ""
 
     # 1. Not visible: not listed; Manage devices has it.
     w.until(lambda d: NAME in managed())
@@ -90,24 +94,26 @@ try:
           not any(word in drv.find_element(By.ID, "app-section").text.lower()
                   for word in ["online", "offline", "sharing"]))
 
-    # 2. Visible: announced and listed with its sounds.
+    # 2. Visible: logged, not announced, and listed with its sounds.
     ws.send(json.dumps({"type": "visibility", "visible": True}))
     w.until(lambda d: d.find_elements(By.ID, card))
     el = drv.find_element(By.ID, card)
     summary = el.find_element(By.CSS_SELECTOR, ".summary").get_attribute("textContent")
     check("listed with its sounds, no status", summary == ": Windows, 1 sound, 1 output", summary)
     w.until(lambda d: f"{NAME} is now visible." in log())
-    check("announced as now visible", f"{NAME} is now visible." in log())
+    check("logged as now visible", f"{NAME} is now visible." in log())
+    check("...and not announced", "is now visible" not in spoken(), spoken())
     check("Listen available", el.find_element(By.CSS_SELECTOR, ".listen button").is_enabled())
     check("Send my microphone available", el.find_element(By.CSS_SELECTOR, ".speak button").is_enabled())
     check("no Remove button on the device itself", not el.find_elements(By.CSS_SELECTOR, ".remove"))
 
-    # 3. Hidden again: announced and removed.
+    # 3. Hidden again: logged, not announced, and removed.
     ws.send(json.dumps({"type": "visibility", "visible": False}))
     w.until(lambda d: not d.find_elements(By.ID, card))
     w.until(lambda d: f"{NAME} is no longer visible." in log())
     check("removed when no longer visible", not drv.find_elements(By.ID, card))
-    check("announced as no longer visible", f"{NAME} is no longer visible." in log())
+    check("logged as no longer visible", f"{NAME} is no longer visible." in log())
+    check("...and not announced", "is no longer visible" not in spoken(), spoken())
 
     # 4. Manage devices (its own tab): rename, then remove.
     drv.find_element(By.ID, "tab-manage").click()

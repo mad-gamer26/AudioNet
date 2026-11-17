@@ -32,7 +32,6 @@ ENGINE = os.path.join(HERE, "bin", "audionet-visitor.exe")
 VOLUME_STEP = 10
 
 config.conf.spec["audionet"] = {
-	"announceDevices": "boolean(default=false)",
 	"announceStreams": "boolean(default=true)",
 	# Measurements in the status log, for troubleshooting.
 	"showMeasurements": "boolean(default=false)",
@@ -282,11 +281,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		ui.message(text)
 
 	def _device_note(self, text):
-		"""A device became visible or stopped being visible: logged, and said
-		if "Announce when devices become visible…" is on."""
+		"""A device became visible or stopped being visible: logged, never
+		announced (devices come and go in bursts)."""
 		self.model.add_log(text)
-		if config.conf["audionet"]["announceDevices"]:
-			self.say(text)
 
 	# ─── accounts ──────────────────────────────────────────────────────────
 
