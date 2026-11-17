@@ -179,6 +179,34 @@ microphone sends only digital silence. Use a loopback input in that case.
   panel, command layer and announcements). That needs a manual session
   with NVDA; the maintainer's session found it fully working (2026-10-02).
 
+## 4b'. Device control (1.4)
+
+Another device's sound settings, from every side:
+
+- `cargo test -p audionet-server --test native_devices devices_change_each_others_sound_settings`:
+  two agents through a real server: a change asked for, a refusal with its
+  reason, a change made at the device itself reaching the other at once
+  (not on the 5-second re-read), and the switch turned off (refused by the
+  server, nothing reaches the device). Hub and wire-shape unit tests too.
+- Real sound systems (ignored tests, run by hand; each restores what it
+  changed): `cargo test -p audionet-coreaudio --test settings_hw -- --ignored`
+  (Mac), `cargo test -p audionet-wasapi --test settings_hw -- --ignored`
+  (Windows), and `PULSE_SERVER=unix:… cargo test -p audionet-node --test
+  pulse_settings -- --ignored` against a PulseAudio with null sinks
+  "speakers" and "headphones" (a container works; `AN_PULSE_CONTAINER`
+  adds a change made by `pactl`).
+- `scripts/test/web_sound_settings.py`: the web dialog in headless Chrome
+  with a stand-in device (values, keyboard, focus kept in the dialog).
+- `scripts/test/desktop_device_control.py`: the Windows app's disclosure
+  buttons (collapsed/expanded states) and Sound Settings window through UI
+  Automation, in the desktop session.
+- `nvgt/test/control_parse_test.nvgt` (run with NVGT) and the add-on's
+  `model.sound_rows` unit tests (`python -m unittest discover nvda-addon/tests`).
+
+`scripts/test/desktop_devices.py` and `desktop_remote.py` predate the
+disclosure buttons (they drive the old tree and the shared "Play it on"
+list) and need updating to expand a device first.
+
 ## 4c. Sending rate on slow-timer PCs
 
 `python scripts/test/sender_rate.py` runs a command-line device on this

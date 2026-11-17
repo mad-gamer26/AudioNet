@@ -331,6 +331,7 @@ dependencies = [
  "tokio",
  "ureq",
  "windows",
+ "windows-core",
  "zip",
 ]
 
